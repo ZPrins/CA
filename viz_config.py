@@ -57,8 +57,9 @@ class Config:
     move_label_bg_rgba: str = "rgba(255,255,255,0.85)"
     move_label_max_per_side: Optional[int] = None  # Limit prongs per side; None = unlimited
 
-    # Input preparation (Excel)
-    prepare_inputs: bool = False                # Ensure Settings/Make sheets exist and are populated
+  # Input preparation (Excel)
+    # Ensure Settings, Make, Store, and Delivery sheets exist and are populated
+    prepare_inputs: bool = True
 
     # Legend
     show_legend: bool = True

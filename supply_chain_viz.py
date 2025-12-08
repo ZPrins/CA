@@ -756,11 +756,31 @@ MAKE_REQUIRED_INPUT_COLS = [
 MAKE_KEY_COLS = ["Location", "Equipment Name", "Input"]
 MAKE_SHEET_COLS = MAKE_KEY_COLS + MAKE_REQUIRED_INPUT_COLS
 
+STORE_REQUIRED_INPUT_COLS = [
+    "Silo Max Capacity",
+    "Silo Opening Stock (High)",
+    "Silo Opening Stock (Low)",
+]
+STORE_KEY_COLS = ["Location", "Equipment Name", "Input"]
+STORE_SHEET_COLS = STORE_KEY_COLS + STORE_REQUIRED_INPUT_COLS
+
+DELIVERY_REQUIRED_INPUT_COLS = [
+    "Demand per Location",
+]
+DELIVERY_KEY_COLS = ["Location", "Input"]
+DELIVERY_SHEET_COLS = DELIVERY_KEY_COLS + DELIVERY_REQUIRED_INPUT_COLS
+
 
 def _normalize_key_triplet(df_like: pd.DataFrame, loc_col: str, eq_col: str, in_col: str) -> pd.Series:
     def _norm(s: pd.Series) -> pd.Series:
         return s.astype(str).fillna("").str.strip().str.upper()
     return _norm(df_like[loc_col]) + "|" + _norm(df_like[eq_col]) + "|" + _norm(df_like[in_col])
+
+
+def _normalize_key_pair(df_like: pd.DataFrame, loc_col: str, in_col: str) -> pd.Series:
+    def _norm(s: pd.Series) -> pd.Series:
+        return s.astype(str).fillna("").str.strip().str.upper()
+    return _norm(df_like[loc_col]) + "|" + _norm(df_like[in_col])
 
 
 def _ensure_columns(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
@@ -845,8 +865,6 @@ def ensure_settings_sheet(xlsx_path: Path) -> dict:
 def ensure_make_sheet(xlsx_path: Path) -> dict:
     """Ensure the 'Make' sheet exists and includes a row for every unique
     (Location, Equipment Name, Input) triplet from the Network with Process=Make.
-
-    Missing required input fields will be filled with default placeholders.
     Returns a summary dict with counts of rows added and fields filled.
     """
     # Read Network
@@ -855,15 +873,12 @@ def ensure_make_sheet(xlsx_path: Path) -> dict:
         raise ValueError("Network sheet is empty or missing required columns.")
     make_rows = net[net["process"].str.upper() == "MAKE"].copy()
     if make_rows.empty:
-        # Nothing to do
+        # Create empty if not exists, else do nothing
         existing = _read_sheet_df(xlsx_path, "Make")
         if existing is None:
-            # Create an empty Make sheet with headers
             empty_df = pd.DataFrame(columns=MAKE_SHEET_COLS)
             _write_sheet_df(xlsx_path, "Make", empty_df)
-            return {"rows_added": 0, "fields_filled": 0}
-        else:
-            return {"rows_added": 0, "fields_filled": 0}
+        return {"rows_added": 0, "fields_filled": 0}
 
     uniq = (
         make_rows[["location", "equipment_name", "input"]]
@@ -872,15 +887,18 @@ def ensure_make_sheet(xlsx_path: Path) -> dict:
         .rename(columns={"location": "Location", "equipment_name": "Equipment Name", "input": "Input"})
         .reset_index(drop=True)
     )
+    # FILTER: Remove rows where Input is empty/nan
+    uniq = uniq[uniq["Input"].str.strip() != ""]
+
     uniq["KEY"] = _normalize_key_triplet(uniq, "Location", "Equipment Name", "Input")
 
     # Read existing Make sheet (if any)
     current = _read_sheet_df(xlsx_path, "Make")
     if current is None or current.empty:
         current = pd.DataFrame(columns=MAKE_SHEET_COLS)
-    # Ensure required columns present
+    
     current = _ensure_columns(current, MAKE_SHEET_COLS)
-    # Build normalized key in current
+    
     if not current.empty:
         current["Location"] = current["Location"].astype(str)
         current["Equipment Name"] = current["Equipment Name"].astype(str)
@@ -892,17 +910,15 @@ def ensure_make_sheet(xlsx_path: Path) -> dict:
 
     rows_to_add = uniq[~uniq["KEY"].isin(existing_key_set)].copy()
 
-    # Defaults
+    # Defaults - now using empty strings instead of 0.0
     defaults = {
-        "Mean Production Rate (Tons/hr)": 0.0,
-        "Std Dev of Production Rate (Tons/Hr)": 0.0,
+        "Mean Production Rate (Tons/hr)": "",
+        "Std Dev of Production Rate (Tons/Hr)": "",
         "Planned Maintenance Dates (Days of year)": "",
-        "Unplanned downtime %": 0.0,
+        "Unplanned downtime %": "",
     }
 
     added_count = 0
-    filled_count = 0
-
     if not rows_to_add.empty:
         # Create new rows with defaults
         for _, r in rows_to_add.iterrows():
@@ -910,32 +926,165 @@ def ensure_make_sheet(xlsx_path: Path) -> dict:
             new_row.update(defaults)
             current = pd.concat([current, pd.DataFrame([new_row])], ignore_index=True)
             added_count += 1
-
-    # Fill missing fields in existing rows
-    for col, def_val in defaults.items():
-        if col not in current.columns:
-            current[col] = def_val
-            filled_count += len(current)
-        else:
-            mask = current[col].isna() | (current[col].astype(str).str.strip() == "")
-            n = int(mask.sum())
-            if n > 0:
-                current.loc[mask, col] = def_val
-                filled_count += n
-
-    # Order columns: required first, then any extras
+    
+    # Order columns
     extra_cols = [c for c in current.columns if c not in MAKE_SHEET_COLS]
     ordered_cols = MAKE_SHEET_COLS + extra_cols
-    # Sort for neatness by key triplet
     sort_cols = ["Location", "Equipment Name", "Input"]
+    
+    # --- FIX: STRICT DEDUPLICATION ---
+    # Enforce uniqueness on the key columns before writing. 
+    # This cleans up any existing duplicates and ensures new rows didn't create conflicts.
+    current = current.drop_duplicates(subset=sort_cols, keep="first")
+    
     current = current[ordered_cols].sort_values(sort_cols).reset_index(drop=True)
 
     _write_sheet_df(xlsx_path, "Make", current)
-    return {"rows_added": added_count, "fields_filled": filled_count}
+    return {"rows_added": added_count}
+
+
+def ensure_store_sheet(xlsx_path: Path) -> dict:
+    """Ensure the 'Store' sheet exists and includes a row for every unique
+    (Location, Equipment Name, Input) triplet from the Network with Process=Store.
+    """
+    net = _read_network_df(xlsx_path)
+    if net.empty:
+        raise ValueError("Network sheet is empty or missing required columns.")
+    store_rows = net[net["process"].str.upper() == "STORE"].copy()
+    
+    if store_rows.empty:
+        existing = _read_sheet_df(xlsx_path, "Store")
+        if existing is None:
+            empty_df = pd.DataFrame(columns=STORE_SHEET_COLS)
+            _write_sheet_df(xlsx_path, "Store", empty_df)
+        return {"rows_added": 0}
+
+    uniq = (
+        store_rows[["location", "equipment_name", "input"]]
+        .fillna("")
+        .drop_duplicates()
+        .rename(columns={"location": "Location", "equipment_name": "Equipment Name", "input": "Input"})
+        .reset_index(drop=True)
+    )
+    # FILTER: Remove rows where Input is empty/nan (good practice)
+    uniq = uniq[uniq["Input"].str.strip() != ""]
+
+    uniq["KEY"] = _normalize_key_triplet(uniq, "Location", "Equipment Name", "Input")
+
+    current = _read_sheet_df(xlsx_path, "Store")
+    if current is None or current.empty:
+        current = pd.DataFrame(columns=STORE_SHEET_COLS)
+    
+    current = _ensure_columns(current, STORE_SHEET_COLS)
+    
+    if not current.empty:
+        current["Location"] = current["Location"].astype(str)
+        current["Equipment Name"] = current["Equipment Name"].astype(str)
+        current["Input"] = current["Input"].astype(str)
+        current_keys = _normalize_key_triplet(current, "Location", "Equipment Name", "Input")
+        existing_key_set = set(current_keys.tolist())
+    else:
+        existing_key_set = set()
+
+    rows_to_add = uniq[~uniq["KEY"].isin(existing_key_set)].copy()
+
+    defaults = {
+        "Silo Max Capacity": "",
+        "Silo Opening Stock (High)": "",
+        "Silo Opening Stock (Low)": "",
+    }
+
+    added_count = 0
+    if not rows_to_add.empty:
+        for _, r in rows_to_add.iterrows():
+            new_row = {"Location": r["Location"], "Equipment Name": r["Equipment Name"], "Input": r["Input"]}
+            new_row.update(defaults)
+            current = pd.concat([current, pd.DataFrame([new_row])], ignore_index=True)
+            added_count += 1
+
+    extra_cols = [c for c in current.columns if c not in STORE_SHEET_COLS]
+    ordered_cols = STORE_SHEET_COLS + extra_cols
+    sort_cols = ["Location", "Equipment Name", "Input"]
+    current = current[ordered_cols].sort_values(sort_cols).reset_index(drop=True)
+
+    _write_sheet_df(xlsx_path, "Store", current)
+    return {"rows_added": added_count}
+
+
+def ensure_delivery_sheet(xlsx_path: Path) -> dict:
+    """Ensure the 'Deliver' sheet exists and includes a row for every unique
+    (Location, Input) pair from the Network with Process=Deliver.
+    """
+    net = _read_network_df(xlsx_path)
+    if net.empty:
+        raise ValueError("Network sheet is empty or missing required columns.")
+    del_rows = net[net["process"].str.upper() == "DELIVER"].copy()
+
+    # --- FIX: Changed sheet name from 'Delivery' to 'Deliver' ---
+    SHEET_NAME = "Deliver"
+
+    if del_rows.empty:
+        existing = _read_sheet_df(xlsx_path, SHEET_NAME)
+        if existing is None:
+            empty_df = pd.DataFrame(columns=DELIVERY_SHEET_COLS)
+            _write_sheet_df(xlsx_path, SHEET_NAME, empty_df)
+        return {"rows_added": 0}
+
+    uniq = (
+        del_rows[["location", "input"]]
+        .fillna("")
+        .drop_duplicates()
+        .rename(columns={"location": "Location", "input": "Input"})
+        .reset_index(drop=True)
+    )
+    # FILTER: Remove rows where Input is empty/nan
+    uniq = uniq[uniq["Input"].str.strip() != ""]
+
+    uniq["KEY"] = _normalize_key_pair(uniq, "Location", "Input")
+
+    current = _read_sheet_df(xlsx_path, SHEET_NAME)
+    if current is None or current.empty:
+        current = pd.DataFrame(columns=DELIVERY_SHEET_COLS)
+
+    current = _ensure_columns(current, DELIVERY_SHEET_COLS)
+
+    if not current.empty:
+        current["Location"] = current["Location"].astype(str)
+        current["Input"] = current["Input"].astype(str)
+        current_keys = _normalize_key_pair(current, "Location", "Input")
+        existing_key_set = set(current_keys.tolist())
+    else:
+        existing_key_set = set()
+
+    rows_to_add = uniq[~uniq["KEY"].isin(existing_key_set)].copy()
+
+    defaults = {
+        "Demand per Location": "",
+    }
+
+    added_count = 0
+    if not rows_to_add.empty:
+        for _, r in rows_to_add.iterrows():
+            new_row = {"Location": r["Location"], "Input": r["Input"]}
+            new_row.update(defaults)
+            current = pd.concat([current, pd.DataFrame([new_row])], ignore_index=True)
+            added_count += 1
+
+    extra_cols = [c for c in current.columns if c not in DELIVERY_SHEET_COLS]
+    ordered_cols = DELIVERY_SHEET_COLS + extra_cols
+    sort_cols = ["Location", "Input"]
+    
+    # Also good practice to deduplicate here as well
+    current = current.drop_duplicates(subset=sort_cols, keep="first")
+    
+    current = current[ordered_cols].sort_values(sort_cols).reset_index(drop=True)
+
+    _write_sheet_df(xlsx_path, SHEET_NAME, current)
+    return {"rows_added": added_count}
 
 
 def prepare_inputs_excel(xlsx_path: Path) -> dict:
-    """High-level entry to prepare Excel inputs: Settings and Make sheets.
+    """High-level entry to prepare Excel inputs: Settings, Make, Store, and Deliver sheets.
     Returns a combined summary.
     """
     if not xlsx_path.exists():
@@ -946,7 +1095,15 @@ def prepare_inputs_excel(xlsx_path: Path) -> dict:
 
     settings_summary = ensure_settings_sheet(xlsx_path)
     make_summary = ensure_make_sheet(xlsx_path)
-    return {"settings": settings_summary, "make": make_summary}
+    store_summary = ensure_store_sheet(xlsx_path)
+    delivery_summary = ensure_delivery_sheet(xlsx_path)
+    
+    return {
+        "settings": settings_summary,
+        "make": make_summary,
+        "store": store_summary,
+        "deliver": delivery_summary 
+    }
 
 # ------------------------ CLI ----------------------------------------------
 
@@ -1112,7 +1269,9 @@ def main(argv=None) -> int:
             summary = prepare_inputs_excel(in_path)
             print("Input preparation completed:")
             print(f"  Settings: added={summary['settings'].get('added', 0)}, updated={summary['settings'].get('updated', 0)}")
-            print(f"  Make: rows_added={summary['make'].get('rows_added', 0)}, fields_filled={summary['make'].get('fields_filled', 0)}")
+            print(f"  Make: rows_added={summary['make'].get('rows_added', 0)}")
+            print(f"  Store: rows_added={summary['store'].get('rows_added', 0)}")
+            print(f"  Delivery: rows_added={summary['delivery'].get('rows_added', 0)}")
         except Exception as e:
             print(f"Input preparation failed: {e}")
             return 1
@@ -1156,4 +1315,3 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
