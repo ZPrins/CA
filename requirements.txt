@@ -1,0 +1,10 @@
+# Python package requirements for the Cement Australia Simulation project
+# Pin to broadly compatible ranges that work well with Python 3.10+.
+
+simpy>=4.0.1,<5
+numpy>=1.22,<3
+matplotlib>=3.5,<4
+
+# Notes:
+# - tkinter is part of the Python standard library on Windows/macOS. On some Linux distros
+#   you may need to install it via your package manager (e.g., `sudo apt-get install python3-tk`).
