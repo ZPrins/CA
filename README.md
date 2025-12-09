@@ -170,3 +170,73 @@ random.seed(42)
 ## 10) License and Attribution
 - Add a license file if the model will be shared externally (e.g., MIT/Apache-2.0).
 - Attribution: internal model for Cement Australia logistics; built with SimPy.
+
+
+---
+
+## 11) New: Config‑driven Excel‑based simulation (no CLI needed)
+
+This repository now includes a SimPy model that builds itself from a normalized Excel workbook and a double‑clickable runner. Use this when you want to simulate directly from your `Model Inputs.xlsx` (via a generated workbook) without passing command‑line flags.
+
+### What’s included
+- `sim_from_generated.py` — builds a SimPy model from a generated workbook (sheets: `Network`, `Settings`, `Make`, `Store`, `Move`, `Deliver`/`Delivery`).
+- `sim_config.py` — a simple `Config` dataclass where you set your input file and options.
+- `run_sim.py` — a runner that reads `sim_config.Config` and executes the simulation; friendly to double‑click on Windows.
+- `supply_chain_viz.py` — utilities to normalize/prepare inputs and (optionally) generate `generated_model_inputs.xlsx` from `Model Inputs.xlsx`.
+
+### Typical workflow (no command line)
+1) Open `sim_config.py` and adjust settings:
+   - `in_xlsx`: path to your generated workbook (default: `generated_model_inputs.xlsx`).
+   - `product_class`: e.g., `"GP"` or `None` for all.
+   - `override_days`: force horizon if you don’t want to use the `Settings` sheet value.
+   - `write_csvs`, `open_folder_after`, `pause_on_finish`.
+   - `auto_generate=True`: if `in_xlsx` is missing, `run_sim.py` will generate it from `Model Inputs.xlsx`.
+2) Double‑click `run_sim.py` in Explorer.
+   - The runner loads the config, optionally generates `generated_model_inputs.xlsx`, builds the model, runs it, and prints a summary.
+   - If configured, it writes CSVs to `sim_outputs/` and opens that folder.
+
+### What the simulation reads
+- `Network` — topology of `Equipment@Location` nodes and process transitions (`Process`, `Input`, `Output`, `Next Location`, `Next Equipment`).
+- `Settings` — `Number of Simulation Runs`, `Modeling Horizon (#Days)`, `Time Buckets (Days, Half Days, Hours)`.
+- `Make` — per `(Location, Equipment Name, Input)` optional parameters such as `Mean Production Rate (Tons/hr)` and `Consumption %`.
+- `Store` — capacities and opening stocks (high/low averaged) per `(Location, Equipment Name, Input)`.
+- `Move` — fleet sizing and timing: `#Equipment (99-unlimited)`, `#Parcels`, `Capacity Per Parcel`, `Load Rate (Ton/hr)`, `Travel to Time (Min)`, `Unload Rate (Ton/Hr)`, `Travel back Time (Min)` for each `(Product Class, Location, Equipment Name, Next Location)`.
+- `Deliver` (or `Delivery`) — demand per location, e.g., `Demand per Location`.
+
+If some sheets/columns are missing, sensible defaults are applied (e.g., store capacity very large, opening stock 0, make rate 0, consumption 100%, zero move rates/times, demand 0).
+
+### Outputs you’ll see
+- Console report when the run finishes:
+  - Ending stock levels for each store (`PC | Location | Equipment | Input`).
+  - Unmet demand totals per `(PC, Location, Input)` if any.
+  - Route stats: trips completed and tons moved for each move lane.
+- Optional CSVs (if `write_csvs=True`) saved under `sim_outputs/`.
+
+### Advanced: run the builder directly (optional CLI)
+You can still run the builder head‑on if you prefer a terminal:
+```bash
+python sim_from_generated.py --xlsx "generated_model_inputs.xlsx" --product-class GP --days 60
+```
+If `--days` isn’t provided, the horizon comes from the `Settings` sheet. If `--product-class` is omitted, all product classes are included.
+
+### Generating the workbook
+If you only have `Model Inputs.xlsx`, you can create the normalized workbook using the runner with `auto_generate=True` (default) or manually via `supply_chain_viz`:
+```python
+from pathlib import Path
+from supply_chain_viz import prepare_inputs_generate
+prepare_inputs_generate(Path("Model Inputs.xlsx"), Path("generated_model_inputs.xlsx"))
+```
+This copies relevant sheets, unifies `Deliver`/`Delivery`, and ensures required rows/columns exist.
+
+### Requirements
+- See `requirements.txt` (typically includes `simpy`, `pandas`, `openpyxl`, and visualization extras for `supply_chain_viz.py`).
+- On Windows, double‑clicking `run_sim.py` works best when `.py` files are associated with your Python interpreter.
+
+### Troubleshooting (this flow)
+- `RuntimeError: simpy isn't installed` — activate your venv and `pip install -r requirements.txt`.
+- `FileNotFoundError: generated_model_inputs.xlsx` — leave `auto_generate=True` or run the generation step above.
+- Demand doesn’t draw — ensure `Deliver` has a `Demand per Location` column and the locations exist as `Store` nodes for the same product class/input.
+- Nothing moves — check `Move` sheet parameters (payload, load/unload rates, travel times). Zero rates/times result in no effective movement.
+
+### Roadmap
+Future enhancements may include maintenance calendars for `Make`, batching/queueing at loaders/unloaders, multi‑material transport, stochastic variability, and CSV metrics logging per time bucket.

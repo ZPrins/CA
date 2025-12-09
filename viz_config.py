@@ -28,6 +28,7 @@ class Config:
 
     # Data filter
     product_class: Optional[str] = None         # e.g., "GP" to filter. None = include all
+    pc_order: Optional[list[str]] = None        # Optional fixed order of product-class columns (e.g., ["GP","FA","SG","FC"])
 
     # Layout and behavior
     height: str = "90vh"                        # Canvas height, e.g., "800px" or "90vh"
@@ -37,8 +38,9 @@ class Config:
     simplify_move: bool = True                  # Hide long Move edges and render pitchfork annotations
 
     # Swimlane/grid spacing
-    grid_x_sep: int = 120                       # Horizontal distance between consecutive Levels
-    grid_y_sep: int = 320                       # Vertical distance between Locations (swimlanes) — doubled
+    grid_x_sep: int = 120                       # Horizontal distance between consecutive Levels (within a product-class panel)
+    grid_y_sep: int = 320                       # Vertical distance between Locations (swimlanes)
+    grid_pc_sep: int = 900                      # Extra horizontal separation between Product Class panels (matrix columns)
     cell_stack_sep: int = 140                   # Extra vertical separation when multiple nodes share the same lane+level
 
     # Pitchfork geometry
@@ -59,7 +61,7 @@ class Config:
 
   # Input preparation (Excel)
     # Ensure Settings, Make, Store, and Delivery sheets exist and are populated
-    prepare_inputs: bool = True
+    prepare_inputs: bool = False
 
     # Legend
     show_legend: bool = True

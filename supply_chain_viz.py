@@ -1,4 +1,4 @@
-"""
+r"""
 Supply Chain Visualizer and SimPy model scaffold
 
 This script reads an Excel or CSV describing an end-to-end supply chain using the
@@ -157,8 +157,16 @@ def read_table(path: Path, sheet: Optional[str | int] = None) -> pd.DataFrame:
     return df
 
 
-def node_id(location: str, equipment: str) -> str:
-    return f"{equipment}@{location}"
+def node_id(location: str, equipment: str, product_class: Optional[str] = None) -> str:
+    """Return a stable node identifier.
+
+    If a product_class is provided, include it in the node id so that
+    nodes for different product classes do not overlap/merge. This keeps
+    backward compatibility when product_class is omitted.
+    """
+    if product_class is None or str(product_class).strip() == "":
+        return f"{equipment}@{location}"
+    return f"{equipment}@{location}#{str(product_class).strip()}"
 
 
 def build_graph(df: pd.DataFrame, product_class: Optional[str] = None) -> nx.MultiDiGraph:
@@ -175,71 +183,74 @@ def build_graph(df: pd.DataFrame, product_class: Optional[str] = None) -> nx.Mul
 
     G = nx.MultiDiGraph()
 
-    # Compute swimlane order (one lane per Location), preferring locations that first appear
-    # at lower Levels (higher rank). Tie-break by first-appearance index in the Location column,
-    # then by first appearance anywhere (Location or Next Location).
+    # Compute row order by Location (independent of Product Class) so that all product classes
+    # for the same location share the same swimlane row in the matrix layout.
     df_idx = df.reset_index().rename(columns={"index": "_row_idx"})
     df_idx["location"] = df_idx["location"].astype(str).str.strip()
     df_idx["next_location"] = df_idx["next_location"].astype(str).str.strip()
-    # First-appearance in Location column
-    first_loc_idx: Dict[str, int] = {}
-    min_loc_level: Dict[str, int] = {}
+    df_idx["product_class"] = df_idx["product_class"].astype(str).str.strip()
+
+    # Track first appearance index and minimum level per Location
+    loc_first_idx: Dict[str, int] = {}
+    loc_min_level: Dict[str, int] = {}
+
     for i, r in df_idx.iterrows():
+        # Current row's source location
         loc = r["location"]
+        if loc and loc not in loc_first_idx:
+            loc_first_idx[loc] = int(r.get("_row_idx", i))
         try:
             lvl = int(r["level"]) if pd.notna(r["level"]) else 10**9
         except Exception:
             lvl = 10**9
-        if loc and loc not in first_loc_idx:
-            first_loc_idx[loc] = int(r["_row_idx"]) if "_row_idx" in r else i
-        if loc:
-            cur_min = min_loc_level.get(loc, 10**9)
-            if lvl < cur_min:
-                min_loc_level[loc] = lvl
-    # First appearance anywhere (Location or Next Location)
-    first_any_idx: Dict[str, int] = {}
-    for i, r in df_idx.iterrows():
-        for col in ("location", "next_location"):
-            loc = r[col]
-            if loc and loc not in first_any_idx:
-                first_any_idx[loc] = int(r["_row_idx"]) if "_row_idx" in r else i
-    # All locations observed
-    all_locs_raw = set([str(x).strip() for x in df_idx["location"].tolist()]) | set([str(x).strip() for x in df_idx["next_location"].tolist()])
-    all_locs = [loc for loc in all_locs_raw if loc]
-    def _rank_tuple(loc: str) -> tuple:
-        lvl = min_loc_level.get(loc, 10**9)
-        first_loc = first_loc_idx.get(loc, 10**9)
-        any_idx = first_any_idx.get(loc, 10**9)
-        return (lvl, first_loc, any_idx, loc)
-    ordered_locs = sorted(all_locs, key=_rank_tuple)
-    loc_to_rank: Dict[str, int] = {loc: i for i, loc in enumerate(ordered_locs)}
+        cur_min = loc_min_level.get(loc, 10**9)
+        if lvl < cur_min:
+            loc_min_level[loc] = lvl
+        # Next location also influences first appearance (ordering) even if level is unknown here
+        nloc = r["next_location"]
+        if nloc and nloc not in loc_first_idx:
+            loc_first_idx[nloc] = int(r.get("_row_idx", i))
+
+    # All locations observed across both columns
+    all_locs = set(str(x).strip() for x in df_idx["location"]) | set(str(x).strip() for x in df_idx["next_location"]) 
+    all_locs = [loc for loc in all_locs if loc]
+
+    def _loc_rank(loc: str) -> tuple:
+        return (loc_min_level.get(loc, 10**9), loc_first_idx.get(loc, 10**9), loc)
+
+    ordered_locations = sorted(all_locs, key=_loc_rank)
+    loc_to_row_index: Dict[str, int] = {loc: i for i, loc in enumerate(ordered_locations)}
 
     # Add nodes and infer levels for destinations
     for _, row in df.iterrows():
         src_level_val = int(row["level"]) if pd.notna(row["level"]) else 0
-        src_node = node_id(row["location"], row["equipment_name"]) if row["equipment_name"] else None
+        pc = str(row.get("product_class", "")).strip()
+        # Node id includes product class to avoid overlap; assign row index by Location
+        src_node = node_id(row["location"], row["equipment_name"], pc) if row["equipment_name"] else None
         if src_node:
             G.add_node(
                 src_node,
-                title=f"Location: {row['location']}<br>Equipment: {row['equipment_name']}",
+                title=f"Product Class: {pc}<br>Location: {row['location']}<br>Equipment: {row['equipment_name']}",
                 level=src_level_val,
-                location=row["location"],
+                product_class=pc,
+                location=str(row["location"]).strip(),
                 equipment=row["equipment_name"],
-                loc_index=loc_to_rank.get(str(row["location"]).strip(), 0),
+                loc_index=loc_to_row_index.get(str(row["location"]).strip(), 0),
             )
         # destination node might be blank (terminal)
         if str(row["next_location"]).strip() and str(row["next_equipment"]).strip():
-            dst_node = node_id(row["next_location"], row["next_equipment"])
+            dst_node = node_id(row["next_location"], row["next_equipment"], pc)
             # infer destination level from source (place to the right)
             dst_level = src_level_val + 1
             if dst_node not in G:
                 G.add_node(
                     dst_node,
-                    title=f"Location: {row['next_location']}<br>Equipment: {row['next_equipment']}",
-                    location=row["next_location"],
+                    title=f"Product Class: {pc}<br>Location: {row['next_location']}<br>Equipment: {row['next_equipment']}",
+                    product_class=pc,
+                    location=str(row["next_location"]).strip(),
                     equipment=row["next_equipment"],
                     level=dst_level,
-                    loc_index=loc_to_rank.get(str(row["next_location"]).strip(), 0),
+                    loc_index=loc_to_row_index.get(str(row["next_location"]).strip(), 0),
                 )
             else:
                 prev = G.nodes[dst_node].get("level")
@@ -260,7 +271,8 @@ def build_graph(df: pd.DataFrame, product_class: Optional[str] = None) -> nx.Mul
     dest_proc_counts: Dict[str, Dict[str, int]] = {}
 
     for _, row in df.iterrows():
-        src = node_id(row["location"], row["equipment_name"]) if row["equipment_name"] else None
+        pc_row = str(row.get("product_class", "")).strip()
+        src = node_id(row["location"], row["equipment_name"], pc_row) if row["equipment_name"] else None
         if not src or src not in G:
             continue
         next_loc = str(row["next_location"]).strip()
@@ -268,7 +280,7 @@ def build_graph(df: pd.DataFrame, product_class: Optional[str] = None) -> nx.Mul
         if not (next_loc and next_eq):
             # terminal step — no outgoing edge
             continue
-        dst = node_id(next_loc, next_eq)
+        dst = node_id(next_loc, next_eq, pc_row)
         label = f"{row['output']}"
         process_key = str(row["process"]).strip().lower()
         # Count primary process and output for the SOURCE node
@@ -345,6 +357,27 @@ def export_pyvis(G: nx.MultiDiGraph, out_html: Path, config) -> None:
 
     XSEP = int(getattr(config, 'grid_x_sep', 120))
     YSEP = int(getattr(config, 'grid_y_sep', 160))
+    PCSEP = int(getattr(config, 'grid_pc_sep', 560))
+
+    # Determine product-class columns present in the graph
+    pcs_present: list[str] = []
+    for _n, _d in G.nodes(data=True):
+        pcv = str(_d.get('product_class', '')).strip()
+        if pcv and pcv not in pcs_present:
+            pcs_present.append(pcv)
+    # Apply preferred order if provided in config; append any extras not listed
+    try:
+        pc_order_cfg = getattr(config, 'pc_order', None)
+    except Exception:
+        pc_order_cfg = None
+    if isinstance(pc_order_cfg, (list, tuple)):
+        pc_order = [str(x).strip() for x in pc_order_cfg if str(x).strip() in pcs_present]
+        for pc in pcs_present:
+            if pc not in pc_order:
+                pc_order.append(pc)
+    else:
+        pc_order = sorted(pcs_present)
+    pc_to_col: Dict[str, int] = {pc: i for i, pc in enumerate(pc_order)}
 
     if use_fixed_grid and not enable_physics:
         # Disable physics and hierarchical engine; we will pin nodes at grid coordinates.
@@ -352,15 +385,19 @@ def export_pyvis(G: nx.MultiDiGraph, out_html: Path, config) -> None:
         net.set_options(
             '{"interaction": {"navigationButtons": true, "keyboard": true, "zoomView": true, "dragView": true, "dragNodes": false, "multiselect": true}, "edges": {"smooth": false, "arrows": {"to": {"enabled": true, "scaleFactor": 0.7}}, "font": {"size": 10, "align": "middle", "vadjust": 0, "strokeWidth": 3, "strokeColor": "#ffffff", "background": "rgba(255,255,255,0.6)"}}, "nodes": {"font": {"size": 0}, "shapeProperties": {"useImageSize": true, "useBorderWithImage": false}, "scaling": {"min": 1, "max": 1}}}'
         )
-        # Pre-compute positions: rows by location index, columns by level (levels left->right within each location)
+        # Pre-compute positions: rows by Location (loc_index), columns by Product Class panel + Level within panel
         positions: Dict[str, Tuple[int, int]] = {}
         for n, d in G.nodes(data=True):
-            positions[n] = (int(d.get("level", 0)) * XSEP, int(d.get("loc_index", 0)) * YSEP)
-        # De-overlap and reduce crossings within each (location, level) cell using a barycentric heuristic
-        groups: Dict[Tuple[int, int], list[str]] = {}
+            pcv = str(d.get("product_class", "")).strip()
+            pc_col = pc_to_col.get(pcv, 0)
+            positions[n] = (pc_col * PCSEP + int(d.get("level", 0)) * XSEP, int(d.get("loc_index", 0)) * YSEP)
+        # De-overlap within each (location, product_class, level) cell using a barycentric heuristic
+        groups: Dict[Tuple[int, int, int], list[str]] = {}
         base_y_cache: Dict[str, int] = {}
         for n, d in G.nodes(data=True):
-            key = (int(d.get("loc_index", 0)), int(d.get("level", 0)))
+            pcv = str(d.get("product_class", "")).strip()
+            pc_col = pc_to_col.get(pcv, 0)
+            key = (int(d.get("loc_index", 0)), pc_col, int(d.get("level", 0)))
             groups.setdefault(key, []).append(n)
             base_y_cache[n] = int(d.get("loc_index", 0)) * YSEP
 
@@ -391,7 +428,7 @@ def export_pyvis(G: nx.MultiDiGraph, out_html: Path, config) -> None:
             return scores
         
         STAG = int(getattr(config, 'cell_stack_sep', 140))
-        for (loc_i, lvl), ns in groups.items():
+        for (loc_i, _pc_col, lvl), ns in groups.items():
             if len(ns) > 1:
                 scores = _avg_neighbor_y(ns, lvl)
                 ns_sorted = sorted(ns, key=lambda n: (scores.get(n, 0), n))
@@ -410,12 +447,16 @@ def export_pyvis(G: nx.MultiDiGraph, out_html: Path, config) -> None:
         positions: Dict[str, Tuple[int, int]] = {}
         if use_fixed_grid:
             for n, d in G.nodes(data=True):
-                positions[n] = (int(d.get("level", 0)) * XSEP, int(d.get("loc_index", 0)) * YSEP)
-            # Apply initial de-overlap within each (location, level) cell so nodes start spaced apart
-            groups: Dict[Tuple[int, int], list[str]] = {}
+                pcv = str(d.get("product_class", "")).strip()
+                pc_col = pc_to_col.get(pcv, 0)
+                positions[n] = (pc_col * PCSEP + int(d.get("level", 0)) * XSEP, int(d.get("loc_index", 0)) * YSEP)
+            # Apply initial de-overlap within each (location, product_class, level) cell so nodes start spaced apart
+            groups: Dict[Tuple[int, int, int], list[str]] = {}
             base_y_cache: Dict[str, int] = {}
             for n, d in G.nodes(data=True):
-                key = (int(d.get("loc_index", 0)), int(d.get("level", 0)))
+                pcv = str(d.get("product_class", "")).strip()
+                pc_col = pc_to_col.get(pcv, 0)
+                key = (int(d.get("loc_index", 0)), pc_col, int(d.get("level", 0)))
                 groups.setdefault(key, []).append(n)
                 base_y_cache[n] = int(d.get("loc_index", 0)) * YSEP
 
@@ -525,14 +566,14 @@ def export_pyvis(G: nx.MultiDiGraph, out_html: Path, config) -> None:
         net.add_edge(u, v, label=data.get("label", ""), title=data.get("title", ""), color=data.get("color"))
 
     # Helper to make a text sprite as an image node
-    def _add_text_sprite(node_id: str, text: str, x_center: int, y_center: int):
+    def _add_text_sprite(node_id: str, text: str, x_center: int, y_center: int, color_override: Optional[str] = None):
         try:
             import urllib.parse as _urlparse  # noqa
             def _esc(s: str) -> str:
                 return str(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
             font = int(getattr(config, 'move_label_font_size', 10))
             pad = int(getattr(config, 'move_label_pad', 6))
-            color = getattr(config, 'move_label_text_color', '#333333')
+            color = color_override if (color_override is not None) else getattr(config, 'move_label_text_color', '#333333')
             bg_on = bool(getattr(config, 'move_label_bg', True))
             bg_rgba = getattr(config, 'move_label_bg_rgba', 'rgba(255,255,255,0.85)')
             # rough width estimate: 0.6 * font px per char, plus padding
@@ -553,6 +594,370 @@ def export_pyvis(G: nx.MultiDiGraph, out_html: Path, config) -> None:
         except Exception:
             # Fallback: simple label node
             net.add_node(node_id, label=str(text), shape="box", physics=False, fixed=True, x=int(x_center), y=int(y_center))
+
+    # Add production rate labels under Make nodes (from Make sheet)
+    try:
+        _show_prod_rate = bool(getattr(config, 'show_prod_rate', True))
+    except Exception:
+        _show_prod_rate = True
+    if _show_prod_rate and ('positions' in locals()) and isinstance(positions, dict) and len(positions) > 0:
+        # Determine which workbook is in use (mirror main())
+        in_path = Path(getattr(config, 'in_path', 'Model Inputs.xlsx'))
+        gen_path = Path(getattr(config, 'generated_inputs_path', 'generated_model_inputs.xlsx'))
+        use_generated = bool(getattr(config, 'use_generated_inputs', True))
+        input_used = gen_path if (use_generated and gen_path.exists()) else in_path
+        # Read Make sheet
+        make_df = _read_sheet_df(input_used, 'Make')
+        rate_map: Dict[Tuple[str, str], str] = {}
+        if make_df is not None and not make_df.empty:
+            # Best-effort column resolution
+            cols_lower = {str(c).strip().lower(): c for c in make_df.columns}
+            loc_col = cols_lower.get('location', 'Location' if 'Location' in make_df.columns else None)
+            eq_col = cols_lower.get('equipment name', 'Equipment Name' if 'Equipment Name' in make_df.columns else None)
+            # Prefer exact header; fallback to fuzzy contains
+            rate_col = None
+            for c in make_df.columns:
+                if str(c).strip().lower() == 'mean production rate (tons/hr)':
+                    rate_col = c
+                    break
+            if rate_col is None:
+                for c in make_df.columns:
+                    lc = str(c).strip().lower()
+                    if ('mean' in lc) and ('production' in lc) and ('rate' in lc):
+                        rate_col = c
+                        break
+            if loc_col and eq_col and rate_col:
+                dfm = make_df[[loc_col, eq_col, rate_col]].copy()
+                dfm[loc_col] = dfm[loc_col].astype(str).fillna('').str.strip()
+                dfm[eq_col] = dfm[eq_col].astype(str).fillna('').str.strip()
+                # Build first non-empty value per (Location, Equipment)
+                for (locv, eqv), grp in dfm.groupby([loc_col, eq_col]):
+                    val = None
+                    for x in grp[rate_col]:
+                        if pd.isna(x):
+                            continue
+                        s = str(x).strip()
+                        if s == '':
+                            continue
+                        val = s
+                        break
+                    if val is not None:
+                        rate_map[(locv, eqv)] = val
+        red = getattr(config, 'prod_rate_text_color', '#d62728')
+        # Place label directly under the node's bottom edge by default (tight gap),
+        # but honor an explicit prod_rate_y_offset if provided for backward compatibility.
+        y_off_cfg = getattr(config, 'prod_rate_y_offset', None)
+        y_from_center: int
+        if y_off_cfg is not None:
+            try:
+                y_from_center = int(y_off_cfg)
+            except Exception:
+                # Fallback to dynamic placement if the provided value is invalid
+                NODE_IMG_H = 120  # must match the SVG node height defined above
+                gap = int(getattr(config, 'prod_rate_gap', 2))  # small gap in pixels
+                font = int(getattr(config, 'move_label_font_size', 10))
+                h = int(font + 6)
+                y_from_center = (NODE_IMG_H // 2) + gap + (h // 2)
+        else:
+            NODE_IMG_H = 120  # must match the SVG node height defined above
+            gap = int(getattr(config, 'prod_rate_gap', 2))  # small gap in pixels
+            font = int(getattr(config, 'move_label_font_size', 10))
+            h = int(font + 6)
+            y_from_center = (NODE_IMG_H // 2) + gap + (h // 2)
+        for n, d in G.nodes(data=True):
+            if str(d.get('primary_process_key', '')).lower() != 'make':
+                continue
+            if n not in positions:
+                continue
+            locv = str(d.get('location', '')).strip()
+            eqv = str(d.get('equipment', '')).strip()
+            rate_val = rate_map.get((locv, eqv))
+            if rate_val is None or str(rate_val).strip() == '':
+                txt = 'Prod Rate = ?? Ton/Hr'
+            else:
+                # Pretty print numeric if possible
+                try:
+                    num = float(str(rate_val).replace(',', ''))
+                    if abs(num - round(num)) < 1e-6:
+                        rate_str = f"{int(round(num))}"
+                    else:
+                        rate_str = f"{num:.2f}".rstrip('0').rstrip('.')
+                except Exception:
+                    rate_str = str(rate_val)
+                txt = f"Prod Rate = {rate_str} Ton/Hr"
+            x0, y0 = positions[n]
+            y_lbl = int(y0 + y_from_center)
+            sprite_id = f"{n}::prod_rate"
+            _add_text_sprite(sprite_id, txt, int(x0), y_lbl, color_override=red)
+
+    # Add storage capacity labels under Store nodes (from Store sheet)
+    try:
+        _show_store_cap = bool(getattr(config, 'show_store_capacity', True))
+    except Exception:
+        _show_store_cap = True
+    if _show_store_cap and ('positions' in locals()) and isinstance(positions, dict) and len(positions) > 0:
+        # Determine which workbook is in use (mirror main())
+        in_path = Path(getattr(config, 'in_path', 'Model Inputs.xlsx'))
+        gen_path = Path(getattr(config, 'generated_inputs_path', 'generated_model_inputs.xlsx'))
+        use_generated = bool(getattr(config, 'use_generated_inputs', True))
+        input_used = gen_path if (use_generated and gen_path.exists()) else in_path
+        # Read Store sheet
+        store_df = _read_sheet_df(input_used, 'Store')
+        cap_map: Dict[Tuple[str, str, str], str] = {}
+        if store_df is not None and not store_df.empty:
+            # Best-effort column resolution
+            cols_lower = {str(c).strip().lower(): c for c in store_df.columns}
+            loc_col = cols_lower.get('location', 'Location' if 'Location' in store_df.columns else None)
+            eq_col = cols_lower.get('equipment name', 'Equipment Name' if 'Equipment Name' in store_df.columns else None)
+            inp_col = cols_lower.get('input', 'Input' if 'Input' in store_df.columns else None)
+            # Prefer exact capacity header; fallback to fuzzy contains
+            cap_col = None
+            for c in store_df.columns:
+                if str(c).strip().lower() == 'silo max capacity':
+                    cap_col = c
+                    break
+            if cap_col is None:
+                for c in store_df.columns:
+                    lc = str(c).strip().lower()
+                    if 'capacity' in lc:
+                        cap_col = c
+                        break
+            if loc_col and eq_col and inp_col and cap_col:
+                dfs = store_df[[loc_col, eq_col, inp_col, cap_col]].copy()
+                dfs[loc_col] = dfs[loc_col].astype(str).fillna('').str.strip()
+                dfs[eq_col] = dfs[eq_col].astype(str).fillna('').str.strip()
+                dfs[inp_col] = dfs[inp_col].astype(str).fillna('').str.strip()
+                # Build first non-empty capacity value per (Location, Equipment, Input)
+                for (locv, eqv, inv), grp in dfs.groupby([loc_col, eq_col, inp_col]):
+                    val = None
+                    for x in grp[cap_col]:
+                        if pd.isna(x):
+                            continue
+                        s = str(x).strip()
+                        if s == '':
+                            continue
+                        val = s
+                        break
+                    if val is not None:
+                        cap_map[(str(locv).upper(), str(eqv).upper(), str(inv).upper())] = val
+        cap_color = getattr(config, 'store_capacity_text_color', '#d62728')
+        # Place label under node similar to Make labels; allow override via store_capacity_y_offset
+        y_off_store = getattr(config, 'store_capacity_y_offset', None)
+        if y_off_store is not None:
+            try:
+                y_from_center_store = int(y_off_store)
+            except Exception:
+                NODE_IMG_H = 120  # must match the SVG node height defined above
+                gap = int(getattr(config, 'prod_rate_gap', 2))  # small gap in pixels
+                font = int(getattr(config, 'move_label_font_size', 10))
+                h = int(font + 6)
+                y_from_center_store = (NODE_IMG_H // 2) + gap + (h // 2)
+        else:
+            NODE_IMG_H = 120  # must match the SVG node height defined above
+            gap = int(getattr(config, 'prod_rate_gap', 2))  # small gap in pixels
+            font = int(getattr(config, 'move_label_font_size', 10))
+            h = int(font + 6)
+            y_from_center_store = (NODE_IMG_H // 2) + gap + (h // 2)
+        for n, d in G.nodes(data=True):
+            if str(d.get('primary_process_key', '')).lower() != 'store':
+                continue
+            if n not in positions:
+                continue
+            locv = str(d.get('location', '')).strip().upper()
+            eqv = str(d.get('equipment', '')).strip().upper()
+            # Infer Input from OUTGOING edges of this Store node where process is 'Store'
+            inputs_found: list[str] = []
+            for _, dst, edata in G.out_edges(n, data=True):
+                if str(edata.get('process', '')).strip().lower() != 'store':
+                    continue
+                t = str(edata.get('title', ''))
+                inp_val = ''
+                try:
+                    idx = t.find('Input:')
+                    if idx >= 0:
+                        s = t[idx + len('Input:'):]
+                        s = s.replace('\r', '').replace('\n', '')
+                        end_br = s.find('<')
+                        if end_br >= 0:
+                            s = s[:end_br]
+                        inp_val = s.strip()
+                except Exception:
+                    inp_val = ''
+                if inp_val:
+                    inputs_found.append(inp_val.upper())
+            inp_key = None
+            if inputs_found:
+                try:
+                    from collections import Counter
+                    inp_key = Counter(inputs_found).most_common(1)[0][0]
+                except Exception:
+                    inp_key = inputs_found[0]
+            # Fallback: try node's primary_output if not found
+            if not inp_key:
+                po = str(d.get('primary_output', '')).strip()
+                if po:
+                    inp_key = po.upper()
+            cap_val = cap_map.get((locv, eqv, inp_key)) if inp_key else None
+            if cap_val is None or str(cap_val).strip() == '':
+                txt = 'Capacity = ?? kt'
+            else:
+                try:
+                    num = float(str(cap_val).replace(',', ''))  # capacity in tons
+                    kt = num / 1000.0
+                    kt_str = f"{kt:,.2f}".rstrip('0').rstrip('.')
+                    txt = f"Capacity = {kt_str} kt"
+                except Exception:
+                    txt = 'Capacity = ?? kt'
+            x0, y0 = positions[n]
+            y_lbl_store = int(y0 + y_from_center_store)
+            sprite_id_store = f"{n}::store_capacity"
+            _add_text_sprite(sprite_id_store, txt, int(x0), y_lbl_store, color_override=cap_color)
+
+    # Add annual demand labels to the RIGHT of Deliver nodes (from Deliver sheet)
+    try:
+        _show_demand = bool(getattr(config, 'show_demand', True))
+    except Exception:
+        _show_demand = True
+    if _show_demand and ('positions' in locals()) and isinstance(positions, dict) and len(positions) > 0:
+        # Determine which workbook is in use (mirror main())
+        in_path = Path(getattr(config, 'in_path', 'Model Inputs.xlsx'))
+        gen_path = Path(getattr(config, 'generated_inputs_path', 'generated_model_inputs.xlsx'))
+        use_generated = bool(getattr(config, 'use_generated_inputs', True))
+        input_used = gen_path if (use_generated and gen_path.exists()) else in_path
+        # Read Deliver sheet (fallback to 'Delivery' if needed)
+        deliver_df = _read_sheet_df(input_used, 'Deliver')
+        if deliver_df is None or deliver_df.empty:
+            deliver_df = _read_sheet_df(input_used, 'Delivery')
+        demand_map: Dict[Tuple[str, str], str] = {}
+        if deliver_df is not None and not deliver_df.empty:
+            # Best-effort column resolution
+            cols_lower = {str(c).strip().lower(): c for c in deliver_df.columns}
+            loc_col = cols_lower.get('location', 'Location' if 'Location' in deliver_df.columns else None)
+            inp_col = cols_lower.get('input', 'Input' if 'Input' in deliver_df.columns else None)
+            # Prefer exact header; fallback to fuzzy contains
+            dem_col = None
+            for c in deliver_df.columns:
+                if str(c).strip().lower() == 'demand per location':
+                    dem_col = c
+                    break
+            if dem_col is None:
+                for c in deliver_df.columns:
+                    lc = str(c).strip().lower()
+                    if ('demand' in lc) and ('location' in lc):
+                        dem_col = c
+                        break
+            if loc_col and inp_col and dem_col:
+                dfd = deliver_df[[loc_col, inp_col, dem_col]].copy()
+                dfd[loc_col] = dfd[loc_col].astype(str).fillna('').str.strip()
+                dfd[inp_col] = dfd[inp_col].astype(str).fillna('').str.strip()
+                # Build first non-empty value per (Location, Input)
+                for (locv, inv), grp in dfd.groupby([loc_col, inp_col]):
+                    val = None
+                    for x in grp[dem_col]:
+                        if pd.isna(x):
+                            continue
+                        s = str(x).strip()
+                        if s == '':
+                            continue
+                        val = s
+                        break
+                    if val is not None:
+                        demand_map[(str(locv).upper(), str(inv).upper())] = val
+        red_demand = getattr(config, 'demand_text_color', '#d62728')
+
+        # Geometry for right-side placement
+        NODE_IMG_W = 120  # keep in sync with node image size
+        GAP_X = int(getattr(config, 'demand_gap', 6))  # horizontal gap to node edge
+        # Optional fine-tuning: allow vertical nudge; default is vertically centered
+        y_off_cfg2 = getattr(config, 'demand_y_offset', 0)
+        try:
+            Y_NUDGE = int(y_off_cfg2) if y_off_cfg2 is not None else 0
+        except Exception:
+            Y_NUDGE = 0
+        # Optional explicit x offset from node center (overrides auto placement if provided)
+        x_off_cfg = getattr(config, 'demand_x_offset', None)
+
+        # Text width estimate needs to mirror _add_text_sprite's metrics
+        FONT = int(getattr(config, 'move_label_font_size', 10))
+        PAD = int(getattr(config, 'move_label_pad', 6))
+        def _estimate_w(txt: str) -> int:
+            return int(len(txt) * FONT * 0.6 + PAD * 2)
+
+        # Number formatting helpers: convert tons/year -> kilotons/year and format with thousands separator, trim decimals
+        HOURS_PER_YEAR = 364 * 24
+        def _format_kt(tons_per_year: float) -> str:
+            try:
+                kt = float(tons_per_year) / 1000.0
+            except Exception:
+                return '??'
+            # Two decimals with thousands separator, then trim trailing zeros and decimal point
+            s = f"{kt:,.2f}".rstrip('0').rstrip('.')
+            return s
+
+        for n, d in G.nodes(data=True):
+            if str(d.get('primary_process_key', '')).lower() != 'deliver':
+                continue
+            if n not in positions:
+                continue
+            locv = str(d.get('location', '')).strip()
+            # Infer Input from incoming Deliver edges
+            inputs_found: list[str] = []
+            for src, _, edata in G.in_edges(n, data=True):
+                t = str(edata.get('title', ''))
+                inp_val = ''
+                try:
+                    # Prefer 'Input:' marker; fallback to 'Output:' if not found
+                    for marker in ('Input:', 'Output:'):
+                        idx = t.find(marker)
+                        if idx >= 0:
+                            s = t[idx + len(marker):]
+                            s = s.replace('\r', '').replace('\n', '')
+                            end_br = s.find('<')
+                            if end_br >= 0:
+                                s = s[:end_br]
+                            inp_val = s.strip()
+                            if inp_val:
+                                break
+                except Exception:
+                    inp_val = ''
+                if inp_val:
+                    inputs_found.append(inp_val)
+            # choose most common input if multiple
+            inp = None
+            if inputs_found:
+                try:
+                    from collections import Counter
+                    inp = Counter([v.upper() for v in inputs_found]).most_common(1)[0][0]
+                except Exception:
+                    inp = inputs_found[0].upper()
+            # Lookup demand (Demand per Location in tons/hour)
+            demand_val = None
+            if inp:
+                demand_val = demand_map.get((locv.upper(), inp))
+            # Build label text and position to the RIGHT
+            if demand_val is None or str(demand_val).strip() == '':
+                core_txt = 'Demand = ?? kt'
+            else:
+                try:
+                    num = float(str(demand_val).replace(',', ''))
+                    annual_ton = num * HOURS_PER_YEAR
+                    core_txt = f"Demand = {_format_kt(annual_ton)} kt"
+                except Exception:
+                    core_txt = 'Demand = ?? kt'
+            x0, y0 = positions[n]
+            # Compute sprite center to the right of the node
+            w_est = _estimate_w(core_txt)
+            if x_off_cfg is not None:
+                try:
+                    x_from_center = int(x_off_cfg)
+                except Exception:
+                    x_from_center = (NODE_IMG_W // 2) + GAP_X + (w_est // 2)
+            else:
+                x_from_center = (NODE_IMG_W // 2) + GAP_X + (w_est // 2)
+            x_lbl = int(x0 + x_from_center)
+            y_lbl = int(y0 + Y_NUDGE)
+            sprite_id2 = f"{n}::annual_demand"
+            _add_text_sprite(sprite_id2, core_txt, x_lbl, y_lbl, color_override=red_demand)
 
     # Add pitchforks with label sprites so text starts at arrow tips
     if simplify_move and stub_capable:
@@ -704,14 +1109,15 @@ def build_simpy_model_from_dataframe(df: pd.DataFrame, product_class: Optional[s
     res_caps: Dict[str, int] = {}
 
     for _, r in df.iterrows():
-        src = node_id(r["location"], r["equipment_name"]) if r["equipment_name"] else None
+        pc_row = str(r.get("product_class", "")).strip()
+        src = node_id(r["location"], r["equipment_name"], pc_row) if r["equipment_name"] else None
         if not src:
             continue
         res_caps.setdefault(src, 1)  # default capacity 1; to be overridden from Excel later
         next_loc = str(r["next_location"]).strip()
         next_eq = str(r["next_equipment"]).strip()
         if next_loc and next_eq:
-            dst = node_id(next_loc, next_eq)
+            dst = node_id(next_loc, next_eq, pc_row)
             routes.setdefault(src, []).append(
                 (dst, {"process": r["process"], "input": r["input"], "output": r["output"]})
             )
@@ -739,7 +1145,8 @@ def build_simpy_model_from_dataframe(df: pd.DataFrame, product_class: Optional[s
 
         # Start a single demo entity at the first node (lowest level)
         start_row = df.sort_values("level").iloc[0]
-        start_node = node_id(start_row["location"], start_row["equipment_name"]) if start_row["equipment_name"] else list(resources.keys())[0]
+        pc_row = str(start_row.get("product_class", "")).strip()
+        start_node = node_id(start_row["location"], start_row["equipment_name"], pc_row) if start_row["equipment_name"] else list(resources.keys())[0]
         env.process(entity("demo", start_node))
         return env, resources, routes
 
@@ -752,6 +1159,7 @@ MAKE_REQUIRED_INPUT_COLS = [
     "Std Dev of Production Rate (Tons/Hr)",
     "Planned Maintenance Dates (Days of year)",
     "Unplanned downtime %",
+    "Consumption %",
 ]
 MAKE_KEY_COLS = ["Location", "Equipment Name", "Input"]
 MAKE_SHEET_COLS = MAKE_KEY_COLS + MAKE_REQUIRED_INPUT_COLS
@@ -770,6 +1178,19 @@ DELIVERY_REQUIRED_INPUT_COLS = [
 DELIVERY_KEY_COLS = ["Location", "Input"]
 DELIVERY_SHEET_COLS = DELIVERY_KEY_COLS + DELIVERY_REQUIRED_INPUT_COLS
 
+# MOVE sheet
+MOVE_REQUIRED_INPUT_COLS = [
+    "#Equipment (99-unlimited)",
+    "#Parcels",
+    "Capacity Per Parcel",
+    "Load Rate (Ton/hr)",
+    "Travel to Time (Min)",
+    "Unload Rate (Ton/Hr)",
+    "Travel back Time (Min)",
+]
+MOVE_KEY_COLS = ["Product Class", "Location", "Equipment Name", "Next Location"]
+MOVE_SHEET_COLS = MOVE_KEY_COLS + MOVE_REQUIRED_INPUT_COLS
+
 
 def _normalize_key_triplet(df_like: pd.DataFrame, loc_col: str, eq_col: str, in_col: str) -> pd.Series:
     def _norm(s: pd.Series) -> pd.Series:
@@ -781,6 +1202,12 @@ def _normalize_key_pair(df_like: pd.DataFrame, loc_col: str, in_col: str) -> pd.
     def _norm(s: pd.Series) -> pd.Series:
         return s.astype(str).fillna("").str.strip().str.upper()
     return _norm(df_like[loc_col]) + "|" + _norm(df_like[in_col])
+
+
+def _normalize_key_quad(df_like: pd.DataFrame, pc_col: str, loc_col: str, eq_col: str, next_loc_col: str) -> pd.Series:
+    def _norm(s: pd.Series) -> pd.Series:
+        return s.astype(str).fillna("").str.strip().str.upper()
+    return _norm(df_like[pc_col]) + "|" + _norm(df_like[loc_col]) + "|" + _norm(df_like[eq_col]) + "|" + _norm(df_like[next_loc_col])
 
 
 def _ensure_columns(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
@@ -916,6 +1343,7 @@ def ensure_make_sheet(xlsx_path: Path) -> dict:
         "Std Dev of Production Rate (Tons/Hr)": "",
         "Planned Maintenance Dates (Days of year)": "",
         "Unplanned downtime %": "",
+        "Consumption %": "",
     }
 
     added_count = 0
@@ -1011,6 +1439,97 @@ def ensure_store_sheet(xlsx_path: Path) -> dict:
     return {"rows_added": added_count}
 
 
+def ensure_move_sheet(xlsx_path: Path) -> dict:
+    """Ensure the 'Move' sheet exists and includes a row for every unique
+    (Product Class, Location, Equipment Name, Next Location) quad from the Network with Process=Move.
+
+    The following parameter fields are created and left blank for user input per route:
+      - #Equipment (99-unlimited)
+      - #Parcels
+      - Capacity Per Parcel
+      - Load Rate (Ton/hr)
+      - Travel to Time (Min)
+      - Unload Rate (Ton/Hr)
+      - Travel back Time (Min)
+    """
+    net = _read_network_df(xlsx_path)
+    if net.empty:
+        raise ValueError("Network sheet is empty or missing required columns.")
+
+    move_rows = net[net["process"].str.upper() == "MOVE"].copy()
+
+    if move_rows.empty:
+        existing = _read_sheet_df(xlsx_path, "Move")
+        if existing is None:
+            empty_df = pd.DataFrame(columns=MOVE_SHEET_COLS)
+            _write_sheet_df(xlsx_path, "Move", empty_df)
+        return {"rows_added": 0}
+
+    # Build unique key tuples
+    uniq = (
+        move_rows[["product_class", "location", "equipment_name", "next_location"]]
+        .fillna("")
+        .drop_duplicates()
+        .rename(
+            columns={
+                "product_class": "Product Class",
+                "location": "Location",
+                "equipment_name": "Equipment Name",
+                "next_location": "Next Location",
+            }
+        )
+        .reset_index(drop=True)
+    )
+
+    # If Product Class is entirely blank, we still allow the row, using empty string as the class.
+    uniq["KEY"] = _normalize_key_quad(uniq, "Product Class", "Location", "Equipment Name", "Next Location")
+
+    # Read current Move sheet
+    current = _read_sheet_df(xlsx_path, "Move")
+    if current is None or current.empty:
+        current = pd.DataFrame(columns=MOVE_SHEET_COLS)
+
+    current = _ensure_columns(current, MOVE_SHEET_COLS)
+
+    # Build existing key set from current
+    if not current.empty:
+        # Ensure type consistency
+        for c in ["Product Class", "Location", "Equipment Name", "Next Location"]:
+            current[c] = current[c].astype(str)
+        current_keys = _normalize_key_quad(current, "Product Class", "Location", "Equipment Name", "Next Location")
+        existing_key_set = set(current_keys.tolist())
+    else:
+        existing_key_set = set()
+
+    rows_to_add = uniq[~uniq["KEY"].isin(existing_key_set)].copy()
+
+    defaults = {name: "" for name in MOVE_REQUIRED_INPUT_COLS}
+
+    added_count = 0
+    if not rows_to_add.empty:
+        for _, r in rows_to_add.iterrows():
+            new_row = {
+                "Product Class": r["Product Class"],
+                "Location": r["Location"],
+                "Equipment Name": r["Equipment Name"],
+                "Next Location": r["Next Location"],
+            }
+            new_row.update(defaults)
+            current = pd.concat([current, pd.DataFrame([new_row])], ignore_index=True)
+            added_count += 1
+
+    # Order columns and sort for stability; enforce uniqueness on key cols
+    extra_cols = [c for c in current.columns if c not in MOVE_SHEET_COLS]
+    ordered_cols = MOVE_SHEET_COLS + extra_cols
+    sort_cols = ["Product Class", "Location", "Equipment Name", "Next Location"]
+
+    current = current.drop_duplicates(subset=sort_cols, keep="first")
+    current = current[ordered_cols].sort_values(sort_cols).reset_index(drop=True)
+
+    _write_sheet_df(xlsx_path, "Move", current)
+    return {"rows_added": added_count}
+
+
 def ensure_delivery_sheet(xlsx_path: Path) -> dict:
     """Ensure the 'Deliver' sheet exists and includes a row for every unique
     (Location, Input) pair from the Network with Process=Deliver.
@@ -1084,8 +1603,11 @@ def ensure_delivery_sheet(xlsx_path: Path) -> dict:
 
 
 def prepare_inputs_excel(xlsx_path: Path) -> dict:
-    """High-level entry to prepare Excel inputs: Settings, Make, Store, and Deliver sheets.
+    """High-level entry to prepare Excel inputs: Settings, Make, Store, Move, and Deliver sheets.
     Returns a combined summary.
+    NOTE: This function updates the provided workbook IN-PLACE. For the new
+    non-destructive workflow that writes to a separate file, use
+    `prepare_inputs_generate(src_xlsx, out_xlsx)`.
     """
     if not xlsx_path.exists():
         raise FileNotFoundError(xlsx_path)
@@ -1096,13 +1618,75 @@ def prepare_inputs_excel(xlsx_path: Path) -> dict:
     settings_summary = ensure_settings_sheet(xlsx_path)
     make_summary = ensure_make_sheet(xlsx_path)
     store_summary = ensure_store_sheet(xlsx_path)
+    move_summary = ensure_move_sheet(xlsx_path)
     delivery_summary = ensure_delivery_sheet(xlsx_path)
     
     return {
         "settings": settings_summary,
         "make": make_summary,
         "store": store_summary,
+        "move": move_summary,
         "deliver": delivery_summary 
+    }
+
+
+def prepare_inputs_generate(src_xlsx: Path, out_xlsx: Path) -> dict:
+    """Generate a new workbook from the source model inputs and normalize sheets.
+
+    Behavior:
+    - Reads the Network sheet from `src_xlsx` and writes it to `out_xlsx`.
+    - Copies existing Settings/Make/Store/Deliver (or Delivery) from source into
+      the generated file (sheet name unified as 'Deliver').
+    - Runs ensure_... functions on `out_xlsx` so required rows/columns exist.
+
+    Returns a summary dict, same structure as `prepare_inputs_excel`.
+    """
+    if not src_xlsx.exists():
+        raise FileNotFoundError(src_xlsx)
+    if src_xlsx.suffix.lower() not in {".xlsx", ".xlsm", ".xls"}:
+        raise ValueError("prepare_inputs requires an Excel source workbook (.xlsx/.xlsm/.xls)")
+    if openpyxl is None:
+        raise RuntimeError("openpyxl is required to write Excel files. Install with 'pip install openpyxl'.")
+
+    # 1) Read Network from source
+    try:
+        net_df = pd.read_excel(src_xlsx, sheet_name="Network")
+    except Exception as e:
+        raise RuntimeError(f"Failed to read 'Network' sheet from {src_xlsx}: {e}")
+
+    # 2) Collect optional sheets to copy over
+    copy_sheet_names = ["Settings", "Make", "Store", "Move", "Deliver", "Delivery"]
+    copied_dfs: dict[str, pd.DataFrame] = {}
+    for nm in copy_sheet_names:
+        df = _read_sheet_df(src_xlsx, nm)
+        if df is not None:
+            out_name = "Deliver" if nm.lower().startswith("deliver") else nm
+            copied_dfs[out_name] = df
+
+    # 3) Write initial generated workbook (overwrite if exists)
+    with pd.ExcelWriter(out_xlsx, engine="openpyxl", mode="w") as writer:
+        net_df.to_excel(writer, index=False, sheet_name="Network")
+        for nm, df in copied_dfs.items():
+            try:
+                df.to_excel(writer, index=False, sheet_name=nm)
+            except Exception:
+                # Best effort: skip problematic sheet copy
+                pass
+
+    # 4) Normalize/ensure sheets on the generated workbook
+    settings_summary = ensure_settings_sheet(out_xlsx)
+    make_summary = ensure_make_sheet(out_xlsx)
+    store_summary = ensure_store_sheet(out_xlsx)
+    move_summary = ensure_move_sheet(out_xlsx)
+    delivery_summary = ensure_delivery_sheet(out_xlsx)
+
+    return {
+        "generated_path": str(out_xlsx),
+        "settings": settings_summary,
+        "make": make_summary,
+        "store": store_summary,
+        "move": move_summary,
+        "deliver": delivery_summary,
     }
 
 # ------------------------ CLI ----------------------------------------------
@@ -1210,6 +1794,8 @@ def _load_config(config_path: Optional[str | Path] = None):
                 "@dataclass\n"
                 "class Config:\n"
                 "    in_path: str = 'Model Inputs.xlsx'\n"
+                "    generated_inputs_path: str = 'generated_model_inputs.xlsx'\n"
+                "    use_generated_inputs: bool = True\n"
                 "    sheet: str | int | None = None\n"
                 "    out_html: str = 'my_supply_chain.html'\n"
                 "    open_after: bool = True\n"
@@ -1262,16 +1848,20 @@ def main(argv=None) -> int:
 
     in_path = Path(getattr(config, 'in_path', 'Model Inputs.xlsx'))
     out_html = Path(getattr(config, 'out_html', 'my_supply_chain.html'))
+    gen_path = Path(getattr(config, 'generated_inputs_path', 'generated_model_inputs.xlsx'))
+    use_generated = bool(getattr(config, 'use_generated_inputs', True))
 
-    # Optional: prepare inputs and exit
+    # Optional: prepare inputs and exit (non-destructive; writes a new workbook)
     if bool(getattr(config, 'prepare_inputs', False)):
         try:
-            summary = prepare_inputs_excel(in_path)
-            print("Input preparation completed:")
+            summary = prepare_inputs_generate(in_path, gen_path)
+            print("Generated model inputs created:")
+            print(f"  File: {Path(summary['generated_path']).resolve()}")
             print(f"  Settings: added={summary['settings'].get('added', 0)}, updated={summary['settings'].get('updated', 0)}")
             print(f"  Make: rows_added={summary['make'].get('rows_added', 0)}")
             print(f"  Store: rows_added={summary['store'].get('rows_added', 0)}")
-            print(f"  Delivery: rows_added={summary['delivery'].get('rows_added', 0)}")
+            print(f"  Move: rows_added={summary['move'].get('rows_added', 0)}")
+            print(f"  Deliver: rows_added={summary['deliver'].get('rows_added', 0)}")
         except Exception as e:
             print(f"Input preparation failed: {e}")
             return 1
@@ -1279,8 +1869,19 @@ def main(argv=None) -> int:
         print("prepare_inputs=True was set in config; exiting after preparation.")
         return 0
 
+    # Choose input for visualization
+    input_used = in_path
+    if use_generated and gen_path.exists():
+        input_used = gen_path
+        print(f"Using generated inputs workbook: {input_used.resolve()}")
+    else:
+        if use_generated:
+            print(f"Generated inputs file not found at {gen_path.resolve()}; falling back to source: {in_path.resolve()}")
+        else:
+            print(f"Using source inputs workbook: {in_path.resolve()}")
+
     # Build graph
-    df = read_table(in_path, sheet=getattr(config, 'sheet', None))
+    df = read_table(input_used, sheet=getattr(config, 'sheet', None))
     G = build_graph(df, product_class=getattr(config, 'product_class', None))
     try:
         n_nodes = G.number_of_nodes()

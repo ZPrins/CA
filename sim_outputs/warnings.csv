@@ -1,0 +1,2 @@
+type,message,product_class,location,equipment,input,orig_capacity,orig_opening
+store_opening_clamped,Opening stock exceeded capacity; clamped to capacity,SG,Bulwer Island,SG_STORE,SG,10000.0,30000.0
