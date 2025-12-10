@@ -181,7 +181,7 @@ This repository now includes a SimPy model that builds itself from a normalized 
 ### What’s included
 - `sim_from_generated.py` — builds a SimPy model from a generated workbook (sheets: `Network`, `Settings`, `Make`, `Store`, `Move`, `Deliver`/`Delivery`).
 - `sim_config.py` — a simple `Config` dataclass where you set your input file and options.
-- `run_sim.py` — a runner that reads `sim_config.Config` and executes the simulation; friendly to double‑click on Windows.
+- `sim_run.py` — a runner that reads `sim_config.Config` and executes the simulation; friendly to double‑click on Windows.
 - `supply_chain_viz.py` — utilities to normalize/prepare inputs and (optionally) generate `generated_model_inputs.xlsx` from `Model Inputs.xlsx`.
 
 ### Typical workflow (no command line)
@@ -190,8 +190,8 @@ This repository now includes a SimPy model that builds itself from a normalized 
    - `product_class`: e.g., `"GP"` or `None` for all.
    - `override_days`: force horizon if you don’t want to use the `Settings` sheet value.
    - `write_csvs`, `open_folder_after`, `pause_on_finish`.
-   - `auto_generate=True`: if `in_xlsx` is missing, `run_sim.py` will generate it from `Model Inputs.xlsx`.
-2) Double‑click `run_sim.py` in Explorer.
+   - `auto_generate=True`: if `in_xlsx` is missing, `sim_run.py` will generate it from `Model Inputs.xlsx`.
+2) Double‑click `sim_run.py` in Explorer.
    - The runner loads the config, optionally generates `generated_model_inputs.xlsx`, builds the model, runs it, and prints a summary.
    - If configured, it writes CSVs to `sim_outputs/` and opens that folder.
 
@@ -230,7 +230,7 @@ This copies relevant sheets, unifies `Deliver`/`Delivery`, and ensures required 
 
 ### Requirements
 - See `requirements.txt` (typically includes `simpy`, `pandas`, `openpyxl`, and visualization extras for `supply_chain_viz.py`).
-- On Windows, double‑clicking `run_sim.py` works best when `.py` files are associated with your Python interpreter.
+- On Windows, double‑clicking `sim_run.py` works best when `.py` files are associated with your Python interpreter.
 
 ### Troubleshooting (this flow)
 - `RuntimeError: simpy isn't installed` — activate your venv and `pip install -r requirements.txt`.

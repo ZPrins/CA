@@ -157,16 +157,24 @@ def read_table(path: Path, sheet: Optional[str | int] = None) -> pd.DataFrame:
     return df
 
 
-def node_id(location: str, equipment: str, product_class: Optional[str] = None) -> str:
-    """Return a stable node identifier.
+def node_id(location: str, equipment: str, product_class: Optional[str] = None, material: Optional[str] = None) -> str:
+    """Return a stable node identifier including optional product class and material.
 
-    If a product_class is provided, include it in the node id so that
-    nodes for different product classes do not overlap/merge. This keeps
-    backward compatibility when product_class is omitted.
+    Composition rules (backward compatible):
+    - Base: "Equipment@Location"
+    - If product_class provided and non-empty: append "#<product_class>"
+    - If material (input/output) provided and non-empty: append "|<material>"
+    This ensures nodes for different product classes and materials do not merge.
     """
-    if product_class is None or str(product_class).strip() == "":
-        return f"{equipment}@{location}"
-    return f"{equipment}@{location}#{str(product_class).strip()}"
+    base = f"{equipment}@{location}"
+    suffix = ""
+    pc = None if product_class is None else str(product_class).strip()
+    mat = None if material is None else str(material).strip()
+    if pc:
+        suffix += f"#{pc}"
+    if mat:
+        suffix += f"|{mat}"
+    return base + suffix
 
 
 def build_graph(df: pd.DataFrame, product_class: Optional[str] = None) -> nx.MultiDiGraph:
@@ -225,8 +233,8 @@ def build_graph(df: pd.DataFrame, product_class: Optional[str] = None) -> nx.Mul
     for _, row in df.iterrows():
         src_level_val = int(row["level"]) if pd.notna(row["level"]) else 0
         pc = str(row.get("product_class", "")).strip()
-        # Node id includes product class to avoid overlap; assign row index by Location
-        src_node = node_id(row["location"], row["equipment_name"], pc) if row["equipment_name"] else None
+        # Node id includes product class and material (input) to avoid overlap; assign row index by Location
+        src_node = node_id(row["location"], row["equipment_name"], pc, str(row.get("input", "")).strip()) if row["equipment_name"] else None
         if src_node:
             G.add_node(
                 src_node,
@@ -235,11 +243,12 @@ def build_graph(df: pd.DataFrame, product_class: Optional[str] = None) -> nx.Mul
                 product_class=pc,
                 location=str(row["location"]).strip(),
                 equipment=row["equipment_name"],
+                material=str(row.get("input", "")).strip(),
                 loc_index=loc_to_row_index.get(str(row["location"]).strip(), 0),
             )
         # destination node might be blank (terminal)
         if str(row["next_location"]).strip() and str(row["next_equipment"]).strip():
-            dst_node = node_id(row["next_location"], row["next_equipment"], pc)
+            dst_node = node_id(row["next_location"], row["next_equipment"], pc, str(row.get("output", "")).strip())
             # infer destination level from source (place to the right)
             dst_level = src_level_val + 1
             if dst_node not in G:
@@ -249,6 +258,7 @@ def build_graph(df: pd.DataFrame, product_class: Optional[str] = None) -> nx.Mul
                     product_class=pc,
                     location=str(row["next_location"]).strip(),
                     equipment=row["next_equipment"],
+                    material=str(row.get("output", "")).strip(),
                     level=dst_level,
                     loc_index=loc_to_row_index.get(str(row["next_location"]).strip(), 0),
                 )
@@ -272,7 +282,7 @@ def build_graph(df: pd.DataFrame, product_class: Optional[str] = None) -> nx.Mul
 
     for _, row in df.iterrows():
         pc_row = str(row.get("product_class", "")).strip()
-        src = node_id(row["location"], row["equipment_name"], pc_row) if row["equipment_name"] else None
+        src = node_id(row["location"], row["equipment_name"], pc_row, str(row.get("input", "")).strip()) if row["equipment_name"] else None
         if not src or src not in G:
             continue
         next_loc = str(row["next_location"]).strip()
@@ -280,7 +290,7 @@ def build_graph(df: pd.DataFrame, product_class: Optional[str] = None) -> nx.Mul
         if not (next_loc and next_eq):
             # terminal step — no outgoing edge
             continue
-        dst = node_id(next_loc, next_eq, pc_row)
+        dst = node_id(next_loc, next_eq, pc_row, str(row.get("output", "")).strip())
         label = f"{row['output']}"
         process_key = str(row["process"]).strip().lower()
         # Count primary process and output for the SOURCE node
@@ -1110,14 +1120,14 @@ def build_simpy_model_from_dataframe(df: pd.DataFrame, product_class: Optional[s
 
     for _, r in df.iterrows():
         pc_row = str(r.get("product_class", "")).strip()
-        src = node_id(r["location"], r["equipment_name"], pc_row) if r["equipment_name"] else None
+        src = node_id(r["location"], r["equipment_name"], pc_row, str(r.get("input", "")).strip()) if r["equipment_name"] else None
         if not src:
             continue
         res_caps.setdefault(src, 1)  # default capacity 1; to be overridden from Excel later
         next_loc = str(r["next_location"]).strip()
         next_eq = str(r["next_equipment"]).strip()
         if next_loc and next_eq:
-            dst = node_id(next_loc, next_eq, pc_row)
+            dst = node_id(next_loc, next_eq, pc_row, str(r.get("output", "")).strip())
             routes.setdefault(src, []).append(
                 (dst, {"process": r["process"], "input": r["input"], "output": r["output"]})
             )
@@ -1146,7 +1156,7 @@ def build_simpy_model_from_dataframe(df: pd.DataFrame, product_class: Optional[s
         # Start a single demo entity at the first node (lowest level)
         start_row = df.sort_values("level").iloc[0]
         pc_row = str(start_row.get("product_class", "")).strip()
-        start_node = node_id(start_row["location"], start_row["equipment_name"], pc_row) if start_row["equipment_name"] else list(resources.keys())[0]
+        start_node = node_id(start_row["location"], start_row["equipment_name"], pc_row, str(start_row.get("input", "")).strip()) if start_row["equipment_name"] else list(resources.keys())[0]
         env.process(entity("demo", start_node))
         return env, resources, routes
 
@@ -1161,8 +1171,8 @@ MAKE_REQUIRED_INPUT_COLS = [
     "Unplanned downtime %",
     "Consumption %",
 ]
-MAKE_KEY_COLS = ["Location", "Equipment Name", "Input"]
-MAKE_SHEET_COLS = MAKE_KEY_COLS + MAKE_REQUIRED_INPUT_COLS
+MAKE_KEY_COLS = ["Location", "Equipment Name", "Output"]
+MAKE_SHEET_COLS = ["Location", "Equipment Name", "Input", "Output"] + MAKE_REQUIRED_INPUT_COLS
 
 STORE_REQUIRED_INPUT_COLS = [
     "Silo Max Capacity",
@@ -1188,8 +1198,16 @@ MOVE_REQUIRED_INPUT_COLS = [
     "Unload Rate (Ton/Hr)",
     "Travel back Time (Min)",
 ]
-MOVE_KEY_COLS = ["Product Class", "Location", "Equipment Name", "Next Location"]
+MOVE_KEY_COLS = ["Product", "Location", "Equipment Name", "Next Location"]
 MOVE_SHEET_COLS = MOVE_KEY_COLS + MOVE_REQUIRED_INPUT_COLS
+
+# BERTHS sheet
+BERTHS_REQUIRED_INPUT_COLS = [
+    "# Berths",
+    "Probability Berth Occupied (%)",
+]
+BERTHS_KEY_COLS = ["Berth"]
+BERTHS_SHEET_COLS = BERTHS_KEY_COLS + BERTHS_REQUIRED_INPUT_COLS
 
 
 def _normalize_key_triplet(df_like: pd.DataFrame, loc_col: str, eq_col: str, in_col: str) -> pd.Series:
@@ -1241,6 +1259,20 @@ def _write_sheet_df(xlsx_path: Path, sheet_name: str, df: pd.DataFrame) -> None:
         df.to_excel(writer, index=False, sheet_name=sheet_name)
 
 
+# --- Action logging for generated workbook ---
+ACTION_LOG: list[dict] = []
+
+def _log_action(action: str, details: str = "") -> None:
+    """Append an action entry with timestamp to the in-memory action log.
+    The log is later written to the generated workbook as a 'Log' sheet.
+    """
+    try:
+        ts = pd.Timestamp.now(tz=None)
+    except Exception:
+        ts = pd.Timestamp.utcnow()
+    ACTION_LOG.append({"Timestamp": ts, "Action": action, "Details": details})
+
+
 def ensure_settings_sheet(xlsx_path: Path) -> dict:
     """Create or update the 'Settings' sheet with required settings.
     Returns a summary dict with counts of added/updated keys.
@@ -1286,13 +1318,16 @@ def ensure_settings_sheet(xlsx_path: Path) -> dict:
                 current = pd.concat([current, pd.DataFrame([[k, v]], columns=["Setting", "Value"])], ignore_index=True)
                 added += 1
         _write_sheet_df(xlsx_path, "Settings", current)
-    return {"added": added, "updated": updated}
+    summary = {"added": added, "updated": updated}
+    _log_action("ensure_settings_sheet", f"added={added}, updated={updated}")
+    return summary
 
 
 def ensure_make_sheet(xlsx_path: Path) -> dict:
     """Ensure the 'Make' sheet exists and includes a row for every unique
-    (Location, Equipment Name, Input) triplet from the Network with Process=Make.
-    Returns a summary dict with counts of rows added and fields filled.
+    (Location, Equipment Name, Output) triplet from the Network with Process=Make.
+    Output is taken from the Network sheet's Output column for Make processes.
+    Returns a summary dict with counts of rows added.
     """
     # Read Network
     net = _read_network_df(xlsx_path)
@@ -1305,39 +1340,48 @@ def ensure_make_sheet(xlsx_path: Path) -> dict:
         if existing is None:
             empty_df = pd.DataFrame(columns=MAKE_SHEET_COLS)
             _write_sheet_df(xlsx_path, "Make", empty_df)
-        return {"rows_added": 0, "fields_filled": 0}
+        return {"rows_added": 0}
 
+    # Build unique rows using Network Input and Output; key by Output
     uniq = (
-        make_rows[["location", "equipment_name", "input"]]
+        make_rows[["location", "equipment_name", "input", "output"]]
         .fillna("")
         .drop_duplicates()
-        .rename(columns={"location": "Location", "equipment_name": "Equipment Name", "input": "Input"})
+        .rename(columns={"location": "Location", "equipment_name": "Equipment Name", "input": "Input", "output": "Output"})
         .reset_index(drop=True)
     )
-    # FILTER: Remove rows where Input is empty/nan
-    uniq = uniq[uniq["Input"].str.strip() != ""]
+    # FILTER: Remove rows where Output is empty/nan
+    uniq = uniq[uniq["Output"].astype(str).str.strip() != ""]
 
-    uniq["KEY"] = _normalize_key_triplet(uniq, "Location", "Equipment Name", "Input")
+    uniq["KEY"] = _normalize_key_triplet(uniq, "Location", "Equipment Name", "Output")
 
     # Read existing Make sheet (if any)
     current = _read_sheet_df(xlsx_path, "Make")
     if current is None or current.empty:
         current = pd.DataFrame(columns=MAKE_SHEET_COLS)
-    
+
+    # Backward compatibility:
+    # - If 'Output' is missing but legacy 'Product' exists, copy Product → Output
+    if "Output" not in current.columns and "Product" in current.columns:
+        try:
+            current["Output"] = current["Product"]
+        except Exception:
+            current = current.assign(Output=current.get("Product", pd.NA))
+
     current = _ensure_columns(current, MAKE_SHEET_COLS)
-    
+
     if not current.empty:
         current["Location"] = current["Location"].astype(str)
         current["Equipment Name"] = current["Equipment Name"].astype(str)
-        current["Input"] = current["Input"].astype(str)
-        current_keys = _normalize_key_triplet(current, "Location", "Equipment Name", "Input")
+        current["Output"] = current["Output"].astype(str)
+        current_keys = _normalize_key_triplet(current, "Location", "Equipment Name", "Output")
         existing_key_set = set(current_keys.tolist())
     else:
         existing_key_set = set()
 
     rows_to_add = uniq[~uniq["KEY"].isin(existing_key_set)].copy()
 
-    # Defaults - now using empty strings instead of 0.0
+    # Defaults - use empty strings as placeholders
     defaults = {
         "Mean Production Rate (Tons/hr)": "",
         "Std Dev of Production Rate (Tons/Hr)": "",
@@ -1350,25 +1394,36 @@ def ensure_make_sheet(xlsx_path: Path) -> dict:
     if not rows_to_add.empty:
         # Create new rows with defaults
         for _, r in rows_to_add.iterrows():
-            new_row = {"Location": r["Location"], "Equipment Name": r["Equipment Name"], "Input": r["Input"]}
+            new_row = {
+                "Location": r["Location"],
+                "Equipment Name": r["Equipment Name"],
+                "Input": r.get("Input", ""),
+                "Output": r.get("Output", ""),
+            }
             new_row.update(defaults)
             current = pd.concat([current, pd.DataFrame([new_row])], ignore_index=True)
             added_count += 1
-    
-    # Order columns
-    extra_cols = [c for c in current.columns if c not in MAKE_SHEET_COLS]
+
+    # Order and sort columns
+    # Drop legacy 'Product' column if present (remove duplication)
+    if "Product" in current.columns:
+        try:
+            current = current.drop(columns=["Product"])  # do not keep legacy column
+        except Exception:
+            pass
+    extra_cols = [c for c in current.columns if c not in MAKE_SHEET_COLS and c != "Product"]
     ordered_cols = MAKE_SHEET_COLS + extra_cols
-    sort_cols = ["Location", "Equipment Name", "Input"]
-    
-    # --- FIX: STRICT DEDUPLICATION ---
-    # Enforce uniqueness on the key columns before writing. 
-    # This cleans up any existing duplicates and ensures new rows didn't create conflicts.
+    sort_cols = ["Location", "Equipment Name", "Output"]
+
+    # Enforce uniqueness on the key columns before writing
     current = current.drop_duplicates(subset=sort_cols, keep="first")
-    
+
     current = current[ordered_cols].sort_values(sort_cols).reset_index(drop=True)
 
     _write_sheet_df(xlsx_path, "Make", current)
-    return {"rows_added": added_count}
+    summary = {"rows_added": added_count}
+    _log_action("ensure_make_sheet", f"rows_added={added_count}")
+    return summary
 
 
 def ensure_store_sheet(xlsx_path: Path) -> dict:
@@ -1436,12 +1491,14 @@ def ensure_store_sheet(xlsx_path: Path) -> dict:
     current = current[ordered_cols].sort_values(sort_cols).reset_index(drop=True)
 
     _write_sheet_df(xlsx_path, "Store", current)
-    return {"rows_added": added_count}
+    summary = {"rows_added": added_count}
+    _log_action("ensure_store_sheet", f"rows_added={added_count}")
+    return summary
 
 
 def ensure_move_sheet(xlsx_path: Path) -> dict:
     """Ensure the 'Move' sheet exists and includes a row for every unique
-    (Product Class, Location, Equipment Name, Next Location) quad from the Network with Process=Move.
+    (Product, Location, Equipment Name, Next Location) quad from the Network with Process=Move.
 
     The following parameter fields are created and left blank for user input per route:
       - #Equipment (99-unlimited)
@@ -1465,14 +1522,14 @@ def ensure_move_sheet(xlsx_path: Path) -> dict:
             _write_sheet_df(xlsx_path, "Move", empty_df)
         return {"rows_added": 0}
 
-    # Build unique key tuples
+    # Build unique key tuples using the Output material from the Network as 'Product'
     uniq = (
-        move_rows[["product_class", "location", "equipment_name", "next_location"]]
+        move_rows[["output", "location", "equipment_name", "next_location"]]
         .fillna("")
         .drop_duplicates()
         .rename(
             columns={
-                "product_class": "Product Class",
+                "output": "Product",
                 "location": "Location",
                 "equipment_name": "Equipment Name",
                 "next_location": "Next Location",
@@ -1481,8 +1538,8 @@ def ensure_move_sheet(xlsx_path: Path) -> dict:
         .reset_index(drop=True)
     )
 
-    # If Product Class is entirely blank, we still allow the row, using empty string as the class.
-    uniq["KEY"] = _normalize_key_quad(uniq, "Product Class", "Location", "Equipment Name", "Next Location")
+    # If Product is entirely blank, we still allow the row, using empty string.
+    uniq["KEY"] = _normalize_key_quad(uniq, "Product", "Location", "Equipment Name", "Next Location")
 
     # Read current Move sheet
     current = _read_sheet_df(xlsx_path, "Move")
@@ -1494,9 +1551,9 @@ def ensure_move_sheet(xlsx_path: Path) -> dict:
     # Build existing key set from current
     if not current.empty:
         # Ensure type consistency
-        for c in ["Product Class", "Location", "Equipment Name", "Next Location"]:
+        for c in ["Product", "Location", "Equipment Name", "Next Location"]:
             current[c] = current[c].astype(str)
-        current_keys = _normalize_key_quad(current, "Product Class", "Location", "Equipment Name", "Next Location")
+        current_keys = _normalize_key_quad(current, "Product", "Location", "Equipment Name", "Next Location")
         existing_key_set = set(current_keys.tolist())
     else:
         existing_key_set = set()
@@ -1509,7 +1566,7 @@ def ensure_move_sheet(xlsx_path: Path) -> dict:
     if not rows_to_add.empty:
         for _, r in rows_to_add.iterrows():
             new_row = {
-                "Product Class": r["Product Class"],
+                "Product": r["Product"],
                 "Location": r["Location"],
                 "Equipment Name": r["Equipment Name"],
                 "Next Location": r["Next Location"],
@@ -1521,13 +1578,15 @@ def ensure_move_sheet(xlsx_path: Path) -> dict:
     # Order columns and sort for stability; enforce uniqueness on key cols
     extra_cols = [c for c in current.columns if c not in MOVE_SHEET_COLS]
     ordered_cols = MOVE_SHEET_COLS + extra_cols
-    sort_cols = ["Product Class", "Location", "Equipment Name", "Next Location"]
+    sort_cols = ["Product", "Location", "Equipment Name", "Next Location"]
 
     current = current.drop_duplicates(subset=sort_cols, keep="first")
     current = current[ordered_cols].sort_values(sort_cols).reset_index(drop=True)
 
     _write_sheet_df(xlsx_path, "Move", current)
-    return {"rows_added": added_count}
+    summary = {"rows_added": added_count}
+    _log_action("ensure_move_sheet", f"rows_added={added_count}")
+    return summary
 
 
 def ensure_delivery_sheet(xlsx_path: Path) -> dict:
@@ -1547,6 +1606,7 @@ def ensure_delivery_sheet(xlsx_path: Path) -> dict:
         if existing is None:
             empty_df = pd.DataFrame(columns=DELIVERY_SHEET_COLS)
             _write_sheet_df(xlsx_path, SHEET_NAME, empty_df)
+        _log_action("ensure_delivery_sheet", "rows_added=0 (no deliver rows in Network)")
         return {"rows_added": 0}
 
     uniq = (
@@ -1599,11 +1659,104 @@ def ensure_delivery_sheet(xlsx_path: Path) -> dict:
     current = current[ordered_cols].sort_values(sort_cols).reset_index(drop=True)
 
     _write_sheet_df(xlsx_path, SHEET_NAME, current)
-    return {"rows_added": added_count}
+    summary = {"rows_added": added_count}
+    _log_action("ensure_delivery_sheet", f"rows_added={added_count}")
+    return summary
+
+
+def ensure_berths_sheet(xlsx_path: Path) -> dict:
+    """Ensure the 'Berths' sheet exists and includes a row for every unique
+    berth Location inferred from the Network using ship movement rules.
+
+    Rules for inferring a Berth name (string):
+      - If Process=Store AND Next Process=Move AND Next Equipment=SHIP, then Berth := Location
+      - If Process=Move AND Equipment Name=SHIP, then Berth := Next Location
+
+    Only non-empty berth names are considered. Existing rows are preserved and
+    only new berth names are appended, with required fields left blank for user input.
+    """
+    net = _read_network_df(xlsx_path)
+    if net.empty:
+        _log_action("ensure_berths_sheet", "rows_added=0 (empty Network)")
+        raise ValueError("Network sheet is empty or missing required columns.")
+
+    # Normalize strings used in conditions
+    def _u(s: pd.Series) -> pd.Series:
+        return s.astype(str).fillna("").str.strip().str.upper()
+
+    # Case A: Store -> Next Move by SHIP => current Location is a Berth
+    case_a = net[
+        (_u(net["process"]) == "STORE")
+        & (_u(net["next_process"]) == "MOVE")
+        & (_u(net["next_equipment"]) == "SHIP")
+    ]
+    berths_a = case_a["location"].astype(str).fillna("").str.strip()
+
+    # Case B: Move by SHIP => Next Location is a Berth
+    case_b = net[
+        (_u(net["process"]) == "MOVE")
+        & (_u(net["equipment_name"]) == "SHIP")
+    ]
+    berths_b = case_b["next_location"].astype(str).fillna("").str.strip()
+
+    berth_names = pd.Series(pd.concat([berths_a, berths_b], ignore_index=True)).replace({"nan": ""})
+    berth_names = berth_names[berth_names != ""]
+    berth_names = berth_names.drop_duplicates().sort_values().reset_index(drop=True)
+
+    # Build the unique df for candidate rows
+    uniq = pd.DataFrame({"Berth": berth_names})
+    if uniq.empty:
+        # Ensure sheet exists even if no berths inferred
+        existing = _read_sheet_df(xlsx_path, "Berths")
+        if existing is None:
+            empty_df = pd.DataFrame(columns=BERTHS_SHEET_COLS)
+            _write_sheet_df(xlsx_path, "Berths", empty_df)
+        _log_action("ensure_berths_sheet", "rows_added=0 (no berths inferred)")
+        return {"rows_added": 0}
+
+    # Read current Berths sheet
+    current = _read_sheet_df(xlsx_path, "Berths")
+    if current is None or current.empty:
+        current = pd.DataFrame(columns=BERTHS_SHEET_COLS)
+
+    current = _ensure_columns(current, BERTHS_SHEET_COLS)
+
+    # Build existing key set (normalized berth name)
+    if not current.empty:
+        cur_keys = current["Berth"].astype(str).fillna("").str.strip().str.upper()
+        existing_key_set = set(cur_keys.tolist())
+    else:
+        existing_key_set = set()
+
+    uniq["KEY"] = uniq["Berth"].astype(str).fillna("").str.strip().str.upper()
+    rows_to_add = uniq[~uniq["KEY"].isin(existing_key_set)].copy()
+
+    defaults = {name: "" for name in BERTHS_REQUIRED_INPUT_COLS}
+
+    added_count = 0
+    if not rows_to_add.empty:
+        for _, r in rows_to_add.iterrows():
+            new_row = {"Berth": r["Berth"]}
+            new_row.update(defaults)
+            current = pd.concat([current, pd.DataFrame([new_row])], ignore_index=True)
+            added_count += 1
+
+    # Preserve extra columns if any and sort
+    extra_cols = [c for c in current.columns if c not in BERTHS_SHEET_COLS]
+    ordered_cols = BERTHS_SHEET_COLS + extra_cols
+    sort_cols = ["Berth"]
+
+    current = current.drop_duplicates(subset=sort_cols, keep="first")
+    current = current[ordered_cols].sort_values(sort_cols).reset_index(drop=True)
+
+    _write_sheet_df(xlsx_path, "Berths", current)
+    summary = {"rows_added": added_count}
+    _log_action("ensure_berths_sheet", f"rows_added={added_count}")
+    return summary
 
 
 def prepare_inputs_excel(xlsx_path: Path) -> dict:
-    """High-level entry to prepare Excel inputs: Settings, Make, Store, Move, and Deliver sheets.
+    """High-level entry to prepare Excel inputs: Settings, Make, Store, Move, Deliver, and Berths sheets.
     Returns a combined summary.
     NOTE: This function updates the provided workbook IN-PLACE. For the new
     non-destructive workflow that writes to a separate file, use
@@ -1620,13 +1773,15 @@ def prepare_inputs_excel(xlsx_path: Path) -> dict:
     store_summary = ensure_store_sheet(xlsx_path)
     move_summary = ensure_move_sheet(xlsx_path)
     delivery_summary = ensure_delivery_sheet(xlsx_path)
+    berths_summary = ensure_berths_sheet(xlsx_path)
     
     return {
         "settings": settings_summary,
         "make": make_summary,
         "store": store_summary,
         "move": move_summary,
-        "deliver": delivery_summary 
+        "deliver": delivery_summary,
+        "berths": berths_summary,
     }
 
 
@@ -1635,9 +1790,10 @@ def prepare_inputs_generate(src_xlsx: Path, out_xlsx: Path) -> dict:
 
     Behavior:
     - Reads the Network sheet from `src_xlsx` and writes it to `out_xlsx`.
-    - Copies existing Settings/Make/Store/Deliver (or Delivery) from source into
+    - Copies existing Settings/Make/Store/Move/Deliver (or Delivery) and Berths from source into
       the generated file (sheet name unified as 'Deliver').
-    - Runs ensure_... functions on `out_xlsx` so required rows/columns exist.
+    - Runs ensure_... functions on `out_xlsx` so required rows/columns exist, including Berths.
+    - Writes a 'Log' sheet listing all actions performed with timestamps.
 
     Returns a summary dict, same structure as `prepare_inputs_excel`.
     """
@@ -1648,28 +1804,41 @@ def prepare_inputs_generate(src_xlsx: Path, out_xlsx: Path) -> dict:
     if openpyxl is None:
         raise RuntimeError("openpyxl is required to write Excel files. Install with 'pip install openpyxl'.")
 
+    # Reset action log for this run
+    global ACTION_LOG
+    ACTION_LOG = []
+    _log_action("start_prepare_inputs_generate", f"src={src_xlsx}, out={out_xlsx}")
+
     # 1) Read Network from source
     try:
         net_df = pd.read_excel(src_xlsx, sheet_name="Network")
+        _log_action("read_network", f"rows={len(net_df)} from {src_xlsx}")
     except Exception as e:
+        _log_action("read_network_failed", str(e))
         raise RuntimeError(f"Failed to read 'Network' sheet from {src_xlsx}: {e}")
 
     # 2) Collect optional sheets to copy over
-    copy_sheet_names = ["Settings", "Make", "Store", "Move", "Deliver", "Delivery"]
+    copy_sheet_names = ["Settings", "Make", "Store", "Move", "Deliver", "Delivery", "Berths"]
     copied_dfs: dict[str, pd.DataFrame] = {}
     for nm in copy_sheet_names:
         df = _read_sheet_df(src_xlsx, nm)
         if df is not None:
             out_name = "Deliver" if nm.lower().startswith("deliver") else nm
             copied_dfs[out_name] = df
+            _log_action("copy_sheet_found", f"{nm} -> {out_name}, rows={len(df)}")
+        else:
+            _log_action("copy_sheet_missing", f"{nm} not present; skipping")
 
     # 3) Write initial generated workbook (overwrite if exists)
     with pd.ExcelWriter(out_xlsx, engine="openpyxl", mode="w") as writer:
         net_df.to_excel(writer, index=False, sheet_name="Network")
+        _log_action("write_sheet", f"Network rows={len(net_df)} -> {out_xlsx}")
         for nm, df in copied_dfs.items():
             try:
                 df.to_excel(writer, index=False, sheet_name=nm)
-            except Exception:
+                _log_action("write_sheet", f"{nm} rows={len(df)} -> {out_xlsx}")
+            except Exception as ex:
+                _log_action("write_sheet_failed", f"{nm}: {ex}")
                 # Best effort: skip problematic sheet copy
                 pass
 
@@ -1679,6 +1848,17 @@ def prepare_inputs_generate(src_xlsx: Path, out_xlsx: Path) -> dict:
     store_summary = ensure_store_sheet(out_xlsx)
     move_summary = ensure_move_sheet(out_xlsx)
     delivery_summary = ensure_delivery_sheet(out_xlsx)
+    berths_summary = ensure_berths_sheet(out_xlsx)
+
+    # 5) Write the action log to a 'Log' sheet in the generated workbook
+    try:
+        log_df = pd.DataFrame(ACTION_LOG, columns=["Timestamp", "Action", "Details"])
+        with pd.ExcelWriter(out_xlsx, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+            log_df.to_excel(writer, index=False, sheet_name="Log")
+        _log_action("write_log", f"entries={len(log_df)}")
+    except Exception as ex:
+        # If writing log fails, we still return summaries
+        _log_action("write_log_failed", str(ex))
 
     return {
         "generated_path": str(out_xlsx),
@@ -1687,6 +1867,8 @@ def prepare_inputs_generate(src_xlsx: Path, out_xlsx: Path) -> dict:
         "store": store_summary,
         "move": move_summary,
         "deliver": delivery_summary,
+        "berths": berths_summary,
+        "log_entries": len(ACTION_LOG),
     }
 
 # ------------------------ CLI ----------------------------------------------
@@ -1759,7 +1941,7 @@ def _load_config_from_module(module_obj):
 
 
 def _load_config(config_path: Optional[str | Path] = None):
-    """Load Config either from a provided path (.py) or from 'viz_config' in CWD.
+    """Load Config either from a provided path (.py) or from 'supply_chain_viz_config' in CWD.
     If not found, create a commented template and instruct the user.
     """
     import importlib.util, runpy
@@ -1775,17 +1957,17 @@ def _load_config(config_path: Optional[str | Path] = None):
             return ns['config']
         else:
             raise RuntimeError("The provided config file does not define 'Config' or 'config'.")
-    # Try import viz_config from CWD
+    # Try import supply_chain_viz_config from CWD
     try:
         import importlib
-        vc = importlib.import_module('viz_config')
+        vc = importlib.import_module('supply_chain_viz_config')
         cfg = _load_config_from_module(vc)
         if cfg is not None:
             return cfg
     except Exception:
         pass
     # If not present, create a template
-    template = Path('viz_config.py')
+    template = Path('supply_chain_viz_config.py')
     if not template.exists():
         try:
             template.write_text(
@@ -1822,7 +2004,7 @@ def _load_config(config_path: Optional[str | Path] = None):
             )
         except Exception:
             pass
-    raise RuntimeError("No configuration found. A 'viz_config.py' template has been created in the current folder. Edit it and re-run.")
+    raise RuntimeError("No configuration found. A 'supply_chain_viz_config.py' template has been created in the current folder. Edit it and re-run.")
 
 
 def main(argv=None) -> int:
@@ -1830,7 +2012,7 @@ def main(argv=None) -> int:
         argv = sys.argv[1:]
 
     p = argparse.ArgumentParser(description="Supply chain visualization and SimPy scaffold (config-driven)")
-    p.add_argument("--config", type=str, default=None, help="Path to a Python config file (viz_config.py). If omitted, the script loads viz_config from the current folder.")
+    p.add_argument("--config", type=str, default=None, help="Path to a Python config file (supply_chain_viz_config.py). If omitted, the script loads supply_chain_viz_config from the current folder.")
     p.add_argument("--write-sample", type=str, default=None, help="Write sample file (XLSX preferred) to this path and exit unless a config points to another input.")
     args = p.parse_args(argv)
 
@@ -1862,6 +2044,7 @@ def main(argv=None) -> int:
             print(f"  Store: rows_added={summary['store'].get('rows_added', 0)}")
             print(f"  Move: rows_added={summary['move'].get('rows_added', 0)}")
             print(f"  Deliver: rows_added={summary['deliver'].get('rows_added', 0)}")
+            print(f"  Berths: rows_added={summary['berths'].get('rows_added', 0)}")
         except Exception as e:
             print(f"Input preparation failed: {e}")
             return 1
@@ -1890,7 +2073,7 @@ def main(argv=None) -> int:
         n_nodes = n_edges = -1
     print(f"Graph built: {n_nodes} nodes, {n_edges} edges.")
     if n_nodes == 0 or n_edges == 0:
-        print("Warning: The graph appears empty. Check input and product_class filter in viz_config.py.")
+        print("Warning: The graph appears empty. Check input and product_class filter in supply_chain_viz_config.py.")
 
     export_pyvis(G, out_html, config)
 

@@ -3,7 +3,7 @@ Simulation configuration for running sim_from_generated.py without CLI.
 
 How to use:
 - Edit values below to suit your project.
-- Double‑click run_sim.py (or run with Python) — it will load this Config.
+- Double‑click sim_run.py (or run with Python) — it will load this Config.
 
 Notes:
 - Booleans: True/False
@@ -27,6 +27,15 @@ class Config:
     override_days: Optional[int] = None                   # e.g., 60
     override_runs: Optional[int] = None                   # currently informational
 
+    # Randomness
+    use_random_opening: bool = True                       # If True, sample opening stock uniformly between Low/High
+    random_seed: Optional[int] = None                     # Seed for reproducible random openings (None = unseeded)
+
+    # Make process behavior
+    # Rule to choose which product to produce when a Make unit has multiple possible outputs
+    # Options: 'min_fill_pct' (produce to the store with lowest % full), 'min_level' (lowest absolute level)
+    make_output_choice: str = "min_fill_pct"
+
     # Convenience: auto-generate a normalized workbook if missing
     auto_generate: bool = True
     source_model_xlsx: str | Path = "Model Inputs.xlsx"  # Source to generate from
@@ -34,6 +43,11 @@ class Config:
 
     # Outputs
     write_csvs: bool = True
+    write_log: bool = True  # Write per-hour detailed simulation log (text and CSV)
+    write_model_source: bool = True  # Write a standalone Python script of the built model
+    # Inventory snapshot monitor
+    write_daily_snapshots: bool = True                    # Write daily (or configured interval) inventory snapshots
+    snapshot_hours: float = 24.0                          # Interval in hours between snapshots
     out_dir: str | Path = "sim_outputs"
     open_folder_after: bool = True
 

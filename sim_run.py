@@ -1,0 +1,741 @@
+"""
+Run the SimPy model built from a generated workbook without using the command line.
+
+Usage:
+- Edit settings in sim_config.py
+- Double-click this file (Windows), or run `python sim_run.py`
+
+This script will:
+1) Load Config from sim_config.py
+2) Ensure an input workbook exists (auto-generate from 'Model Inputs.xlsx' if configured)
+3) Build the model via sim_from_generated.build_simpy_from_generated
+4) Run the environment for the configured horizon
+5) Print a summary and write optional CSV outputs
+"""
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+from typing import Any, Dict
+
+
+def _load_config():
+    """Load Config from sim_config.py. Supports either a Config class or a pre-instantiated `config` object."""
+    try:
+        import sim_config as cfg_mod  # type: ignore
+    except Exception as e:
+        print("ERROR: Could not import sim_config.py in the current directory.")
+        print("Make sure sim_config.py exists next to this file.\n")
+        raise
+
+    cfg = None
+    if hasattr(cfg_mod, "Config"):
+        try:
+            cfg = cfg_mod.Config()  # type: ignore
+        except Exception:
+            cfg = None
+    if cfg is None and hasattr(cfg_mod, "config"):
+        cfg = getattr(cfg_mod, "config")
+
+    if cfg is None:
+        raise RuntimeError("sim_config.py must define a Config dataclass or a `config` instance.")
+    return cfg
+
+
+def _ensure_generated_if_needed(cfg) -> Path:
+    in_path = Path(cfg.resolve_in_path())
+    if in_path.exists():
+        return in_path
+
+    if not getattr(cfg, "auto_generate", False):
+        raise FileNotFoundError(f"Input workbook not found: {in_path}")
+
+    # Attempt to generate a normalized workbook from source using supply_chain_viz helpers
+    try:
+        from supply_chain_viz import prepare_inputs_generate  # type: ignore
+    except Exception:
+        raise RuntimeError(
+            "Could not import prepare_inputs_generate from supply_chain_viz.py. "
+            "Ensure the file exists and dependencies are installed."
+        )
+
+    src = Path(cfg.resolve_source_model())
+    out = Path(cfg.resolve_generated_output())
+    print(f"Input workbook '{in_path.name}' not found. Auto-generating from '{src.name}' → '{out.name}'...")
+    summary = prepare_inputs_generate(src, out)
+    print("Generation summary:")
+    for k, v in summary.items():
+        print(f"  - {k}: {v}")
+
+    if not out.exists():
+        raise FileNotFoundError(f"Failed to generate workbook at: {out}")
+    return out
+
+
+def _determine_horizon_hours(cfg, meta) -> float:
+    # 1) Override via config
+    days_override = getattr(cfg, "override_days", None)
+    if days_override is not None:
+        try:
+            return float(days_override) * 24.0
+        except Exception:
+            pass
+
+    # 2) Use settings object if provided by builder
+    settings = meta.get("settings") if isinstance(meta, dict) else None
+    if settings is not None:
+        # Try best-known patterns
+        try:
+            if hasattr(settings, "horizon_hours"):
+                return float(settings.horizon_hours())  # type: ignore
+        except Exception:
+            pass
+        try:
+            days = getattr(settings, "days", None)
+            if days is not None:
+                return float(days) * 24.0
+        except Exception:
+            pass
+
+    # 3) Fallback
+    return 30.0 * 24.0
+
+
+def _collect_summary(comps, meta: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {}
+
+    # Store levels
+    stores = getattr(comps, "stores", None)
+    if stores:
+        try:
+            summary["stores"] = {str(k): float(getattr(v, "level", 0.0)) for k, v in stores.items()}
+        except Exception:
+            # Fallback: best-effort repr
+            summary["stores"] = {str(k): getattr(v, "level", None) for k, v in stores.items()}
+
+    # Unmet demand
+    unmet = getattr(comps, "unmet_demand", None)
+    if unmet is not None:
+        try:
+            if isinstance(unmet, dict):
+                summary["unmet_demand"] = {str(k): float(v) for k, v in unmet.items()}
+            else:
+                summary["unmet_demand"] = float(unmet)
+        except Exception:
+            summary["unmet_demand"] = unmet
+
+    # Route stats (optional)
+    route_stats = getattr(comps, "route_stats", None)
+    if route_stats is not None:
+        summary["route_stats"] = route_stats
+
+    # Warnings from meta (if provided)
+    if isinstance(meta, dict) and "warnings" in meta and meta["warnings"]:
+        try:
+            # Ensure list of dicts
+            if isinstance(meta["warnings"], list):
+                summary["warnings"] = list(meta["warnings"])  # shallow copy
+        except Exception:
+            pass
+
+    return summary
+
+
+def _write_csvs(cfg, summary: Dict[str, Any]) -> None:
+    out_dir = Path(cfg.resolve_out_dir())
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        import pandas as pd  # lazy import
+    except Exception:
+        pd = None
+
+    # Stores
+    if "stores" in summary:
+        rows = [(k, v) for k, v in summary["stores"].items()]
+        if pd is not None:
+            df = pd.DataFrame(rows, columns=["Store", "Level"])
+            df.to_csv(out_dir / "store_levels.csv", index=False)
+        else:
+            with open(out_dir / "store_levels.csv", "w", encoding="utf-8") as f:
+                f.write("Store,Level\n")
+                for k, v in rows:
+                    f.write(f"{k},{v}\n")
+
+    # Unmet demand
+    if "unmet_demand" in summary:
+        unmet = summary["unmet_demand"]
+        if isinstance(unmet, dict):
+            rows = [(k, v) for k, v in unmet.items()]
+            if pd is not None:
+                df = pd.DataFrame(rows, columns=["Key", "Unmet"])
+                df.to_csv(out_dir / "unmet_demand.csv", index=False)
+            else:
+                with open(out_dir / "unmet_demand.csv", "w", encoding="utf-8") as f:
+                    f.write("Key,Unmet\n")
+                    for k, v in rows:
+                        f.write(f"{k},{v}\n")
+        else:
+            with open(out_dir / "unmet_demand.csv", "w", encoding="utf-8") as f:
+                f.write("TotalUnmet\n")
+                f.write(f"{unmet}\n")
+
+    # Route stats if present and tabular
+    if "route_stats" in summary and isinstance(summary["route_stats"], dict):
+        try:
+            rs = summary["route_stats"]
+            # Expecting dict[name] -> dict of metrics
+            keys = sorted({k2 for v in rs.values() if isinstance(v, dict) for k2 in v.keys()})
+            with open(out_dir / "route_stats.csv", "w", encoding="utf-8") as f:
+                f.write(",".join(["Route"] + keys) + "\n")
+                for route, metrics in rs.items():
+                    row = [str(route)] + [str(metrics.get(k, "")) for k in keys]
+                    f.write(",".join(row) + "\n")
+        except Exception:
+            pass
+
+    # Warnings (variable columns). Write union of keys across items.
+    if "warnings" in summary and isinstance(summary["warnings"], list) and summary["warnings"]:
+        rows = summary["warnings"]
+        # compute union of keys
+        all_keys = []
+        key_set = set()
+        for item in rows:
+            if isinstance(item, dict):
+                for k in item.keys():
+                    if k not in key_set:
+                        key_set.add(k)
+                        all_keys.append(k)
+        # Prefer type/message first if present
+        preferred = [k for k in ["type", "message"] if k in key_set]
+        other_keys = [k for k in all_keys if k not in preferred]
+        header = preferred + other_keys
+        # Write CSV
+        out_path = out_dir / "warnings.csv"
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(",".join(header) + "\n")
+            for item in rows:
+                if isinstance(item, dict):
+                    vals = [str(item.get(k, "")) for k in header]
+                else:
+                    vals = [str(item)]
+                f.write(",".join(vals).replace("\n", " ") + "\n")
+
+
+def _write_action_log(cfg, meta: Dict[str, Any]) -> None:
+    """Write a detailed per-hour action log (text and CSV) to sim_outputs.
+    Expects meta['action_log'] to be a list of dicts with at least: event, time_h, qty_t, product_class, product, etc.
+    """
+    try:
+        entries = list(meta.get("action_log", [])) if isinstance(meta, dict) else []
+    except Exception:
+        entries = []
+    if not entries:
+        return
+
+    out_dir = Path(cfg.resolve_out_dir())
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # CSV (structured)
+    csv_cols = [
+        "hour", "time_h", "event", "product_class", "location", "equipment", "process",
+        "product", "qty_t", "units", "src_location", "src_equipment", "dst_location", "dst_equipment",
+    ]
+    try:
+        import csv as _csv
+        with open(out_dir / "sim_log.csv", "w", newline="", encoding="utf-8") as f:
+            w = _csv.DictWriter(f, fieldnames=csv_cols)
+            w.writeheader()
+            for e in entries:
+                hour = int(float(e.get("time_h", 0.0)) // 1) + 1
+                row = {k: e.get(k, "") for k in csv_cols}
+                row.update({"hour": hour})
+                w.writerow(row)
+    except Exception:
+        # best effort
+        pass
+
+    # Text (human-friendly)
+    def fmt_qty(q):
+        try:
+            return f"{round(float(q)):,}"
+        except Exception:
+            return str(q)
+
+    by_hour: Dict[int, list[dict]] = {}
+    for e in entries:
+        hour = int(float(e.get("time_h", 0.0)) // 1) + 1
+        by_hour.setdefault(hour, []).append(e)
+
+    lines: list[str] = []
+    for hour in sorted(by_hour.keys()):
+        lines.append(f"Hour {hour}:")
+        for e in by_hour[hour]:
+            ev = str(e.get("event", ""))
+            prod = str(e.get("product", "")).upper()
+            if ev == "Produced":
+                loc = e.get("location", "")
+                eq = e.get("equipment", "")
+                lines.append(f"  {loc} {eq} Produced {fmt_qty(e.get('qty_t'))} TON {prod}")
+            elif ev == "Consumed":
+                loc = e.get("location", "")
+                eq = e.get("equipment", "")
+                lines.append(f"  {loc} {eq} Consumed {fmt_qty(e.get('qty_t'))} TON {prod}")
+            elif ev == "Loaded":
+                src_loc = e.get("src_location", "")
+                src_eq = e.get("src_equipment", "")
+                dst_loc = e.get("dst_location", "")
+                dst_eq = e.get("dst_equipment", "")
+                lines.append(f"  {src_loc} {src_eq} Loaded {fmt_qty(e.get('qty_t'))} TON {prod} to {dst_loc} {dst_eq}")
+            elif ev == "Unloaded":
+                src_loc = e.get("src_location", "")
+                src_eq = e.get("src_equipment", "")
+                dst_loc = e.get("dst_location", "")
+                dst_eq = e.get("dst_equipment", "")
+                lines.append(f"  {dst_loc} {dst_eq} Unloaded {fmt_qty(e.get('qty_t'))} TON {prod} from {src_loc} {src_eq}")
+            elif ev == "Delivered":
+                loc = e.get("location", "")
+                lines.append(f"  {loc} Delivered {fmt_qty(e.get('qty_t'))} TON {prod}")
+            elif ev == "Unmet":
+                loc = e.get("location", "")
+                lines.append(f"  {loc} Unmet {fmt_qty(e.get('qty_t'))} TON {prod}")
+            else:
+                lines.append(f"  {ev}: {e}")
+        lines.append("")
+
+    try:
+        (out_dir / "sim_log.txt").write_text("\n".join(lines), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _write_inventory_snapshots(cfg, meta: Dict[str, Any]) -> None:
+    """Write periodic inventory snapshots to sim_outputs/inventory_daily.csv.
+    Expects meta['inventory_snapshots'] to be a list of dicts with keys such as:
+    day, time_h, product_class, location, equipment, input, store_key, level, capacity, fill_pct
+    """
+    try:
+        entries = list(meta.get("inventory_snapshots", [])) if isinstance(meta, dict) else []
+    except Exception:
+        entries = []
+    if not entries:
+        return
+    out_dir = Path(cfg.resolve_out_dir())
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cols = [
+        "day", "time_h", "product_class", "location", "equipment", "input",
+        "store_key", "level", "capacity", "fill_pct",
+    ]
+    # Try pandas for convenience; else write CSV manually
+    try:
+        import pandas as pd  # type: ignore
+        import math
+        rows = []
+        for e in entries:
+            rows.append({k: e.get(k, None) for k in cols})
+        df = pd.DataFrame(rows, columns=cols)
+        # Keep rows sorted by time then by store_key for readability
+        df = df.sort_values(["time_h", "store_key"]).reset_index(drop=True)
+        df.to_csv(out_dir / "inventory_daily.csv", index=False)
+    except Exception:
+        try:
+            with open(out_dir / "inventory_daily.csv", "w", encoding="utf-8") as f:
+                f.write(",".join(cols) + "\n")
+                for e in sorted(entries, key=lambda x: (float(x.get("time_h", 0.0)), str(x.get("store_key", "")))):
+                    row = [str(e.get(k, "")) for k in cols]
+                    # replace commas/newlines for safety
+                    row = [c.replace("\n", " ").replace(",", " ") for c in row]
+                    f.write(",".join(row) + "\n")
+        except Exception:
+            pass
+
+
+def _write_frozen_model(cfg, meta: Dict[str, Any]) -> None:
+    """Write a standalone Python file that contains the exact SimPy model that was built
+    from the Excel inputs and executed. This file can be run independently without Excel.
+    Output path: sim_outputs/frozen_sim_model.py
+    """
+    export = None
+    try:
+        export = meta.get("export") if isinstance(meta, dict) else None
+    except Exception:
+        export = None
+    if not export:
+        return
+
+    out_dir = Path(cfg.resolve_out_dir())
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "frozen_sim_model.py"
+
+    import json
+    settings = export.get("settings", {})
+    stores = export.get("stores", [])
+    makes = export.get("makes", [])
+    moves = export.get("moves", [])
+    deliveries = export.get("deliveries", [])
+
+    # Build a minimal, readable Python script.
+    script = []
+    script.append("# Auto-generated by sim_run.py — standalone SimPy model frozen from Excel inputs\n")
+    script.append("from __future__ import annotations\n")
+    script.append("import math\n")
+    script.append("import random\n")
+    script.append("from typing import Dict\n")
+    script.append("import simpy\n\n")
+
+    script.append(f"SETTINGS = {json.dumps(settings, indent=2)}\n\n")
+    script.append(f"STORES = {json.dumps(stores, indent=2)}\n\n")
+    script.append(f"MAKES = {json.dumps(makes, indent=2)}\n\n")
+    script.append(f"MOVES = {json.dumps(moves, indent=2)}\n\n")
+    script.append(f"DELIVERIES = {json.dumps(deliveries, indent=2)}\n\n")
+
+    script.append("def build():\n")
+    script.append("    env = simpy.Environment()\n")
+    script.append("    stores: Dict[str, simpy.Container] = {}\n")
+    script.append("    unmet: Dict[str, float] = {}\n\n")
+
+    # Stores
+    script.append("    # Stores\n")
+    script.append("    # Optionally seed RNG for reproducible random openings\n")
+    script.append("    try:\n")
+    script.append("        seed = SETTINGS.get('random_seed', None)\n")
+    script.append("        if seed is not None:\n")
+    script.append("            random.seed(int(seed))\n")
+    script.append("    except Exception:\n")
+    script.append("        pass\n")
+    script.append("    rand_open = bool(SETTINGS.get('random_opening', True))\n")
+    script.append("    for s in STORES:\n")
+    script.append("        cap = float(s.get('capacity', 0.0))\n")
+    script.append("        lo = s.get('opening_low', None)\n")
+    script.append("        hi = s.get('opening_high', None)\n")
+    script.append("        key = s['store_key']\n")
+    script.append("        opening = float(s.get('opening', 0.0))\n")
+    script.append("        try:\n")
+    script.append("            if rand_open and (lo is not None or hi is not None):\n")
+    script.append("                lo_v = float(0.0 if lo is None else lo)\n")
+    script.append("                hi_v = float(0.0 if hi is None else hi)\n")
+    script.append("                if hi_v < lo_v:\n")
+    script.append("                    lo_v, hi_v = hi_v, lo_v\n")
+    script.append("                opening = float(random.uniform(lo_v, hi_v))\n")
+    script.append("        except Exception:\n")
+    script.append("            # keep provided opening\n")
+    script.append("            pass\n")
+    script.append("        cap = max(0.0, float(cap))\n")
+    script.append("        opening = max(0.0, float(opening))\n")
+    script.append("        if cap <= 0.0 and opening > 0.0:\n")
+    script.append("            cap = opening\n")
+    script.append("        if opening > cap:\n")
+    script.append("            opening = cap\n")
+    script.append("        stores[key] = simpy.Container(env, init=opening, capacity=cap)\n\n")
+
+    # Makes
+    script.append("    # Make producer processes\n")
+    script.append("    def _choose_candidate(rule: str, cands: list[dict]):\n")
+    script.append("        best_i = None\n")
+    script.append("        best_metric = None\n")
+    script.append("        for i, c in enumerate(cands):\n")
+    script.append("            skey = c['out_store_key']\n")
+    script.append("            cont = stores.get(skey)\n")
+    script.append("            if cont is None:\n")
+    script.append("                continue\n")
+    script.append("            level = float(cont.level)\n")
+    script.append("            cap = float(cont.capacity) if getattr(cont, 'capacity', None) is not None else None\n")
+    script.append("            if rule == 'min_level' or cap in (None, 0.0):\n")
+    script.append("                metric = level\n")
+    script.append("            else:\n")
+    script.append("                try:\n")
+    script.append("                    metric = level / max(cap, 1e-9)\n")
+    script.append("                except Exception:\n")
+    script.append("                    metric = 1.0\n")
+    script.append("            if best_i is None or metric < best_metric:\n")
+    script.append("                best_i = i\n")
+    script.append("                best_metric = metric\n")
+    script.append("        return 0 if best_i is None else best_i\n\n")
+
+    script.append("    def _producer_multi(env, candidates, in_key, rate_tph, cons_pct, step_h, rule):\n")
+    script.append("        while True:\n")
+    script.append("            idx = _choose_candidate(rule, candidates)\n")
+    script.append("            tgt = candidates[idx]\n")
+    script.append("            out_key = tgt['out_store_key']\n")
+    script.append("            qty_out = max(0.0, float(rate_tph)) * float(step_h)\n")
+    script.append("            dst = stores.get(out_key)\n")
+    script.append("            if dst is not None and qty_out > 0:\n")
+    script.append("                room = dst.capacity - dst.level if dst.capacity is not None else qty_out\n")
+    script.append("                qty_out = max(0.0, min(qty_out, room))\n")
+    script.append("            else:\n")
+    script.append("                qty_out = 0.0\n")
+    script.append("            qty_in = qty_out * float(cons_pct) if in_key else 0.0\n")
+    script.append("            if in_key and qty_out > 0:\n")
+    script.append("                src = stores.get(in_key)\n")
+    script.append("                if src is not None and qty_in > 0:\n")
+    script.append("                    take = min(src.level, qty_in)\n")
+    script.append("                    if take > 0:\n")
+    script.append("                        yield src.get(take)\n")
+    script.append("                    if qty_in > 0 and take < qty_in:\n")
+    script.append("                        scale = take/qty_in if qty_in > 0 else 0.0\n")
+    script.append("                        qty_out *= scale\n")
+    script.append("            if dst is not None and qty_out > 0:\n")
+    script.append("                yield dst.put(qty_out)\n")
+    script.append("            yield env.timeout(float(step_h))\n\n")
+
+    script.append("    def _producer_single(env, out_key, in_key, rate_tph, cons_pct, step_h):\n")
+    script.append("        while True:\n")
+    script.append("            qty_out = max(0.0, float(rate_tph)) * float(step_h)\n")
+    script.append("            qty_in = qty_out * float(cons_pct) if in_key else 0.0\n")
+    script.append("            if in_key:\n")
+    script.append("                src = stores.get(in_key)\n")
+    script.append("                if src is not None and qty_in > 0:\n")
+    script.append("                    take = min(src.level, qty_in)\n")
+    script.append("                    if take > 0:\n")
+    script.append("                        yield src.get(take)\n")
+    script.append("                    if qty_in > 0 and take < qty_in:\n")
+    script.append("                        scale = take/qty_in if qty_in > 0 else 0.0\n")
+    script.append("                        qty_out *= scale\n")
+    script.append("            dst = stores.get(out_key)\n")
+    script.append("            if dst is not None and qty_out > 0:\n")
+    script.append("                room = dst.capacity - dst.level if dst.capacity is not None else qty_out\n")
+    script.append("                put_amt = min(qty_out, max(room, 0))\n")
+    script.append("                if put_amt > 0:\n")
+    script.append("                    yield dst.put(put_amt)\n")
+    script.append("            yield env.timeout(float(step_h))\n\n")
+
+    script.append("    for m in MAKES:\n")
+    script.append("        if 'candidates' in m and m['candidates']:\n")
+    script.append("            rule = m.get('choice_rule', SETTINGS.get('make_output_choice', 'min_fill_pct'))\n")
+    script.append("            env.process(_producer_multi(env, m['candidates'], m.get('in_store_key'), m['mean_rate_tph'], m['consumption_pct'], m['step_hours'], rule))\n")
+    script.append("        else:\n")
+    script.append("            env.process(_producer_single(env, m.get('out_store_key'), m.get('in_store_key'), m['mean_rate_tph'], m['consumption_pct'], m['step_hours']))\n\n")
+
+    # Moves
+    script.append("    # Transporter (move) processes\n")
+    script.append("    def _transporter(env, origin_key, dest_key, payload_t, load_rate_tph, unload_rate_tph, to_min, back_min, step_h):\n")
+    script.append("        while True:\n")
+    script.append("            if load_rate_tph <= 0 or payload_t <= 0:\n")
+    script.append("                yield env.timeout((float(to_min)+float(back_min))/60.0 if (to_min or back_min) else float(step_h))\n")
+    script.append("                continue\n")
+    script.append("            origin = stores.get(origin_key)\n")
+    script.append("            dest = stores.get(dest_key)\n")
+    script.append("            if origin is None or dest is None:\n")
+    script.append("                yield env.timeout(float(step_h))\n")
+    script.append("                continue\n")
+    script.append("            load_time_h = float(payload_t) / max(float(load_rate_tph), 1e-9)\n")
+    script.append("            take = min(origin.level, float(payload_t))\n")
+    script.append("            if take > 0:\n")
+    script.append("                yield env.timeout(load_time_h)\n")
+    script.append("                yield origin.get(take)\n")
+    script.append("            else:\n")
+    script.append("                yield env.timeout(float(step_h))\n")
+    script.append("                continue\n")
+    script.append("            yield env.timeout(float(to_min)/60.0)\n")
+    script.append("            unload_time_h = float(take) / max(float(unload_rate_tph), 1e-9) if unload_rate_tph else 0.0\n")
+    script.append("            room = dest.capacity - dest.level if dest.capacity is not None else take\n")
+    script.append("            put_amt = min(take, max(room, 0))\n")
+    script.append("            if put_amt > 0 and unload_rate_tph > 0:\n")
+    script.append("                yield env.timeout(unload_time_h)\n")
+    script.append("                yield dest.put(put_amt)\n")
+    script.append("            yield env.timeout(float(back_min)/60.0)\n\n")
+
+    script.append("    for mv in MOVES:\n")
+    script.append("        n = int(max(1, mv.get('n_units', 1)))\n")
+    script.append("        for _ in range(n):\n")
+    script.append("            env.process(_transporter(env, mv['origin_key'], mv['dest_key'], mv['payload_t'], mv['load_rate_tph'], mv['unload_rate_tph'], mv['to_min'], mv['back_min'], mv['step_hours']))\n\n")
+
+    # Deliveries
+    script.append("    # Consumers (deliveries)\n")
+    script.append("    def _consumer(env, key, rate, step_h):\n")
+    script.append("        cont = stores.get(key)\n")
+    script.append("        while True:\n")
+    script.append("            if cont is None:\n")
+    script.append("                yield env.timeout(float(step_h))\n")
+    script.append("                continue\n")
+    script.append("            take = min(cont.level, float(rate))\n")
+    script.append("            if take > 0:\n")
+    script.append("                yield cont.get(take)\n")
+    script.append("            short = float(rate) - float(take)\n")
+    script.append("            if short > 0:\n")
+    script.append("                unmet[key] = unmet.get(key, 0.0) + short\n")
+    script.append("            yield env.timeout(float(step_h))\n\n")
+
+    script.append("    for d in DELIVERIES:\n")
+    script.append("        env.process(_consumer(env, d['store_key'], d['rate_per_step'], d['step_hours']))\n\n")
+
+    script.append("    return env, stores, unmet\n\n")
+
+    # Main runner in frozen script
+    script.append("def main(hours: float | None = None):\n")
+    script.append("    env, stores, unmet = build()\n")
+    script.append("    horizon_h = hours if hours is not None else float(SETTINGS.get('horizon_days', 30))*24.0\n")
+    script.append("    env.run(until=horizon_h)\n")
+    script.append("    print('=== Frozen Simulation Summary ===')\n")
+    script.append("    print('Ending store levels:')\n")
+    script.append("    for k in sorted(stores.keys()):\n")
+    script.append("        print(f'  {k}: {stores[k].level}')\n")
+    script.append("    if unmet:\n")
+    script.append("        total_unmet = sum(float(v) for v in unmet.values())\n")
+    script.append("        print(f'Total unmet demand: {total_unmet}')\n")
+    script.append("\n")
+    script.append("if __name__ == '__main__':\n")
+    script.append("    main()\n")
+
+    out_path.write_text("".join(script), encoding="utf-8")
+
+
+
+def main():
+    try:
+        from sim_from_generated import build_simpy_from_generated  # type: ignore
+    except Exception as e:
+        print("ERROR: sim_from_generated.py is missing or failed to import.")
+        print(e)
+        _pause_if_needed(True)
+        sys.exit(1)
+
+    # Load config
+    try:
+        cfg = _load_config()
+    except Exception as e:
+        print("\nFATAL: Failed to load configuration:")
+        print(e)
+        _pause_if_needed(True)
+        sys.exit(2)
+
+    # Ensure workbook exists (generate if needed)
+    try:
+        xlsx_path = _ensure_generated_if_needed(cfg)
+    except Exception as e:
+        print("\nFATAL: Workbook not available:")
+        print(e)
+        _pause_if_needed(getattr(cfg, "pause_on_finish", True))
+        sys.exit(3)
+
+    # Build model
+    try:
+        comps, meta = build_simpy_from_generated(xlsx_path, product_class=getattr(cfg, "product_class", None))
+    except Exception as e:
+        print("\nFATAL: Failed to build the model from the workbook:")
+        print(e)
+        _pause_if_needed(getattr(cfg, "pause_on_finish", True))
+        sys.exit(4)
+
+    # Determine horizon
+    try:
+        horizon_hours = _determine_horizon_hours(cfg, meta)
+    except Exception:
+        horizon_hours = 30.0 * 24.0
+
+    # Run
+    env = getattr(comps, "env", None) or meta.get("env") if isinstance(meta, dict) else None
+    if env is None:
+        print("\nFATAL: The model did not expose a SimPy environment (`env`).")
+        _pause_if_needed(getattr(cfg, "pause_on_finish", True))
+        sys.exit(5)
+
+    print(f"Running simulation for {horizon_hours} hours...")
+    try:
+        env.run(until=horizon_hours)
+    except Exception as e:
+        print("\nFATAL: Simulation run failed:")
+        print(e)
+        _pause_if_needed(getattr(cfg, "pause_on_finish", True))
+        sys.exit(6)
+
+    # Summarize
+    summary = _collect_summary(comps, meta)
+
+    print("\n=== Simulation Summary ===")
+    stores = summary.get("stores", {})
+    if stores:
+        print("Ending store levels (units):")
+        for k, v in sorted(stores.items()):
+            print(f"  {k}: {v}")
+
+    unmet = summary.get("unmet_demand")
+    if unmet is not None:
+        if isinstance(unmet, dict):
+            total_unmet = sum(float(v) for v in unmet.values())
+            print(f"Total unmet demand: {total_unmet}")
+        else:
+            print(f"Total unmet demand: {unmet}")
+
+    # Warnings
+    warns = summary.get("warnings", [])
+    if isinstance(warns, list) and warns:
+        # Group by type
+        counts: dict[str, int] = {}
+        for w in warns:
+            t = w.get("type") if isinstance(w, dict) else str(type(w))
+            t = str(t) if t is not None else "(unknown)"
+            counts[t] = counts.get(t, 0) + 1
+        print("\nWarnings during build/run:")
+        for t, c in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+            print(f"  {t}: {c}")
+        # Show a few samples
+        print("  (first 3 examples)")
+        for i, w in enumerate(warns[:3]):
+            if isinstance(w, dict):
+                msg = w.get("message", "")
+                ctx = {k: v for k, v in w.items() if k not in {"type", "message"}}
+                print(f"    - {w.get('type','')}: {msg} | {ctx}")
+            else:
+                print(f"    - {w}")
+
+    # Outputs
+    if getattr(cfg, "write_csvs", False):
+        try:
+            _write_csvs(cfg, summary)
+            print(f"\nCSV outputs written to: {Path(cfg.resolve_out_dir()).resolve()}")
+        except Exception as e:
+            print("Warning: Failed to write CSV outputs:", e)
+
+    # Detailed per-hour log
+    if getattr(cfg, "write_log", True):
+        try:
+            _write_action_log(cfg, meta)
+            print(f"Detailed simulation log written to: {Path(cfg.resolve_out_dir()).resolve() / 'sim_log.txt'}")
+        except Exception as e:
+            print("Warning: Failed to write detailed log:", e)
+
+    # Frozen model source code (standalone script)
+    if getattr(cfg, "write_model_source", True):
+        try:
+            _write_frozen_model(cfg, meta)
+            out_dir_path = Path(cfg.resolve_out_dir()).resolve()
+            print(f"Frozen model source written to: {out_dir_path / 'frozen_sim_model.py'}")
+        except Exception as e:
+            print("Warning: Failed to write frozen model source:", e)
+
+    # Daily inventory snapshots CSV
+    if getattr(cfg, "write_daily_snapshots", True):
+        try:
+            _write_inventory_snapshots(cfg, meta)
+            print(f"Inventory snapshots written to: {Path(cfg.resolve_out_dir()).resolve() / 'inventory_daily.csv'}")
+        except Exception as e:
+            print("Warning: Failed to write inventory snapshots:", e)
+
+    # Open folder
+    if getattr(cfg, "open_folder_after", False):
+        try:
+            out_dir = Path(cfg.resolve_out_dir()).resolve()
+            if os.name == "nt":
+                os.startfile(str(out_dir))  # type: ignore[attr-defined]
+            else:
+                # Fallback for non-Windows
+                import subprocess
+                subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(out_dir)])
+        except Exception:
+            pass
+
+    _pause_if_needed(getattr(cfg, "pause_on_finish", True))
+
+
+def _pause_if_needed(pause: bool) -> None:
+    if pause:
+        try:
+            input("\nPress Enter to close...")
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    main()
