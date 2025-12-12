@@ -18,6 +18,28 @@ import os
 import sys
 from pathlib import Path
 from typing import Any, Dict
+from datetime import datetime
+
+
+def _now_str() -> str:
+    try:
+        return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    except Exception:
+        return ''
+
+
+def _log(cfg, msg: str) -> None:
+    try:
+        if not getattr(cfg, 'verbose_logging', True):
+            return
+        prefix = f"[{_now_str()}] " if getattr(cfg, 'log_with_timestamps', True) else ''
+        print(prefix + str(msg))
+    except Exception:
+        # Best-effort logging; never fail
+        try:
+            print(str(msg))
+        except Exception:
+            pass
 
 
 def _load_config():
@@ -375,7 +397,6 @@ def _write_inventory_snapshots(cfg, meta: Dict[str, Any]) -> None:
     # Try pandas for convenience; else write CSV manually
     try:
         import pandas as pd  # type: ignore
-        import math
         rows = []
         for e in entries:
             rows.append({k: e.get(k, None) for k in cols})
@@ -394,6 +415,324 @@ def _write_inventory_snapshots(cfg, meta: Dict[str, Any]) -> None:
                     f.write(",".join(row) + "\n")
         except Exception:
             pass
+
+
+def _assemble_inmemory_frames(meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Build in-memory pandas DataFrames for Make output and Store inventory.
+    Returns a dict with keys: 'make_output_df' (may be None), 'store_inventory_df' (may be None).
+    This works even if no CSV outputs are written.
+    """
+    frames: Dict[str, Any] = {"make_output_df": None, "store_inventory_df": None}
+    try:
+        import pandas as pd  # type: ignore
+    except Exception:
+        return frames
+
+    # Action log → Produced events (Make output)
+    try:
+        log_entries = list(meta.get("action_log", [])) if isinstance(meta, dict) else []
+    except Exception:
+        log_entries = []
+    if log_entries:
+        try:
+            df_log = pd.DataFrame(log_entries)
+            if not df_log.empty and "event" in df_log.columns:
+                df_prod = df_log[df_log["event"].astype(str).str.upper() == "PRODUCED"].copy()
+                if not df_prod.empty:
+                    # Normalize columns and compute hour index
+                    if "time_h" in df_prod.columns:
+                        df_prod["time_h"] = pd.to_numeric(df_prod["time_h"], errors="coerce").fillna(0.0)
+                        df_prod["hour"] = (df_prod["time_h"] // 1).astype(int) + 1
+                    # Ensure expected keys exist
+                    for col in ["product_class", "location", "equipment", "product", "qty_t"]:
+                        if col not in df_prod.columns:
+                            df_prod[col] = None
+                    df_prod["qty_t"] = pd.to_numeric(df_prod["qty_t"], errors="coerce").fillna(0.0)
+                    frames["make_output_df"] = df_prod
+        except Exception:
+            pass
+
+    # Inventory snapshots → Store inventory balance
+    try:
+        inv_entries = list(meta.get("inventory_snapshots", [])) if isinstance(meta, dict) else []
+    except Exception:
+        inv_entries = []
+    if inv_entries:
+        try:
+            df_inv = pd.DataFrame(inv_entries)
+            if not df_inv.empty:
+                # Normalize
+                for c in ["time_h", "level", "capacity", "fill_pct"]:
+                    if c in df_inv.columns:
+                        df_inv[c] = pd.to_numeric(df_inv[c], errors="coerce")
+                if "time_h" in df_inv.columns:
+                    df_inv["hour"] = (df_inv["time_h"] // 1).astype(int) + 1
+                frames["store_inventory_df"] = df_inv
+        except Exception:
+            pass
+
+    return frames
+
+
+def _render_plot_task(task: dict, save_path: str | None = None) -> str | None:
+    """Top-level worker to render a single plot (picklable for ProcessPool on Windows)."""
+    try:
+        import matplotlib
+        # Force non-interactive backend if saving
+        if save_path is not None:
+            try:
+                matplotlib.use("Agg", force=True)
+            except Exception:
+                pass
+        import matplotlib.pyplot as _plt
+        kind = task.get("kind")
+        title = task.get("title", "")
+        if kind == "make":
+            x = task.get("x", [])
+            cum = task.get("cum", [])
+            per = task.get("per", [])
+            x_is_hour = bool(task.get("x_is_hour", False))
+            fig, ax1 = _plt.subplots(figsize=(9, 4.5))
+            ax1.plot(x, cum, color="tab:blue", label="Cumulative Produced (t)")
+            ax1.set_title(title)
+            ax1.set_xlabel("Hour" if x_is_hour else "Time (h)")
+            ax1.set_ylabel("Cumulative Tons Produced", color="tab:blue")
+            ax1.tick_params(axis='y', labelcolor="tab:blue")
+            ax1.grid(True, alpha=0.3)
+            ax2 = ax1.twinx()
+            # Secondary series as a LINE (not bars)
+            ax2.plot(x, per, color="tab:orange", linestyle="--", linewidth=1.5, label="Per Period Produced (t)")
+            ax2.set_ylabel("Per-Period Tons Produced", color="tab:orange")
+            ax2.tick_params(axis='y', labelcolor="tab:orange")
+            h1, l1 = ax1.get_legend_handles_labels()
+            h2, l2 = ax2.get_legend_handles_labels()
+            ax1.legend(h1 + h2, l1 + l2, loc="upper left")
+            fig.tight_layout()
+        elif kind == "store":
+            x = task.get("x", [])
+            y = task.get("y", [])
+            fig, ax = _plt.subplots(figsize=(9, 4.5))
+            ax.plot(x, y, label="Inventory Level (t)")
+            ax.set_title(title)
+            ax.set_xlabel("Time (h)")
+            ax.set_ylabel("Inventory (t)")
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+            fig.tight_layout()
+        else:
+            return None
+        if save_path:
+            _plt.savefig(save_path, dpi=120)
+            _plt.close(fig)
+            return save_path
+        else:
+            _plt.show()
+            _plt.close(fig)
+            return None
+    except Exception as e:
+        try:
+            print("Plot task failed:", e)
+        except Exception:
+            pass
+        return None
+
+
+def _plot_output_graphs(cfg, frames: Dict[str, Any], horizon_h: float | None = None) -> None:
+    """Draw graphs from in-memory DataFrames for:
+    - Make: quantity produced over time (per equipment, grouped by product_class and location)
+    - Store: inventory level over time (per equipment, grouped by product_class and location)
+
+    Supports two modes controlled by config:
+    - Interactive (default False when saving images): show plots inline serially.
+    - Parallel save (default True): render PNGs in parallel to speed up when many plots are needed.
+    """
+    # Try matplotlib import early
+    try:
+        import matplotlib
+        import matplotlib.pyplot as plt  # type: ignore
+    except Exception as e:
+        print("Plotting skipped: matplotlib not available. Install with `pip install matplotlib`.", e)
+        return
+
+    make_df = frames.get("make_output_df")
+    inv_df = frames.get("store_inventory_df")
+
+    # Helpers: filename-safe
+    import re
+    def _slug(s: str) -> str:
+        return re.sub(r"[^A-Za-z0-9._-]+", "_", (s or "")).strip("_") or "na"
+
+    # Build plotting tasks so we can run in parallel without passing DataFrames
+    tasks: list[dict] = []
+
+    # Assemble Make tasks
+    if make_df is not None:
+        try:
+            import pandas as _pd  # local alias
+            grp_keys = ["product_class", "location", "equipment"]
+            for (pc, loc, eq), g in make_df.groupby(grp_keys):
+                g = g.copy()
+                if "hour" not in g.columns and "time_h" in g.columns:
+                    try:
+                        g["time_h"] = _pd.to_numeric(g["time_h"], errors="coerce").fillna(0.0)
+                        g["hour"] = (g["time_h"] // 1).astype(int) + 1
+                    except Exception:
+                        pass
+                if "hour" in g.columns:
+                    per_period = g.groupby("hour", as_index=False)["qty_t"].sum().sort_values("hour")
+                    x = per_period["hour"].tolist()
+                    x_is_hour = True
+                else:
+                    g = g.sort_values("time_h")
+                    per_period = g.groupby("time_h", as_index=False)["qty_t"].sum()
+                    x = per_period["time_h"].tolist()
+                    x_is_hour = False
+                y_per = per_period["qty_t"].astype(float).tolist()
+                # Pad to full horizon if requested
+                try:
+                    if bool(getattr(cfg, "plot_full_horizon", True)) and horizon_h is not None:
+                        H = int(max(1, int(horizon_h)))
+                        if x_is_hour:
+                            # Build a dense hourly vector 1..H
+                            per_map = {int(xx): float(vv) for xx, vv in zip(x, y_per)}
+                            x = list(range(1, H + 1))
+                            y_per = [per_map.get(hh, 0.0) for hh in x]
+                        else:
+                            # time_h series: ensure final point at horizon with zero per-period increment
+                            if len(x) == 0 or float(x[-1]) < float(horizon_h):
+                                x = x + [float(horizon_h)]
+                                y_per = y_per + [0.0]
+                except Exception:
+                    pass
+                # cumulative
+                cum_vals = []
+                total = 0.0
+                for v in y_per:
+                    total += float(v)
+                    cum_vals.append(total)
+                # If hourly and padded out, cum_vals already extend; if time_h padded with final point, cum_vals also extended
+                title = f"Make Output — {pc or '(all)'} @ {loc or '(loc)'} — {eq or '(equip)'}"
+                tasks.append({
+                    "kind": "make",
+                    "x": x,
+                    "cum": cum_vals,
+                    "per": y_per,
+                    "x_is_hour": x_is_hour,
+                    "title": title,
+                    "pc": str(pc or ""),
+                    "loc": str(loc or ""),
+                    "eq": str(eq or ""),
+                })
+        except Exception as e:
+            print("Warning: failed to prepare Make plots:", e)
+
+    # Assemble Store tasks
+    if inv_df is not None:
+        try:
+            grp_keys = ["product_class", "location", "equipment"]
+            tmp = inv_df.copy()
+            for k in grp_keys:
+                if k not in tmp.columns:
+                    tmp[k] = None
+            for (pc, loc, eq), g in tmp.groupby(grp_keys):
+                if "level" not in g.columns:
+                    continue
+                g = g.sort_values("time_h")
+                x = g["time_h"].astype(float).tolist()
+                y = g["level"].astype(float).tolist()
+                # Pad to full horizon if requested: carry forward last known level to horizon_h
+                try:
+                    if bool(getattr(cfg, "plot_full_horizon", True)) and horizon_h is not None:
+                        if len(x) == 0:
+                            # No points; add flat line at 0 from 0 to horizon
+                            x = [0.0, float(horizon_h)]
+                            y = [0.0, 0.0]
+                        else:
+                            last_x = float(x[-1])
+                            last_y = float(y[-1]) if len(y)>0 else 0.0
+                            if last_x < float(horizon_h):
+                                x = x + [float(horizon_h)]
+                                y = y + [last_y]
+                except Exception:
+                    pass
+                title = f"Store Inventory — {pc or '(all)'} @ {loc or '(loc)'} — {eq or '(equip)'}"
+                tasks.append({
+                    "kind": "store",
+                    "x": x,
+                    "y": y,
+                    "title": title,
+                    "pc": str(pc or ""),
+                    "loc": str(loc or ""),
+                    "eq": str(eq or ""),
+                })
+        except Exception as e:
+            print("Warning: failed to prepare Store plots:", e)
+
+    if not tasks:
+        return
+
+    out_dir = Path(getattr(cfg, "resolve_out_dir")()).resolve()
+    plots_dir = out_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    # Decide execution mode
+    use_parallel = bool(getattr(cfg, "plot_parallel", True))
+    save_images = bool(getattr(cfg, "plot_save_images", True))
+
+    if save_images:
+        # Build save paths
+        for t in tasks:
+            safe_name = f"{_slug(t.get('pc',''))}__{_slug(t.get('loc',''))}__{_slug(t.get('eq',''))}"
+            sub = "make" if t.get("kind") == "make" else "store"
+            t["save_path"] = str(plots_dir / f"{sub}__{safe_name}.png")
+
+    # Execute
+    completed = 0
+    saved = 0
+    if use_parallel and save_images:
+        # Prefer processes for CPU-bound render; fall back to threads
+        import concurrent.futures as _fut
+        workers = getattr(cfg, "plot_workers", None)
+        if not workers or int(workers) <= 0:
+            import os as _os
+            workers = min(32, max(1, (_os.cpu_count() or 2)))
+        try:
+            with _fut.ProcessPoolExecutor(max_workers=int(workers)) as ex:
+                futs = [ex.submit(_render_plot_task, t, t.get("save_path")) for t in tasks]
+                for f in _fut.as_completed(futs):
+                    completed += 1
+                    res = f.result()
+                    if res:
+                        saved += 1
+        except Exception as e:
+            print("ProcessPool failed (falling back to threads):", e)
+            try:
+                with _fut.ThreadPoolExecutor(max_workers=int(workers)) as ex:
+                    futs = [ex.submit(_render_plot_task, t, t.get("save_path")) for t in tasks]
+                    for f in _fut.as_completed(futs):
+                        completed += 1
+                        res = f.result()
+                        if res:
+                            saved += 1
+            except Exception as e2:
+                print("ThreadPool also failed; rendering serially:", e2)
+                for t in tasks:
+                    res = _render_plot_task(t, t.get("save_path"))
+                    completed += 1
+                    if res:
+                        saved += 1
+    else:
+        # Serial interactive or serial save
+        for t in tasks:
+            res = _render_plot_task(t, t.get("save_path") if save_images else None)
+            completed += 1
+            if res:
+                saved += 1
+
+    if save_images:
+        print(f"Saved {saved}/{completed} plot images to: {plots_dir}")
+    else:
+        print(f"Rendered {completed} plots interactively.")
 
 
 def _write_frozen_model(cfg, meta: Dict[str, Any]) -> None:
@@ -724,6 +1063,7 @@ def main():
     # Load config
     try:
         cfg = _load_config()
+        _log(cfg, "Loaded configuration from sim_config.py")
     except Exception as e:
         print("\nFATAL: Failed to load configuration:")
         print(e)
@@ -732,7 +1072,10 @@ def main():
 
     # Ensure workbook exists (generate if needed)
     try:
+        in_name = str(getattr(cfg, 'in_xlsx', 'generated_model_inputs.xlsx'))
+        _log(cfg, f"Checking input workbook: {in_name}")
         xlsx_path = _ensure_generated_if_needed(cfg)
+        _log(cfg, f"Reading workbook: {Path(xlsx_path).name}")
     except Exception as e:
         print("\nFATAL: Workbook not available:")
         print(e)
@@ -741,7 +1084,27 @@ def main():
 
     # Build model
     try:
+        _log(cfg, "Compiling SimPy model from workbook (building components)...")
         comps, meta = build_simpy_from_generated(xlsx_path, product_class=getattr(cfg, "product_class", None))
+        # Try to describe components
+        try:
+            stores = getattr(comps, 'stores', None)
+            makes = getattr(comps, 'makes', None)
+            moves = getattr(comps, 'moves', None)
+            deliveries = getattr(comps, 'deliveries', None)
+            def _count(x):
+                try:
+                    if x is None:
+                        return 0
+                    if hasattr(x, 'items'):
+                        return len(list(x.items()))
+                    return len(list(x))
+                except Exception:
+                    return 0
+            _log(cfg, f"Added stores: {_count(stores)}, producers: {_count(makes)}, movers: {_count(moves)}, deliveries: {_count(deliveries)}")
+        except Exception:
+            pass
+        _log(cfg, "Model compilation complete.")
     except Exception as e:
         print("\nFATAL: Failed to build the model from the workbook:")
         print(e)
@@ -761,9 +1124,36 @@ def main():
         _pause_if_needed(getattr(cfg, "pause_on_finish", True))
         sys.exit(5)
 
-    print(f"Running simulation for {horizon_hours} hours...")
+    _log(cfg, f"Starting simulation for {horizon_hours} hours...")
     try:
-        env.run(until=horizon_hours)
+        # Progress loop
+        step_pct = max(1, int(getattr(cfg, 'progress_step_pct', 10) or 10))
+        step_pct = min(step_pct, 50)
+        total = float(horizon_hours)
+        # Build unique checkpoints in hours
+        checkpoints = []
+        for p in range(step_pct, 100 + step_pct, step_pct):
+            pct = min(p, 100)
+            t = total * (pct / 100.0)
+            checkpoints.append((pct, t))
+        seen_pct = set()
+        last_target = 0.0
+        for pct, t in checkpoints:
+            if pct in seen_pct:
+                continue
+            seen_pct.add(pct)
+            target = max(last_target, float(t))
+            if target <= last_target:
+                continue
+            env.run(until=target)
+            _log(cfg, f"Simulation {pct}% complete")
+            last_target = target
+        if last_target < total:
+            env.run(until=total)
+            _log(cfg, "Simulation 100% complete")
+        else:
+            if 100 not in seen_pct:
+                _log(cfg, "Simulation 100% complete")
     except Exception as e:
         print("\nFATAL: Simulation run failed:")
         print(e)
@@ -813,6 +1203,7 @@ def main():
     # Outputs
     if getattr(cfg, "write_csvs", False):
         try:
+            _log(cfg, "Writing CSV outputs...")
             _write_csvs(cfg, summary)
             print(f"\nCSV outputs written to: {Path(cfg.resolve_out_dir()).resolve()}")
         except Exception as e:
@@ -821,6 +1212,7 @@ def main():
     # Detailed per-hour log
     if getattr(cfg, "write_log", True):
         try:
+            _log(cfg, "Writing detailed simulation log (text + CSV)...")
             _write_action_log(cfg, meta)
             print(f"Detailed simulation log written to: {Path(cfg.resolve_out_dir()).resolve() / 'sim_log.txt'}")
         except Exception as e:
@@ -829,6 +1221,7 @@ def main():
     # Frozen model source code (standalone script)
     if getattr(cfg, "write_model_source", True):
         try:
+            _log(cfg, "Writing frozen model source (standalone) ...")
             _write_frozen_model(cfg, meta)
             out_dir_path = Path(cfg.resolve_out_dir()).resolve()
             print(f"Frozen model source written to: {out_dir_path / 'frozen_sim_model.py'}")
@@ -838,15 +1231,33 @@ def main():
     # Daily inventory snapshots CSV
     if getattr(cfg, "write_daily_snapshots", True):
         try:
+            _log(cfg, "Writing inventory snapshots CSV...")
             _write_inventory_snapshots(cfg, meta)
             print(f"Inventory snapshots written to: {Path(cfg.resolve_out_dir()).resolve() / 'inventory_daily.csv'}")
         except Exception as e:
             print("Warning: Failed to write inventory snapshots:", e)
 
+    # In-memory analysis and plots (independent of file outputs)
+    try:
+        _log(cfg, "Assembling in-memory data frames for analysis/graphs...")
+        frames = _assemble_inmemory_frames(meta)
+        # attach to meta for programmatic access after run
+        try:
+            if isinstance(meta, dict):
+                meta["inmemory_frames"] = frames
+        except Exception:
+            pass
+        if getattr(cfg, "plot_output_graphs", True):
+            _log(cfg, "Generating output graphs...")
+            _plot_output_graphs(cfg, frames, horizon_hours)
+    except Exception as e:
+        print("Warning: failed to build/plot in-memory outputs:", e)
+
     # Open folder
     if getattr(cfg, "open_folder_after", False):
         try:
             out_dir = Path(cfg.resolve_out_dir()).resolve()
+            _log(cfg, f"Opening output folder: {out_dir}")
             if os.name == "nt":
                 os.startfile(str(out_dir))  # type: ignore[attr-defined]
             else:

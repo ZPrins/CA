@@ -42,14 +42,30 @@ class Config:
     generated_output_name: str | Path = "generated_model_inputs.xlsx"
 
     # Outputs
-    write_csvs: bool = True
-    write_log: bool = True  # Write per-hour detailed simulation log (text and CSV)
+    write_csvs: bool = False
+    write_log: bool = False  # Write per-hour detailed simulation log (text and CSV)
     write_model_source: bool = True  # Write a standalone Python script of the built model
+
     # Inventory snapshot monitor
-    write_daily_snapshots: bool = True                    # Write daily (or configured interval) inventory snapshots
+    write_daily_snapshots: bool = False                    # Write daily (or configured interval) inventory snapshots
     snapshot_hours: float = 24.0                          # Interval in hours between snapshots
     out_dir: str | Path = "sim_outputs"
     open_folder_after: bool = True
+
+    # Plots
+    plot_output_graphs: bool = True                       # Generate output graphs for Make and Store equipment
+    plot_parallel: bool = True                            # Use parallel workers to speed up plotting (saves images)
+    plot_workers: Optional[int] = None                    # None = auto (cpu_count); else specify number of workers
+    plot_save_images: bool = True                         # Save plots as PNGs instead of interactive windows
+    plot_full_horizon: bool = True                        # Pad/extend x-axis to the full simulation horizon (e.g., 8760 h)
+
+    # Performance/behavior toggles
+    fast_transport_cycle: bool = True                   # When True, coalesce unload+return timing in transporter (same outcomes)
+
+    # Console logging / UX
+    verbose_logging: bool = True                      # Print detailed progress to console
+    log_with_timestamps: bool = True                  # Prefix log lines with local time
+    progress_step_pct: int = 10                       # Progress update interval during run (e.g., 10%)
 
     # UX when double-clicking
     pause_on_finish: bool = True

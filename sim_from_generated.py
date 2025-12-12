@@ -786,6 +786,13 @@ def build_simpy_from_generated(
 
     # Create Move processes: per (PC, Location, Equipment Name, Next Location)
     # Each route spawns #Equipment parallel transporters cycling
+    # Optional fast transport cycle flag from sim_config
+    fast_transport_cycle = False
+    try:
+        if _cfg is not None:
+            fast_transport_cycle = bool(getattr(_cfg, "fast_transport_cycle", False))
+    except Exception:
+        fast_transport_cycle = False
     if not move_df.empty:
         # Normalize PC filter if provided
         if product_class:
@@ -816,19 +823,24 @@ def build_simpy_from_generated(
                     if best is None:
                         best = k
                 return best
-            # Origin: match exact (pc, src_loc, src_eq, product) if present, else any store at src_loc with input==product
+            # Origin: search across product classes by location/equipment and material (input)
             src_loc_u, src_eq_u, product_u = src_loc.upper(), src_eq.upper(), product.upper()
-            exact_origin = f"{pc}|{src_loc_u}|{src_eq_u}|{product_u}"
-            origin_key = exact_origin if exact_origin in stores else None
+            # Try exact with equipment first, across all PCs
+            cand_exact = [k for k in stores.keys()
+                          if k.split("|")[1] == src_loc_u and k.split("|")[2] == src_eq_u and k.split("|")[3] == product_u]
+            origin_key = _pick_store_key(cand_exact)
+            # Fallback: any store at origin location with matching material, prefer *_STORE
             if origin_key is None:
-                cand = [k for k in stores.keys() if k.startswith(pc+"|") and k.split("|")[1]==src_loc_u and k.split("|")[3]==product_u]
+                cand = [k for k in stores.keys()
+                        if k.split("|")[1] == src_loc_u and k.split("|")[3] == product_u]
                 origin_key = _pick_store_key(cand)
             if origin_key is None:
                 _warn("move_origin_not_found", "Move origin store not found for lane", {"product": product, "location": src_loc, "equipment": src_eq})
                 continue
-            # Destination: any store at dst_loc with input==product
+            # Destination: any store at dst_loc with input==product (across PCs)
             dst_loc_u = dst_loc.upper()
-            cand_d = [k for k in stores.keys() if k.startswith(pc+"|") and k.split("|")[1]==dst_loc_u and k.split("|")[3]==product_u]
+            cand_d = [k for k in stores.keys()
+                      if k.split("|")[1] == dst_loc_u and k.split("|")[3] == product_u]
             dest_key = _pick_store_key(cand_d)
             if dest_key is None:
                 _warn("move_dest_not_found", "Move destination store not found for lane", {"product": product, "next_location": dst_loc})
@@ -892,6 +904,37 @@ def build_simpy_from_generated(
                         return pc_v, loc_v, eq_v, inp_v
                     except Exception:
                         return "", "", "", ""
+                # Cache parsed tokens and log templates (micro-optimization); safe for both modes
+                _pc_o, _loc_o, _eq_o, _inp = _parse_store_key(origin_key)
+                _pc_d, _loc_d, _eq_d, _ = _parse_store_key(dest_key)
+                _log_loaded_tpl = {
+                    "product_class": _pc_o,
+                    "product": _inp,
+                    "units": "TON",
+                    "src_location": _loc_o,
+                    "src_equipment": _eq_o,
+                    "dst_location": _loc_d,
+                    "dst_equipment": _eq_d,
+                }
+                _log_transit_tpl = {
+                    "product_class": _pc_o,
+                    "product": _inp,
+                    "units": "TON",
+                    "src_location": _loc_o,
+                    "src_equipment": _eq_o,
+                    "dst_location": _loc_d,
+                    "dst_equipment": _eq_d,
+                    "duration_h": float(to_min) / 60.0,
+                }
+                _log_unloaded_tpl = {
+                    "product_class": _pc_o,
+                    "product": _inp,
+                    "units": "TON",
+                    "src_location": _loc_o,
+                    "src_equipment": _eq_o,
+                    "dst_location": _loc_d,
+                    "dst_equipment": _eq_d,
+                }
                 while True:
                     # Load
                     if load_rate_tph <= 0 or payload_t <= 0:
@@ -906,10 +949,44 @@ def build_simpy_from_generated(
                         yield origin.get(take)
                         # Log load event
                         try:
+                            if fast_transport_cycle:
+                                rec = dict(_log_loaded_tpl)
+                                rec["qty_t"] = float(take)
+                                log_action("Loaded", env.now, rec)
+                            else:
+                                _pc_o, _loc_o, _eq_o, _inp = _parse_store_key(origin_key)
+                                _pc_d, _loc_d, _eq_d, _ = _parse_store_key(dest_key)
+                                log_action(
+                                    "Loaded",
+                                    env.now,
+                                    {
+                                        "product_class": _pc_o,
+                                        "product": _inp,
+                                        "qty_t": float(take),
+                                        "units": "TON",
+                                        "src_location": _loc_o,
+                                        "src_equipment": _eq_o,
+                                        "dst_location": _loc_d,
+                                        "dst_equipment": _eq_d,
+                                    },
+                                )
+                        except Exception:
+                            pass
+                    else:
+                        # Wait a step for stock to appear
+                        yield env.timeout(step_h)
+                        continue
+                    # Travel to
+                    try:
+                        if fast_transport_cycle:
+                            rec = dict(_log_transit_tpl)
+                            rec["qty_t"] = float(take)
+                            log_action("Transit", env.now, rec)
+                        else:
                             _pc_o, _loc_o, _eq_o, _inp = _parse_store_key(origin_key)
                             _pc_d, _loc_d, _eq_d, _ = _parse_store_key(dest_key)
                             log_action(
-                                "Loaded",
+                                "Transit",
                                 env.now,
                                 {
                                     "product_class": _pc_o,
@@ -920,33 +997,9 @@ def build_simpy_from_generated(
                                     "src_equipment": _eq_o,
                                     "dst_location": _loc_d,
                                     "dst_equipment": _eq_d,
+                                    "duration_h": float(to_min) / 60.0,
                                 },
                             )
-                        except Exception:
-                            pass
-                    else:
-                        # Wait a step for stock to appear
-                        yield env.timeout(step_h)
-                        continue
-                    # Travel to
-                    try:
-                        _pc_o, _loc_o, _eq_o, _inp = _parse_store_key(origin_key)
-                        _pc_d, _loc_d, _eq_d, _ = _parse_store_key(dest_key)
-                        log_action(
-                            "Transit",
-                            env.now,
-                            {
-                                "product_class": _pc_o,
-                                "product": _inp,
-                                "qty_t": float(take),
-                                "units": "TON",
-                                "src_location": _loc_o,
-                                "src_equipment": _eq_o,
-                                "dst_location": _loc_d,
-                                "dst_equipment": _eq_d,
-                                "duration_h": float(to_min) / 60.0,
-                            },
-                        )
                     except Exception:
                         pass
                     yield env.timeout(to_min / 60.0)
@@ -962,29 +1015,40 @@ def build_simpy_from_generated(
                         stats.tons_moved += put_amt
                         # Log unload event
                         try:
-                            _pc_o, _loc_o, _eq_o, _inp = _parse_store_key(origin_key)
-                            _pc_d, _loc_d, _eq_d, _ = _parse_store_key(dest_key)
-                            log_action(
-                                "Unloaded",
-                                env.now,
-                                {
-                                    "product_class": _pc_o,
-                                    "product": _inp,
-                                    "qty_t": float(put_amt),
-                                    "units": "TON",
-                                    "src_location": _loc_o,
-                                    "src_equipment": _eq_o,
-                                    "dst_location": _loc_d,
-                                    "dst_equipment": _eq_d,
-                                },
-                            )
+                            if fast_transport_cycle:
+                                rec = dict(_log_unloaded_tpl)
+                                rec["qty_t"] = float(put_amt)
+                                log_action("Unloaded", env.now, rec)
+                            else:
+                                _pc_o, _loc_o, _eq_o, _inp = _parse_store_key(origin_key)
+                                _pc_d, _loc_d, _eq_d, _ = _parse_store_key(dest_key)
+                                log_action(
+                                    "Unloaded",
+                                    env.now,
+                                    {
+                                        "product_class": _pc_o,
+                                        "product": _inp,
+                                        "qty_t": float(put_amt),
+                                        "units": "TON",
+                                        "src_location": _loc_o,
+                                        "src_equipment": _eq_o,
+                                        "dst_location": _loc_d,
+                                        "dst_equipment": _eq_d,
+                                    },
+                                )
                         except Exception:
                             pass
+                        # Travel back
+                        yield env.timeout(back_min / 60.0)
                     else:
                         # No room: return without unloading and try later
-                        yield env.timeout(step_h)
-                    # Travel back
-                    yield env.timeout(back_min / 60.0)
+                        if fast_transport_cycle:
+                            yield env.timeout(step_h + back_min / 60.0)
+                            continue
+                        else:
+                            yield env.timeout(step_h)
+                            # Travel back
+                            yield env.timeout(back_min / 60.0)
 
             origin = stores.get(origin_key)
             dest = stores.get(dest_key)

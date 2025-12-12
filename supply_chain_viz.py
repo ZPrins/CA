@@ -1070,6 +1070,106 @@ def export_pyvis(G: nx.MultiDiGraph, out_html: Path, config) -> None:
         html_text = html_text.replace('<div id="mynetwork"', legend_block + '<div id="mynetwork"')
 
         # 2) JS to auto-fit only; leave physics as configured
+        # Also draw swimlane wireframes (rectangles) across all product-class panels for each Location row when enabled.
+        try:
+            _draw_wire = bool(getattr(config, 'swimlane_wireframes', True)) and ('positions' in locals()) and isinstance(positions, dict) and len(positions) > 0 and use_fixed_grid and (not enable_physics)
+        except Exception:
+            _draw_wire = False
+        rects_js = "[]"
+        style_js = "{}"
+        labels_js = "[]"
+        label_style_js = "{}"
+        pc_labels_js = "[]"
+        pc_label_style_js = "{}"
+        if _draw_wire:
+            import json as _json
+            # Overall horizontal min/max among all nodes (canvas coords)
+            try:
+                all_xs = [int(xy[0]) for xy in positions.values()]
+                x_min_all = min(all_xs)
+                x_max_all = max(all_xs)
+            except Exception:
+                x_min_all = 0
+                x_max_all = len(pc_to_col) * PCSEP + 3 * XSEP
+            # Y band spacing
+            YSEP_val = int(getattr(config, 'grid_y_sep', YSEP))
+            margin_x = int(getattr(config, 'swimlane_wireframe_margin_x', 60))
+            margin_y = int(getattr(config, 'swimlane_wireframe_margin_y', 40))
+            # Collect unique loc_index rows present
+            loc_indices = sorted({int(d.get('loc_index', 0)) for _, d in G.nodes(data=True)})
+            # Build preferred label text for each loc_index (most common location name in that row)
+            from collections import Counter as _Counter  # local import to avoid global dependency
+            _names_by_li = {}
+            for _n, _d in G.nodes(data=True):
+                try:
+                    _li = int(_d.get('loc_index', 0))
+                except Exception:
+                    _li = 0
+                _locname = str(_d.get('location', '')).strip()
+                if _locname:
+                    _names_by_li.setdefault(_li, []).append(_locname)
+            rects = []
+            labels = []
+            width = int((x_max_all - x_min_all) + 2 * margin_x)
+            # Label config
+            label_on = bool(getattr(config, 'swimlane_labels', True))
+            lab_ml = int(getattr(config, 'swimlane_label_margin_left', 10))
+            lab_mt = int(getattr(config, 'swimlane_label_margin_top', 6))
+            for li in loc_indices:
+                y_center = int(li * YSEP)
+                x_left = int(x_min_all - margin_x)
+                y_top = int(y_center - (YSEP_val // 2) + margin_y)
+                height = int(YSEP_val - 2 * margin_y)
+                rects.append({'x': x_left, 'y': y_top, 'w': width, 'h': height})
+                if label_on:
+                    names = _names_by_li.get(li, [])
+                    label_text = _Counter(names).most_common(1)[0][0] if names else f"Lane {li}"
+                    labels.append({'text': label_text, 'x': int(x_left + lab_ml), 'y': int(y_top + lab_mt)})
+            rects_js = _json.dumps(rects)
+            labels_js = _json.dumps(labels)
+            style_js = _json.dumps({
+                'color': getattr(config, 'swimlane_wireframe_color', 'rgba(0,0,0,0.25)'),
+                'stroke': int(getattr(config, 'swimlane_wireframe_stroke', 2)),
+                'radius': int(getattr(config, 'swimlane_wireframe_corner_radius', 10)),
+            })
+            label_style_js = _json.dumps({
+                'enabled': bool(getattr(config, 'swimlane_labels', True)),
+                'color': getattr(config, 'swimlane_label_text_color', '#222222'),
+                'fontPx': int(getattr(config, 'swimlane_label_font_px', 14)),
+                'fontFamily': getattr(config, 'swimlane_label_font_family', 'Arial, sans-serif'),
+            })
+            # Build per-product-class bottom-centered labels for each swimlane
+            pc_labels = []
+            try:
+                pc_label_on = bool(getattr(config, 'swimlane_pc_labels', True))
+            except Exception:
+                pc_label_on = True
+            if pc_label_on:
+                # per-PC centers across all nodes (panel centers)
+                pc_centers: Dict[str, int] = {}
+                for pc in pc_order:
+                    xs = [int(positions[n][0]) for n, d in G.nodes(data=True) if str(d.get('product_class', '')).strip() == pc and n in positions]
+                    if xs:
+                        pc_centers[pc] = int((min(xs) + max(xs)) / 2)
+                bottom_margin = int(getattr(config, 'swimlane_pc_label_margin_bottom', 10))
+                for li in loc_indices:
+                    # derive y from the rect we just computed
+                    y_center = int(li * YSEP)
+                    y_top = int(y_center - (YSEP_val // 2) + margin_y)
+                    height = int(YSEP_val - 2 * margin_y)
+                    y_baseline = int(y_top + height - bottom_margin)
+                    for pc in pc_order:
+                        cx = pc_centers.get(pc)
+                        if cx is None:
+                            continue
+                        pc_labels.append({'text': pc, 'x': int(cx), 'y': y_baseline})
+            pc_labels_js = _json.dumps(pc_labels)
+            pc_label_style_js = _json.dumps({
+                'enabled': bool(getattr(config, 'swimlane_pc_labels', True)),
+                'color': getattr(config, 'swimlane_pc_label_text_color', '#222222'),
+                'fontPx': int(getattr(config, 'swimlane_pc_label_font_px', 16)),
+                'fontFamily': getattr(config, 'swimlane_pc_label_font_family', 'Arial, sans-serif'),
+            })
         inject_js = (
             "\n<script type=\"text/javascript\">\n"
             "window.addEventListener('load', function(){\n"
@@ -1081,6 +1181,18 @@ def export_pyvis(G: nx.MultiDiGraph, out_html: Path, config) -> None:
             "    var bar = document.getElementById('bar'); if (bar && bar.parentNode && bar.parentNode.parentNode && bar.parentNode.parentNode.parentNode && bar.parentNode.parentNode.parentNode.id === 'loadingBar') { bar.style.display = 'none'; }\n"
             "  } catch(e) { }\n"
             "  try { if (typeof network !== 'undefined') { network.once('afterDrawing', function(){ var lb2 = document.getElementById('loadingBar'); if(lb2){ lb2.style.display='none'; } }); } } catch(e) { }\n"
+            + ("  try { if (typeof network !== 'undefined') {\n"
+               "    var rects = " + rects_js + ";\n"
+               "    var style = " + style_js + ";\n"
+               "    var labels = " + labels_js + ";\n"
+               "    var labelStyle = " + label_style_js + ";\n"
+               "    var pcLabels = " + pc_labels_js + ";\n"
+               "    var pcLabelStyle = " + pc_label_style_js + ";\n"
+               "    function drawRoundRect(ctx, x, y, w, h, r){\n"
+               "      if (!ctx) return; r = Math.max(0, r||0); ctx.beginPath(); ctx.moveTo(x+r, y); ctx.lineTo(x+w-r, y); ctx.arcTo(x+w, y, x+w, y+r, r); ctx.lineTo(x+w, y+h-r); ctx.arcTo(x+w, y+h, x+w-r, y+h, r); ctx.lineTo(x+r, y+h); ctx.arcTo(x, y+h, x, y+h-r, r); ctx.lineTo(x, y+r); ctx.arcTo(x, y, x+r, y, r); ctx.closePath(); }\n"
+               "    network.on('afterDrawing', function(ctx){ try { if (!rects || rects.length===0) return; ctx.save(); ctx.strokeStyle = style.color || 'rgba(0,0,0,0.25)'; ctx.lineWidth = style.stroke || 2; for (var i=0;i<rects.length;i++){ var r = rects[i]; drawRoundRect(ctx, r.x, r.y, r.w, r.h, style.radius||8); ctx.stroke(); } if (labelStyle && labelStyle.enabled && labels && labels.length){ ctx.fillStyle = labelStyle.color || '#222'; ctx.font = String(labelStyle.fontPx||14) + 'px ' + (labelStyle.fontFamily || 'Arial, sans-serif'); ctx.textBaseline = 'top'; ctx.textAlign = 'left'; for (var j=0;j<labels.length;j++){ var L = labels[j]; try { ctx.fillText(String(L.text||''), L.x, L.y); } catch(e2){} } } if (pcLabelStyle && pcLabelStyle.enabled && pcLabels && pcLabels.length){ ctx.fillStyle = pcLabelStyle.color || '#222'; ctx.font = String(pcLabelStyle.fontPx||16) + 'px ' + (pcLabelStyle.fontFamily || 'Arial, sans-serif'); ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'center'; for (var k=0;k<pcLabels.length;k++){ var P = pcLabels[k]; try { ctx.fillText(String(P.text||''), P.x, P.y); } catch(e3){} } } ctx.restore(); } catch(e) { console && console.warn && console.warn('wireframe draw failed', e); } });\n"
+               "  } } catch(e) { }\n")
+            +
             "});\n"
             "</script>\n"
         )
@@ -1357,25 +1469,27 @@ def ensure_make_sheet(xlsx_path: Path) -> dict:
 
     # Read existing Make sheet (if any)
     current = _read_sheet_df(xlsx_path, "Make")
+    created_new = False
     if current is None or current.empty:
         current = pd.DataFrame(columns=MAKE_SHEET_COLS)
+        created_new = True
 
-    # Backward compatibility:
-    # - If 'Output' is missing but legacy 'Product' exists, copy Product → Output
-    if "Output" not in current.columns and "Product" in current.columns:
-        try:
-            current["Output"] = current["Product"]
-        except Exception:
-            current = current.assign(Output=current.get("Product", pd.NA))
-
-    current = _ensure_columns(current, MAKE_SHEET_COLS)
-
+    # Build existing key set without modifying user's headings
     if not current.empty:
-        current["Location"] = current["Location"].astype(str)
-        current["Equipment Name"] = current["Equipment Name"].astype(str)
-        current["Output"] = current["Output"].astype(str)
-        current_keys = _normalize_key_triplet(current, "Location", "Equipment Name", "Output")
-        existing_key_set = set(current_keys.tolist())
+        # Use 'Output' if present, otherwise fall back to legacy 'Product' for keying
+        key_third_col = "Output" if "Output" in current.columns else ("Product" if "Product" in current.columns else None)
+        if key_third_col is None:
+            existing_key_set = set()
+        else:
+            for c in ["Location", "Equipment Name", key_third_col]:
+                if c in current.columns:
+                    current[c] = current[c].astype(str)
+            if key_third_col != "Output":
+                temp = current.rename(columns={key_third_col: "Output"})
+                current_keys = _normalize_key_triplet(temp, "Location", "Equipment Name", "Output")
+            else:
+                current_keys = _normalize_key_triplet(current, "Location", "Equipment Name", "Output")
+            existing_key_set = set(current_keys.tolist())
     else:
         existing_key_set = set()
 
@@ -1392,33 +1506,30 @@ def ensure_make_sheet(xlsx_path: Path) -> dict:
 
     added_count = 0
     if not rows_to_add.empty:
-        # Create new rows with defaults
+        # Create new rows with defaults (only for columns that already exist to preserve headings)
         for _, r in rows_to_add.iterrows():
-            new_row = {
-                "Location": r["Location"],
-                "Equipment Name": r["Equipment Name"],
-                "Input": r.get("Input", ""),
-                "Output": r.get("Output", ""),
-            }
-            new_row.update(defaults)
+            new_row = {}
+            for col in current.columns:
+                if col in {"Location", "Equipment Name", "Input", "Output"}:
+                    new_row[col] = r.get(col, r.get(col.title(), "")) if col in r else r[col]
+                elif col in defaults:
+                    new_row[col] = defaults[col]
+                else:
+                    # leave user-defined extra columns blank
+                    new_row[col] = ""
             current = pd.concat([current, pd.DataFrame([new_row])], ignore_index=True)
             added_count += 1
 
-    # Order and sort columns
-    # Drop legacy 'Product' column if present (remove duplication)
-    if "Product" in current.columns:
-        try:
-            current = current.drop(columns=["Product"])  # do not keep legacy column
-        except Exception:
-            pass
-    extra_cols = [c for c in current.columns if c not in MAKE_SHEET_COLS and c != "Product"]
-    ordered_cols = MAKE_SHEET_COLS + extra_cols
-    sort_cols = ["Location", "Equipment Name", "Output"]
+    # Preserve existing column order (do not inject or reorder headings)
+    ordered_cols = list(current.columns)
+    sort_cols = [c for c in ["Location", "Equipment Name", "Output"] if c in current.columns]
 
     # Enforce uniqueness on the key columns before writing
-    current = current.drop_duplicates(subset=sort_cols, keep="first")
+    if sort_cols:
+        current = current.drop_duplicates(subset=sort_cols, keep="first")
+        current = current.sort_values(sort_cols)
 
-    current = current[ordered_cols].sort_values(sort_cols).reset_index(drop=True)
+    current = current[ordered_cols].reset_index(drop=True)
 
     _write_sheet_df(xlsx_path, "Make", current)
     summary = {"rows_added": added_count}
@@ -1457,10 +1568,9 @@ def ensure_store_sheet(xlsx_path: Path) -> dict:
     current = _read_sheet_df(xlsx_path, "Store")
     if current is None or current.empty:
         current = pd.DataFrame(columns=STORE_SHEET_COLS)
-    
-    current = _ensure_columns(current, STORE_SHEET_COLS)
-    
-    if not current.empty:
+
+    # Build existing key set without changing user's headings
+    if not current.empty and all(c in current.columns for c in ["Location", "Equipment Name", "Input"]):
         current["Location"] = current["Location"].astype(str)
         current["Equipment Name"] = current["Equipment Name"].astype(str)
         current["Input"] = current["Input"].astype(str)
@@ -1546,11 +1656,8 @@ def ensure_move_sheet(xlsx_path: Path) -> dict:
     if current is None or current.empty:
         current = pd.DataFrame(columns=MOVE_SHEET_COLS)
 
-    current = _ensure_columns(current, MOVE_SHEET_COLS)
-
-    # Build existing key set from current
-    if not current.empty:
-        # Ensure type consistency
+    # Build existing key set from current without altering headings
+    if not current.empty and all(c in current.columns for c in ["Product", "Location", "Equipment Name", "Next Location"]):
         for c in ["Product", "Location", "Equipment Name", "Next Location"]:
             current[c] = current[c].astype(str)
         current_keys = _normalize_key_quad(current, "Product", "Location", "Equipment Name", "Next Location")
@@ -1565,23 +1672,26 @@ def ensure_move_sheet(xlsx_path: Path) -> dict:
     added_count = 0
     if not rows_to_add.empty:
         for _, r in rows_to_add.iterrows():
-            new_row = {
-                "Product": r["Product"],
-                "Location": r["Location"],
-                "Equipment Name": r["Equipment Name"],
-                "Next Location": r["Next Location"],
-            }
-            new_row.update(defaults)
+            new_row = {}
+            for col in current.columns:
+                if col in {"Product", "Location", "Equipment Name", "Next Location"}:
+                    new_row[col] = r.get(col, "")
+                elif col in defaults:
+                    new_row[col] = defaults[col]
+                else:
+                    new_row[col] = ""
             current = pd.concat([current, pd.DataFrame([new_row])], ignore_index=True)
             added_count += 1
 
-    # Order columns and sort for stability; enforce uniqueness on key cols
-    extra_cols = [c for c in current.columns if c not in MOVE_SHEET_COLS]
-    ordered_cols = MOVE_SHEET_COLS + extra_cols
-    sort_cols = ["Product", "Location", "Equipment Name", "Next Location"]
+    # Preserve existing column order and only sort if key columns exist
+    ordered_cols = list(current.columns)
+    sort_cols = [c for c in ["Product", "Location", "Equipment Name", "Next Location"] if c in current.columns]
 
-    current = current.drop_duplicates(subset=sort_cols, keep="first")
-    current = current[ordered_cols].sort_values(sort_cols).reset_index(drop=True)
+    if sort_cols:
+        current = current.drop_duplicates(subset=sort_cols, keep="first")
+        current = current.sort_values(sort_cols)
+
+    current = current[ordered_cols].reset_index(drop=True)
 
     _write_sheet_df(xlsx_path, "Move", current)
     summary = {"rows_added": added_count}
@@ -1625,9 +1735,7 @@ def ensure_delivery_sheet(xlsx_path: Path) -> dict:
     if current is None or current.empty:
         current = pd.DataFrame(columns=DELIVERY_SHEET_COLS)
 
-    current = _ensure_columns(current, DELIVERY_SHEET_COLS)
-
-    if not current.empty:
+    if not current.empty and all(c in current.columns for c in ["Location", "Input"]):
         current["Location"] = current["Location"].astype(str)
         current["Input"] = current["Input"].astype(str)
         current_keys = _normalize_key_pair(current, "Location", "Input")
@@ -1644,19 +1752,26 @@ def ensure_delivery_sheet(xlsx_path: Path) -> dict:
     added_count = 0
     if not rows_to_add.empty:
         for _, r in rows_to_add.iterrows():
-            new_row = {"Location": r["Location"], "Input": r["Input"]}
-            new_row.update(defaults)
+            new_row = {}
+            for col in current.columns:
+                if col in {"Location", "Input"}:
+                    new_row[col] = r.get(col, "")
+                elif col in defaults:
+                    new_row[col] = defaults[col]
+                else:
+                    new_row[col] = ""
             current = pd.concat([current, pd.DataFrame([new_row])], ignore_index=True)
             added_count += 1
 
-    extra_cols = [c for c in current.columns if c not in DELIVERY_SHEET_COLS]
-    ordered_cols = DELIVERY_SHEET_COLS + extra_cols
-    sort_cols = ["Location", "Input"]
-    
-    # Also good practice to deduplicate here as well
-    current = current.drop_duplicates(subset=sort_cols, keep="first")
-    
-    current = current[ordered_cols].sort_values(sort_cols).reset_index(drop=True)
+    ordered_cols = list(current.columns)
+    sort_cols = [c for c in ["Location", "Input"] if c in current.columns]
+
+    # Deduplicate/sort only if key cols present
+    if sort_cols:
+        current = current.drop_duplicates(subset=sort_cols, keep="first")
+        current = current.sort_values(sort_cols)
+
+    current = current[ordered_cols].reset_index(drop=True)
 
     _write_sheet_df(xlsx_path, SHEET_NAME, current)
     summary = {"rows_added": added_count}
@@ -1719,10 +1834,8 @@ def ensure_berths_sheet(xlsx_path: Path) -> dict:
     if current is None or current.empty:
         current = pd.DataFrame(columns=BERTHS_SHEET_COLS)
 
-    current = _ensure_columns(current, BERTHS_SHEET_COLS)
-
-    # Build existing key set (normalized berth name)
-    if not current.empty:
+    # Build existing key set (normalized berth name) without altering headings
+    if not current.empty and "Berth" in current.columns:
         cur_keys = current["Berth"].astype(str).fillna("").str.strip().str.upper()
         existing_key_set = set(cur_keys.tolist())
     else:
@@ -1736,18 +1849,26 @@ def ensure_berths_sheet(xlsx_path: Path) -> dict:
     added_count = 0
     if not rows_to_add.empty:
         for _, r in rows_to_add.iterrows():
-            new_row = {"Berth": r["Berth"]}
-            new_row.update(defaults)
+            new_row = {}
+            for col in current.columns:
+                if col == "Berth":
+                    new_row[col] = r["Berth"]
+                elif col in defaults:
+                    new_row[col] = defaults[col]
+                else:
+                    new_row[col] = ""
             current = pd.concat([current, pd.DataFrame([new_row])], ignore_index=True)
             added_count += 1
 
-    # Preserve extra columns if any and sort
-    extra_cols = [c for c in current.columns if c not in BERTHS_SHEET_COLS]
-    ordered_cols = BERTHS_SHEET_COLS + extra_cols
-    sort_cols = ["Berth"]
+    # Preserve existing column order and only sort if key column present
+    ordered_cols = list(current.columns)
+    sort_cols = ["Berth"] if "Berth" in current.columns else []
 
-    current = current.drop_duplicates(subset=sort_cols, keep="first")
-    current = current[ordered_cols].sort_values(sort_cols).reset_index(drop=True)
+    if sort_cols:
+        current = current.drop_duplicates(subset=sort_cols, keep="first")
+        current = current.sort_values(sort_cols)
+
+    current = current[ordered_cols].reset_index(drop=True)
 
     _write_sheet_df(xlsx_path, "Berths", current)
     summary = {"rows_added": added_count}
