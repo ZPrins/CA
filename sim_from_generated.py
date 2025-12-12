@@ -575,10 +575,26 @@ def build_simpy_from_generated(
                     pass
         # Bounds and warnings
         if mean_rate < 0:
-            _warn("make_rate_negative", "Mean Production Rate was negative; clamped to 0", {"node": nid, "value": mean_rate})
+            _warn("make_rate_negative", "Mean Production Rate was negative; clamped to 0", {
+                "node": nid,
+                "product_class": str(nd.get("product_class", "")),
+                "location": str(nd.get("location", "")),
+                "equipment": str(nd.get("equipment", "")),
+                "process": "Make",
+                "input": str(inp),
+                "value": mean_rate,
+            })
             mean_rate = 0.0
         if cons_pct < 0 or cons_pct > 1:
-            _warn("consumption_percent_out_of_range", "Consumption % outside [0,1]; clamped (expects 0.88 for 88%)", {"node": nid, "value": cons_pct})
+            _warn("consumption_percent_out_of_range", "Consumption % outside [0,1]; clamped (expects 0.88 for 88%)", {
+                "node": nid,
+                "product_class": str(nd.get("product_class", "")),
+                "location": str(nd.get("location", "")),
+                "equipment": str(nd.get("equipment", "")),
+                "process": "Make",
+                "input": str(inp),
+                "value": cons_pct,
+            })
             cons_pct = max(0.0, min(1.0, cons_pct))
         # Resource representing the unit (capacity 1 by default)
         res = simpy.Resource(env, capacity=1)
@@ -610,21 +626,39 @@ def build_simpy_from_generated(
         def producer(env: simpy.Environment, unit: simpy.Resource, cands: list[dict[str, str]], in_store_key_: Optional[Key], rate_tph: float, cons_pct_: float, step_h: float, rule: str, nd_meta: dict):
             # Single-output-at-a-time production; choose destination each step by rule
             while True:
-                # Choose destination
-                idx = _choose_candidate(rule, cands)
-                target = cands[idx]
-                out_store_key_ = target["out_store_key"]
-                out_product_ = target["product"]
+                # Choose destination: only produce this step if some candidate store can take the FULL step output
+                full_step_qty = rate_tph * step_h if rate_tph > 0 else 0.0
 
-                # Calculate max producible this step
-                qty_out = rate_tph * step_h if rate_tph > 0 else 0.0
-                # Respect destination capacity first (avoid consuming input we can't store)
-                dst_cont = stores.get(out_store_key_)
-                if dst_cont is not None and qty_out > 0:
-                    room = dst_cont.capacity - dst_cont.level if dst_cont.capacity is not None else qty_out
-                    qty_out = max(0.0, min(qty_out, room))
-                else:
+                # Build list of eligible candidates that have enough room for the entire step's output
+                eligible: list[dict[str, str]] = []
+                for c in cands:
+                    cont = stores.get(c["out_store_key"])
+                    if cont is None:
+                        continue
+                    # If capacity is None, treat as unbounded
+                    if getattr(cont, "capacity", None) is None:
+                        eligible.append(c)
+                        continue
+                    room = float(cont.capacity) - float(cont.level)
+                    if full_step_qty <= 0 or room >= full_step_qty:
+                        eligible.append(c)
+
+                if not eligible:
+                    # No destination can accept a full step's production; halt this step (no input consumed)
+                    out_store_key_ = None
+                    out_product_ = ""
+                    dst_cont = None
                     qty_out = 0.0
+                else:
+                    # Pick among eligible by rule (min level or min fill)
+                    idx = _choose_candidate(rule, eligible)
+                    target = eligible[idx]
+                    out_store_key_ = target["out_store_key"]
+                    out_product_ = target["product"]
+
+                    # Full step output is safe to produce for this destination (capacity already checked)
+                    dst_cont = stores.get(out_store_key_)
+                    qty_out = full_step_qty
 
                 # Input withdrawal proportional to output (cons_pct_ is 0..1, e.g., 0.88 for 88%)
                 qty_in = qty_out * cons_pct_ if in_store_key_ else 0.0
@@ -660,6 +694,14 @@ def build_simpy_from_generated(
                             if scale < 1.0:
                                 try:
                                     _warn("make_scaled_for_input", "Scaled production due to insufficient input this step", {
+                                        "time_h": float(env.now),
+                                        "product_class": str(nd_meta.get("product_class", "")),
+                                        "location": str(nd_meta.get("location", "")),
+                                        "equipment": str(nd_meta.get("equipment", "")),
+                                        "process": "Make",
+                                        "input": str(inp_token),
+                                        "output": str(out_product_),
+                                        "destination_store": str(out_store_key_),
                                         "requested_out_t": float(rate_tph * step_h),
                                         "planned_out_t": float(qty_in / max(cons_pct_, 1e-12)),
                                         "actual_out_t": float(qty_out * scale),
@@ -887,6 +929,26 @@ def build_simpy_from_generated(
                         yield env.timeout(step_h)
                         continue
                     # Travel to
+                    try:
+                        _pc_o, _loc_o, _eq_o, _inp = _parse_store_key(origin_key)
+                        _pc_d, _loc_d, _eq_d, _ = _parse_store_key(dest_key)
+                        log_action(
+                            "Transit",
+                            env.now,
+                            {
+                                "product_class": _pc_o,
+                                "product": _inp,
+                                "qty_t": float(take),
+                                "units": "TON",
+                                "src_location": _loc_o,
+                                "src_equipment": _eq_o,
+                                "dst_location": _loc_d,
+                                "dst_equipment": _eq_d,
+                                "duration_h": float(to_min) / 60.0,
+                            },
+                        )
+                    except Exception:
+                        pass
                     yield env.timeout(to_min / 60.0)
                     # Unload at rate
                     unload_time_h = take / max(unload_rate_tph, 1e-9)

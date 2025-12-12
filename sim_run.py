@@ -181,18 +181,55 @@ def _write_csvs(cfg, summary: Dict[str, Any]) -> None:
                 f.write("TotalUnmet\n")
                 f.write(f"{unmet}\n")
 
-    # Route stats if present and tabular
+    # Route stats if present (objects or dicts). Serialize sensibly.
     if "route_stats" in summary and isinstance(summary["route_stats"], dict):
         try:
+            from dataclasses import asdict, is_dataclass  # type: ignore
+        except Exception:
+            def is_dataclass(_):
+                return False
+            def asdict(x):  # type: ignore
+                return x  # best-effort
+        try:
             rs = summary["route_stats"]
-            # Expecting dict[name] -> dict of metrics
-            keys = sorted({k2 for v in rs.values() if isinstance(v, dict) for k2 in v.keys()})
+
+            def _norm(obj):
+                # Convert RouteStats or arbitrary objects to a plain dict of simple fields
+                try:
+                    if isinstance(obj, dict):
+                        d = dict(obj)
+                    elif is_dataclass(obj):
+                        d = asdict(obj)
+                    elif hasattr(obj, "__dict__"):
+                        d = {k: getattr(obj, k) for k in vars(obj).keys() if not k.startswith("_")}
+                    else:
+                        d = {"value": obj}
+                except Exception:
+                    d = {"value": str(obj)}
+                # Derived metrics (if available)
+                try:
+                    trips = float(d.get("trips_completed", 0) or 0)
+                    tons = float(d.get("tons_moved", 0) or 0)
+                    d["avg_ton_per_trip"] = (tons / trips) if trips else 0.0
+                except Exception:
+                    pass
+                return d
+
+            normed = {route: _norm(metrics) for route, metrics in rs.items()}
+            # Union of all metric keys to build header
+            key_set = set()
+            for m in normed.values():
+                key_set.update(m.keys())
+            keys = sorted(key_set)
+
             with open(out_dir / "route_stats.csv", "w", encoding="utf-8") as f:
                 f.write(",".join(["Route"] + keys) + "\n")
-                for route, metrics in rs.items():
-                    row = [str(route)] + [str(metrics.get(k, "")) for k in keys]
+                for route, metrics in normed.items():
+                    route_str = str(route).replace("→", "->")
+                    row = [route_str] + [str(metrics.get(k, "")) for k in keys]
                     f.write(",".join(row) + "\n")
         except Exception:
+            # best effort; don't fail the whole run on export problems
             pass
 
     # Warnings (variable columns). Write union of keys across items.
@@ -240,7 +277,7 @@ def _write_action_log(cfg, meta: Dict[str, Any]) -> None:
     # CSV (structured)
     csv_cols = [
         "hour", "time_h", "event", "product_class", "location", "equipment", "process",
-        "product", "qty_t", "units", "src_location", "src_equipment", "dst_location", "dst_equipment",
+        "product", "qty_t", "units", "src_location", "src_equipment", "dst_location", "dst_equipment", "duration_h",
     ]
     try:
         import csv as _csv
@@ -294,6 +331,14 @@ def _write_action_log(cfg, meta: Dict[str, Any]) -> None:
                 dst_loc = e.get("dst_location", "")
                 dst_eq = e.get("dst_equipment", "")
                 lines.append(f"  {dst_loc} {dst_eq} Unloaded {fmt_qty(e.get('qty_t'))} TON {prod} from {src_loc} {src_eq}")
+            elif ev == "Transit":
+                src_loc = e.get("src_location", "")
+                src_eq = e.get("src_equipment", "")
+                dst_loc = e.get("dst_location", "")
+                dst_eq = e.get("dst_equipment", "")
+                dur = e.get("duration_h", "")
+                dur_str = f" in {dur} h" if dur not in (None, "") else ""
+                lines.append(f"  {src_loc} {src_eq} Transit {fmt_qty(e.get('qty_t'))} TON {prod} to {dst_loc} {dst_eq}{dur_str}")
             elif ev == "Delivered":
                 loc = e.get("location", "")
                 lines.append(f"  {loc} Delivered {fmt_qty(e.get('qty_t'))} TON {prod}")
@@ -393,7 +438,15 @@ def _write_frozen_model(cfg, meta: Dict[str, Any]) -> None:
     script.append("def build():\n")
     script.append("    env = simpy.Environment()\n")
     script.append("    stores: Dict[str, simpy.Container] = {}\n")
-    script.append("    unmet: Dict[str, float] = {}\n\n")
+    script.append("    unmet: Dict[str, float] = {}\n")
+    script.append("    action_log: list[dict] = []\n\n")
+    script.append("    def log_action(event: str, t: float, details: dict):\n")
+    script.append("        try:\n")
+    script.append("            entry = {\"event\": event, \"time_h\": float(t)}\n")
+    script.append("            entry.update(details)\n")
+    script.append("            action_log.append(entry)\n")
+    script.append("        except Exception:\n")
+    script.append("            pass\n\n")
 
     # Stores
     script.append("    # Stores\n")
@@ -510,6 +563,15 @@ def _write_frozen_model(cfg, meta: Dict[str, Any]) -> None:
     # Moves
     script.append("    # Transporter (move) processes\n")
     script.append("    def _transporter(env, origin_key, dest_key, payload_t, load_rate_tph, unload_rate_tph, to_min, back_min, step_h):\n")
+    script.append("        def _parse_store_key(k: str):\n")
+    script.append("            try:\n")
+    script.append("                pc_v, loc_v, eq_v, inp_v = str(k).split('|')\n")
+    script.append("                return pc_v, loc_v, eq_v, inp_v\n")
+    script.append("            except Exception:\n")
+    script.append("                return '', '', '', ''\n")
+    script.append("        pc_o, loc_o, eq_o, inp = _parse_store_key(origin_key)\n")
+    script.append("        pc_d, loc_d, eq_d, _ = _parse_store_key(dest_key)\n")
+    script.append("        is_train = ('TRAIN' in str(eq_o).upper()) or ('TRAIN' in str(eq_d).upper())\n")
     script.append("        while True:\n")
     script.append("            if load_rate_tph <= 0 or payload_t <= 0:\n")
     script.append("                yield env.timeout((float(to_min)+float(back_min))/60.0 if (to_min or back_min) else float(step_h))\n")
@@ -519,21 +581,89 @@ def _write_frozen_model(cfg, meta: Dict[str, Any]) -> None:
     script.append("            if origin is None or dest is None:\n")
     script.append("                yield env.timeout(float(step_h))\n")
     script.append("                continue\n")
+    script.append("            # For TRAIN operations, require full payload available at origin AND full room at destination before loading\n")
+    script.append("            if is_train:\n")
+    script.append("                have_stock = float(origin.level) >= float(payload_t)\n")
+    script.append("                have_room = (dest.capacity - dest.level) >= float(payload_t) if dest.capacity is not None else True\n")
+    script.append("                if not (have_stock and have_room):\n")
+    script.append("                    yield env.timeout(float(step_h))\n")
+    script.append("                    continue\n")
     script.append("            load_time_h = float(payload_t) / max(float(load_rate_tph), 1e-9)\n")
-    script.append("            take = min(origin.level, float(payload_t))\n")
+    script.append("            if is_train:\n")
+    script.append("                take = float(payload_t)\n")
+    script.append("            else:\n")
+    script.append("                take = min(origin.level, float(payload_t))\n")
     script.append("            if take > 0:\n")
     script.append("                yield env.timeout(load_time_h)\n")
     script.append("                yield origin.get(take)\n")
+    script.append("                # Log load\n")
+    script.append("                try:\n")
+    script.append("                    log_action(\n")
+    script.append("                        'Loaded',\n")
+    script.append("                        env.now,\n")
+    script.append("                        {\n")
+    script.append("                            'product_class': pc_o,\n")
+    script.append("                            'product': inp,\n")
+    script.append("                            'qty_t': float(take),\n")
+    script.append("                            'units': 'TON',\n")
+    script.append("                            'src_location': loc_o,\n")
+    script.append("                            'src_equipment': eq_o,\n")
+    script.append("                            'dst_location': loc_d,\n")
+    script.append("                            'dst_equipment': eq_d,\n")
+    script.append("                        },\n")
+    script.append("                    )\n")
+    script.append("                except Exception:\n")
+    script.append("                    pass\n")
     script.append("            else:\n")
     script.append("                yield env.timeout(float(step_h))\n")
     script.append("                continue\n")
+    script.append("            # Transit to destination\n")
+    script.append("            try:\n")
+    script.append("                log_action(\n")
+    script.append("                    'Transit',\n")
+    script.append("                    env.now,\n")
+    script.append("                    {\n")
+    script.append("                        'product_class': pc_o,\n")
+    script.append("                        'product': inp,\n")
+    script.append("                        'qty_t': float(take),\n")
+    script.append("                        'units': 'TON',\n")
+    script.append("                        'src_location': loc_o,\n")
+    script.append("                        'src_equipment': eq_o,\n")
+    script.append("                        'dst_location': loc_d,\n")
+    script.append("                        'dst_equipment': eq_d,\n")
+    script.append("                        'duration_h': float(to_min)/60.0,\n")
+    script.append("                    },\n")
+    script.append("                )\n")
+    script.append("            except Exception:\n")
+    script.append("                pass\n")
     script.append("            yield env.timeout(float(to_min)/60.0)\n")
     script.append("            unload_time_h = float(take) / max(float(unload_rate_tph), 1e-9) if unload_rate_tph else 0.0\n")
-    script.append("            room = dest.capacity - dest.level if dest.capacity is not None else take\n")
-    script.append("            put_amt = min(take, max(room, 0))\n")
+    script.append("            if is_train:\n")
+    script.append("                put_amt = float(take)\n")
+    script.append("            else:\n")
+    script.append("                room = dest.capacity - dest.level if dest.capacity is not None else take\n")
+    script.append("                put_amt = min(take, max(room, 0))\n")
     script.append("            if put_amt > 0 and unload_rate_tph > 0:\n")
     script.append("                yield env.timeout(unload_time_h)\n")
     script.append("                yield dest.put(put_amt)\n")
+    script.append("                # Log unload\n")
+    script.append("                try:\n")
+    script.append("                    log_action(\n")
+    script.append("                        'Unloaded',\n")
+    script.append("                        env.now,\n")
+    script.append("                        {\n")
+    script.append("                            'product_class': pc_o,\n")
+    script.append("                            'product': inp,\n")
+    script.append("                            'qty_t': float(put_amt),\n")
+    script.append("                            'units': 'TON',\n")
+    script.append("                            'src_location': loc_o,\n")
+    script.append("                            'src_equipment': eq_o,\n")
+    script.append("                            'dst_location': loc_d,\n")
+    script.append("                            'dst_equipment': eq_d,\n")
+    script.append("                        },\n")
+    script.append("                    )\n")
+    script.append("                except Exception:\n")
+    script.append("                    pass\n")
     script.append("            yield env.timeout(float(back_min)/60.0)\n\n")
 
     script.append("    for mv in MOVES:\n")
