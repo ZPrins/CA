@@ -89,8 +89,8 @@ def load_data():
         origin_loc = row["Location"]
         dest_loc = row["Next Location"]
 
-        origin_stores = [key for (loc, eq, prod) in store_lookup if loc == origin_loc and prod == product]
-        dest_stores = [key for (loc, eq, prod) in store_lookup if loc == dest_loc and prod == product]
+        origin_stores = [store_lookup[(loc, eq, prod)] for (loc, eq, prod) in store_lookup if loc == origin_loc and prod == product]
+        dest_stores = [store_lookup[(loc, eq, prod)] for (loc, eq, prod) in store_lookup if loc == dest_loc and prod == product]
 
         if not origin_stores or not dest_stores:
             print(f"Warning: Incomplete route {product} {origin_loc} → {dest_loc}")
@@ -118,7 +118,7 @@ def load_data():
     for _, row in deliver_df.iterrows():
         loc = row["Location"]
         prod = row["Input"]
-        possible = [key for (l, e, p) in store_lookup if l == loc and p == prod]
+        possible = [store_lookup[(l, e, p)] for (l, e, p) in store_lookup if l == loc and p == prod]
         if possible:
             demands.append(Demand(store_key=possible[0], rate_per_hour=float(row["Demand per Location/Hour"])))
 
