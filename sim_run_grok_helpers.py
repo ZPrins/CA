@@ -63,6 +63,10 @@ def plot_results(sim, out_dir: Path):
     df["time_h"] = pd.to_numeric(df["time_h"], errors="coerce")
     df = df.dropna(subset=["time_h"])
     df["day"] = (df["time_h"] / 24).astype(int) + 1  # Day 1 to 365
+    
+    # Aggregate to one row per day per store (use end-of-day values)
+    df = df.sort_values(["store_key", "time_h"])
+    df = df.groupby(["store_key", "day"]).last().reset_index()
 
     # Secondary axis grouping
     capacities = df.groupby("store_key")["capacity"].first()
@@ -164,10 +168,9 @@ def generate_html_report(sim, out_dir: Path, figs: list):
 """
 
     for i, fig in enumerate(figs):
-        title = fig.layout.title.text if fig.layout.title else f"Chart {i+1}"
         div_id = f"plot-{i}"
-        html += f'<div class="plot"><h3>{title}</h3><div id="{div_id}" style="height: 600px; width: 100%;"></div></div>'
-        html += fig.to_html(include_plotlyjs=False, full_html=False, config={'responsive': True})
+        fig_html = fig.to_html(include_plotlyjs=False, full_html=False, div_id=div_id, config={'responsive': True})
+        html += f'<div class="plot">{fig_html}</div>'
 
     html += """
     <div class="footer">
