@@ -11,7 +11,7 @@ class Config:
     # Simulation settings
     horizon_days: int = 365
     random_opening: bool = True
-    random_seed: int | None = None  # Set to int for reproducibility
+    random_seed: int | None = None
 
     # Output settings
     write_csvs: bool = True
@@ -21,10 +21,8 @@ class Config:
     plot_individual_stores: bool = True
     plot_summary: bool = True
 
-    # Transport preferences (optional future enhancement)
     prefer_lowest_fill_origin: bool = True
     prefer_highest_room_dest: bool = True
 
 
-# Instantiate for easy import
 config = Config()

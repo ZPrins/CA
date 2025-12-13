@@ -1,17 +1,22 @@
 # sim_run_grok.py - Main runner
+import os
 from sim_run_grok_config import config
 from sim_run_grok_helpers import write_csv_outputs, plot_results, generate_standalone
 from sim_run_grok_core import SupplyChainSimulation
-from sim_run_grok_data_loader import load_data  # ← Updated import
+from sim_run_grok_data_loader import load_data
 
 if __name__ == "__main__":
     print("sim_run_grok.py: Starting simulation...")
 
-    # Override settings from config
+    horizon_days = int(os.environ.get('SIM_HORIZON_DAYS', config.horizon_days))
+    random_opening = os.environ.get('SIM_RANDOM_OPENING', str(config.random_opening)).lower() == 'true'
+    random_seed_env = os.environ.get('SIM_RANDOM_SEED', '')
+    random_seed = int(random_seed_env) if random_seed_env else config.random_seed
+
     settings_override = {
-        "horizon_days": config.horizon_days,
-        "random_opening": config.random_opening,
-        "random_seed": config.random_seed,
+        "horizon_days": horizon_days,
+        "random_opening": random_opening,
+        "random_seed": random_seed,
     }
 
     settings, stores, makes, moves, demands = load_data()

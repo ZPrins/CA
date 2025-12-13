@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cement Australia Supply Chain Simulation</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #e0e0e0;
+        }
+        .container { max-width: 900px; padding-top: 40px; padding-bottom: 40px; }
+        .card {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 16px;
+            backdrop-filter: blur(10px);
+        }
+        .card-header {
+            background: rgba(255,255,255,0.08);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            border-radius: 16px 16px 0 0 !important;
+        }
+        h1 { color: #4fc3f7; font-weight: 300; }
+        h5 { color: #81d4fa; }
+        .form-label { color: #b0bec5; font-weight: 500; }
+        .form-control, .form-select {
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: #fff;
+        }
+        .form-control:focus, .form-select:focus {
+            background: rgba(255,255,255,0.15);
+            border-color: #4fc3f7;
+            color: #fff;
+            box-shadow: 0 0 0 3px rgba(79,195,247,0.2);
+        }
+        .form-check-input {
+            background-color: rgba(255,255,255,0.2);
+            border-color: rgba(255,255,255,0.3);
+        }
+        .form-check-input:checked {
+            background-color: #4fc3f7;
+            border-color: #4fc3f7;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #4fc3f7 0%, #29b6f6 100%);
+            border: none;
+            font-weight: 600;
+            padding: 12px 32px;
+            border-radius: 8px;
+        }
+        .btn-primary:hover { background: linear-gradient(135deg, #29b6f6 0%, #03a9f4 100%); }
+        .btn-primary:disabled { opacity: 0.6; }
+        .btn-outline-light {
+            border-color: rgba(255,255,255,0.3);
+            color: #b0bec5;
+        }
+        .btn-outline-light:hover {
+            background: rgba(255,255,255,0.1);
+            border-color: #4fc3f7;
+            color: #4fc3f7;
+        }
+        .output-log {
+            background: #0d1117;
+            color: #58a6ff;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            max-height: 300px;
+            overflow-y: auto;
+            border-radius: 8px;
+            padding: 16px;
+        }
+        .spinner-border { width: 1.2rem; height: 1.2rem; }
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .status-ready { background: #2e7d32; color: #a5d6a7; }
+        .status-pending { background: #f57c00; color: #ffe0b2; }
+        .file-list a { color: #4fc3f7; text-decoration: none; }
+        .file-list a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="text-center mb-5">
+            <h1 class="mb-2">Cement Australia</h1>
+            <p class="text-muted">Supply Chain Simulation Dashboard</p>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">Simulation Settings</h5>
+            </div>
+            <div class="card-body">
+                <form id="simForm">
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label">Simulation Horizon (Days)</label>
+                            <input type="number" class="form-control" id="horizon_days" 
+                                   value="{{ config.horizon_days }}" min="1" max="730">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Random Seed (optional)</label>
+                            <input type="number" class="form-control" id="random_seed" 
+                                   placeholder="Leave blank for random"
+                                   value="{{ config.random_seed if config.random_seed else '' }}">
+                        </div>
+                        <div class="col-md-4 d-flex align-items-end">
+                            <div class="form-check">
+                                <input type="checkbox" class="form-check-input" id="random_opening"
+                                       {{ 'checked' if config.random_opening else '' }}>
+                                <label class="form-check-label" for="random_opening">
+                                    Random Opening Stock
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                        <button type="submit" class="btn btn-primary" id="runBtn">
+                            <span id="runBtnText">Run Simulation</span>
+                            <span id="runBtnSpinner" class="spinner-border spinner-border-sm ms-2 d-none"></span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div class="card mb-4" id="outputCard" style="display: none;">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Simulation Output</h5>
+                <span id="statusBadge" class="status-badge"></span>
+            </div>
+            <div class="card-body">
+                <pre class="output-log" id="outputLog"></pre>
+            </div>
+        </div>
+
+        <div class="card" id="resultsCard" {% if not outputs_exist %}style="display: none;"{% endif %}>
+            <div class="card-header">
+                <h5 class="mb-0">Results</h5>
+            </div>
+            <div class="card-body">
+                <div class="d-flex flex-wrap gap-2 mb-3">
+                    <a href="/report" target="_blank" class="btn btn-outline-light">
+                        View Interactive Report
+                    </a>
+                </div>
+                <div class="file-list" id="csvFileList">
+                    <small class="text-muted">Download CSV files:</small>
+                    <div class="mt-2" id="csvLinks">
+                        {% for file in csv_files %}
+                        <a href="/outputs/{{ file }}" class="me-3">{{ file }}</a>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('simForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const runBtn = document.getElementById('runBtn');
+            const runBtnText = document.getElementById('runBtnText');
+            const runBtnSpinner = document.getElementById('runBtnSpinner');
+            const outputCard = document.getElementById('outputCard');
+            const outputLog = document.getElementById('outputLog');
+            const statusBadge = document.getElementById('statusBadge');
+            const resultsCard = document.getElementById('resultsCard');
+            
+            runBtn.disabled = true;
+            runBtnText.textContent = 'Running...';
+            runBtnSpinner.classList.remove('d-none');
+            
+            outputCard.style.display = 'block';
+            outputLog.textContent = 'Starting simulation...';
+            statusBadge.textContent = 'Running';
+            statusBadge.className = 'status-badge status-pending';
+            
+            try {
+                const response = await fetch('/run-simulation', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        horizon_days: parseInt(document.getElementById('horizon_days').value),
+                        random_opening: document.getElementById('random_opening').checked,
+                        random_seed: document.getElementById('random_seed').value
+                    })
+                });
+                
+                const data = await response.json();
+                outputLog.textContent = data.output || 'Simulation completed';
+                
+                if (data.success) {
+                    statusBadge.textContent = 'Complete';
+                    statusBadge.className = 'status-badge status-ready';
+                    if (data.report_ready) {
+                        resultsCard.style.display = 'block';
+                        const statusResp = await fetch('/api/status');
+                        const statusData = await statusResp.json();
+                        const csvLinks = document.getElementById('csvLinks');
+                        csvLinks.innerHTML = statusData.csv_files.map(f => 
+                            `<a href="/outputs/${f}" class="me-3">${f}</a>`
+                        ).join('');
+                    }
+                } else {
+                    statusBadge.textContent = 'Failed';
+                    statusBadge.className = 'status-badge status-pending';
+                }
+            } catch (err) {
+                outputLog.textContent = 'Error: ' + err.message;
+                statusBadge.textContent = 'Error';
+                statusBadge.className = 'status-badge status-pending';
+            }
+            
+            runBtn.disabled = false;
+            runBtnText.textContent = 'Run Simulation';
+            runBtnSpinner.classList.add('d-none');
+        });
+    </script>
+</body>
+</html>
