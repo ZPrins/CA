@@ -33,6 +33,13 @@ Preferred communication style: Simple, everyday language.
 - Standalone frozen Python model generation for reproducibility
 - Text-based simulation logs
 
+### Web Interface (app.py)
+- **Flask-based dashboard** at port 5000 for interactive simulation control
+- Configure simulation parameters: horizon days, random seed, random opening stock
+- Run simulations directly from browser with real-time output logging
+- View interactive HTML reports and download CSV exports
+- Settings passed via environment variables (SIM_HORIZON_DAYS, SIM_RANDOM_OPENING, SIM_RANDOM_SEED)
+
 ### Visualization Layer
 - **PyVis/vis-network** for static network graph HTML export
 - Swimlane layout with fixed grid positioning (rows by Location, columns by Product Class)
@@ -55,6 +62,7 @@ Preferred communication style: Simple, everyday language.
 - **plotly**: Interactive charting for inventory profiles
 - **openpyxl>=3.1**: Excel file reading/writing
 - **jinja2>=3.1**: HTML template rendering
+- **flask**: Web framework for interactive dashboard
 
 ### Frontend Libraries (bundled in lib/)
 - **vis-network 9.1.2**: Browser-based network visualization
