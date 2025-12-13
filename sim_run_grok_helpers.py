@@ -67,6 +67,10 @@ def plot_results(sim, out_dir: Path):
     # Aggregate to one row per day per store (use end-of-day values)
     df = df.sort_values(["store_key", "time_h"])
     df = df.groupby(["store_key", "day"]).last().reset_index()
+    
+    # Round values to 0 decimal places
+    df["level"] = df["level"].round(0).astype(int)
+    df["fill_pct"] = df["fill_pct"].round(2)
 
     # Secondary axis grouping
     capacities = df.groupby("store_key")["capacity"].first()
@@ -83,11 +87,13 @@ def plot_results(sim, out_dir: Path):
         fig = make_subplots(specs=[[{"secondary_y": True}]])
 
         fig.add_trace(
-            go.Scatter(x=data["day"], y=data["level"], name="Level (tons)", line=dict(color="blue")),
+            go.Scatter(x=data["day"], y=data["level"], name="Level (tons)", line=dict(color="blue"),
+                      hovertemplate="Day %{x}: %{y:,.0f} tons<extra></extra>"),
             secondary_y=False,
         )
         fig.add_trace(
-            go.Scatter(x=data["day"], y=data["fill_pct"] * 100, name="Fill %", line=dict(color="green", dash="dot")),
+            go.Scatter(x=data["day"], y=(data["fill_pct"] * 100).round(0), name="Fill %", line=dict(color="green", dash="dot"),
+                      hovertemplate="Day %{x}: %{y:.0f}%<extra></extra>"),
             secondary_y=True,
         )
 
@@ -111,13 +117,15 @@ def plot_results(sim, out_dir: Path):
     for store_key in small_stores:
         data = df[df["store_key"] == store_key]
         fig_summary.add_trace(
-            go.Scatter(x=data["day"], y=data["level"], name=store_key.split("|")[-1]),
+            go.Scatter(x=data["day"], y=data["level"], name=store_key.split("|")[-1],
+                      hovertemplate="%{y:,.0f} tons<extra></extra>"),
             secondary_y=False,
         )
     for store_key in large_stores:
         data = df[df["store_key"] == store_key]
         fig_summary.add_trace(
-            go.Scatter(x=data["day"], y=data["level"], name=store_key.split("|")[-1] + " (large)"),
+            go.Scatter(x=data["day"], y=data["level"], name=store_key.split("|")[-1] + " (large)",
+                      hovertemplate="%{y:,.0f} tons<extra></extra>"),
             secondary_y=True,
         )
 
