@@ -480,12 +480,21 @@ def build_simpy_from_generated(
     except Exception:
         pass
 
+    # Ensure physical exclusivity: one resource per (Location, Equipment)
+    unit_by_loc_eq: dict[tuple[str, str], simpy.Resource] = {}
+
+    # Aggregate Make definitions by (PC, Location, Equipment) into a single unit with multi-output candidates
+    # Build per-unit buckets that combine outputs possibly requiring different inputs
+    units: dict[tuple[str, str, str], dict] = {}
+
+    # First pass: collect per-node data
+    per_node: list[dict[str, Any]] = []
     for nid, nd in nodes_by_id.items():
         if str(nd.get("process", "")).strip().lower() != "make":
             continue
         inp = str(nd.get("input", "")).strip()
         outp_default = str(nd.get("output", "")).strip()
-        # All destination candidates for this Make
+        # All destination candidates for this Make node
         dests = routes.get(nid, [])
         if not dests:
             continue
@@ -537,7 +546,7 @@ def build_simpy_from_generated(
             _warn("make_no_store_candidates", "Make unit has no valid destination Store candidates; idling", {"node": nid, "location": nd.get("location", ""), "equipment": nd.get("equipment", "")})
             continue
 
-        # Look up Make parameters
+        # Look up Make parameters for this node
         mean_rate = 0.0  # tons per hour
         cons_pct = 100.0  # % of output mass drawn as input
         if not make_df.empty:
@@ -596,145 +605,8 @@ def build_simpy_from_generated(
                 "value": cons_pct,
             })
             cons_pct = max(0.0, min(1.0, cons_pct))
-        # Resource representing the unit (capacity 1 by default)
-        res = simpy.Resource(env, capacity=1)
-        make_units[nid] = res
 
-        def _choose_candidate(rule: str, cands: list[dict[str, str]]):
-            # Return index of chosen candidate based on store fill/level
-            best_i = None
-            best_metric = None
-            for i, c in enumerate(cands):
-                skey = c["out_store_key"]
-                cont = stores.get(skey)
-                if cont is None:
-                    continue
-                level = float(cont.level)
-                cap = float(cont.capacity) if getattr(cont, "capacity", None) is not None else None
-                if rule == "min_level" or cap in (None, 0.0):
-                    metric = level
-                else:
-                    try:
-                        metric = level / max(cap, 1e-9)
-                    except Exception:
-                        metric = 1.0
-                if best_i is None or metric < best_metric:
-                    best_i = i
-                    best_metric = metric
-            return best_i if best_i is not None else 0
-
-        def producer(env: simpy.Environment, unit: simpy.Resource, cands: list[dict[str, str]], in_store_key_: Optional[Key], rate_tph: float, cons_pct_: float, step_h: float, rule: str, nd_meta: dict):
-            # Single-output-at-a-time production; choose destination each step by rule
-            while True:
-                # Choose destination: only produce this step if some candidate store can take the FULL step output
-                full_step_qty = rate_tph * step_h if rate_tph > 0 else 0.0
-
-                # Build list of eligible candidates that have enough room for the entire step's output
-                eligible: list[dict[str, str]] = []
-                for c in cands:
-                    cont = stores.get(c["out_store_key"])
-                    if cont is None:
-                        continue
-                    # If capacity is None, treat as unbounded
-                    if getattr(cont, "capacity", None) is None:
-                        eligible.append(c)
-                        continue
-                    room = float(cont.capacity) - float(cont.level)
-                    if full_step_qty <= 0 or room >= full_step_qty:
-                        eligible.append(c)
-
-                if not eligible:
-                    # No destination can accept a full step's production; halt this step (no input consumed)
-                    out_store_key_ = None
-                    out_product_ = ""
-                    dst_cont = None
-                    qty_out = 0.0
-                else:
-                    # Pick among eligible by rule (min level or min fill)
-                    idx = _choose_candidate(rule, eligible)
-                    target = eligible[idx]
-                    out_store_key_ = target["out_store_key"]
-                    out_product_ = target["product"]
-
-                    # Full step output is safe to produce for this destination (capacity already checked)
-                    dst_cont = stores.get(out_store_key_)
-                    qty_out = full_step_qty
-
-                # Input withdrawal proportional to output (cons_pct_ is 0..1, e.g., 0.88 for 88%)
-                qty_in = qty_out * cons_pct_ if in_store_key_ else 0.0
-                if in_store_key_ and qty_out > 0:
-                    src_cont = stores.get(in_store_key_)
-                    if src_cont is not None:
-                        avail = src_cont.level
-                        take = min(avail, qty_in)
-                        if take > 0:
-                            # Withdraw from input store
-                            yield src_cont.get(take)
-                            # Log consumption event
-                            try:
-                                inp_token = in_store_key_.split("|")[3] if isinstance(in_store_key_, str) and "|" in in_store_key_ else ""
-                                log_action(
-                                    "Consumed",
-                                    env.now,
-                                    {
-                                        "product_class": str(nd_meta.get("product_class", "")),
-                                        "location": str(nd_meta.get("location", "")),
-                                        "equipment": str(nd_meta.get("equipment", "")),
-                                        "process": "Make",
-                                        "product": str(inp_token),
-                                        "qty_t": float(take),
-                                        "units": "TON",
-                                    },
-                                )
-                            except Exception:
-                                pass
-                        if qty_in > 0 and take < qty_in:
-                            # Not enough input; scale output proportionally
-                            scale = take / qty_in if qty_in > 0 else 0.0
-                            if scale < 1.0:
-                                try:
-                                    _warn("make_scaled_for_input", "Scaled production due to insufficient input this step", {
-                                        "time_h": float(env.now),
-                                        "product_class": str(nd_meta.get("product_class", "")),
-                                        "location": str(nd_meta.get("location", "")),
-                                        "equipment": str(nd_meta.get("equipment", "")),
-                                        "process": "Make",
-                                        "input": str(inp_token),
-                                        "output": str(out_product_),
-                                        "destination_store": str(out_store_key_),
-                                        "requested_out_t": float(rate_tph * step_h),
-                                        "planned_out_t": float(qty_in / max(cons_pct_, 1e-12)),
-                                        "actual_out_t": float(qty_out * scale),
-                                        "input_needed_t": float(qty_in),
-                                        "input_taken_t": float(take),
-                                    })
-                                except Exception:
-                                    pass
-                            qty_out *= scale
-
-                # Put output
-                if dst_cont is not None and qty_out > 0:
-                    yield dst_cont.put(qty_out)
-                    # Log production event
-                    try:
-                        log_action(
-                            "Produced",
-                            env.now,
-                            {
-                                "product_class": str(nd_meta.get("product_class", "")),
-                                "location": str(nd_meta.get("location", "")),
-                                "equipment": str(nd_meta.get("equipment", "")),
-                                "process": "Make",
-                                "product": str(out_product_),
-                                "qty_t": float(qty_out),
-                                "units": "TON",
-                            },
-                        )
-                    except Exception:
-                        pass
-                yield env.timeout(step_h)
-
-        # Bind input store if there is a store at same PC+Location and input==inp
+        # Bind input store for this input material (if present at same location)
         in_store_key = None
         for nid2, nd2 in nodes_by_id.items():
             if nd2.get("product_class") != nd.get("product_class"):
@@ -745,7 +617,7 @@ def build_simpy_from_generated(
                 in_store_key = store_key(nid2, inp)
                 break
 
-        # If an input is required but the input store is missing, warn and skip spawning this Make unit
+        # If an input is required but the input store is missing, warn and skip this node entirely
         try:
             if str(inp).strip() and in_store_key is None:
                 _warn("make_input_store_missing", "Make unit requires input store but none found at location; idling", {
@@ -758,31 +630,156 @@ def build_simpy_from_generated(
         except Exception:
             pass
 
-        # Export Make unit
+        per_node.append({
+            "nid": nid,
+            "pc": str(nd.get("product_class", "")).strip().upper(),
+            "location": str(nd.get("location", "")).strip(),
+            "equipment": str(nd.get("equipment", "")).strip(),
+            "input": inp,
+            "candidates": candidates,
+            "in_store_key": in_store_key,
+            "mean_rate_tph": float(mean_rate),
+            "consumption_pct": float(cons_pct),
+        })
+
+    # Second pass: aggregate into units and spawn one producer per (PC, Location, Equipment)
+    for item in per_node:
+        key = (item["pc"], item["location"].strip().upper(), item["equipment"].strip().upper())
+        unit = units.setdefault(key, {
+            "pc": item["pc"],
+            "location": item["location"],
+            "equipment": item["equipment"],
+            "candidates": [],
+        })
+        # Convert node-level candidates into per-candidate with input linkage and parameters
+        for c in item["candidates"]:
+            unit["candidates"].append({
+                "product": c["product"],
+                "out_store_key": c["out_store_key"],
+                "in_store_key": item["in_store_key"],
+                "rate_tph": item["mean_rate_tph"],
+                "consumption_pct": item["consumption_pct"],
+            })
+
+    # Ensure physical exclusivity: one resource per (Location, Equipment)
+    unit_by_loc_eq: dict[tuple[str, str], simpy.Resource] = {}
+
+    def _choose_candidate(rule: str, cands: list[dict[str, Any]]):
+        # Return index of chosen candidate based on store fill/level
+        best_i = None
+        best_metric = None
+        for i, c in enumerate(cands):
+            skey = c["out_store_key"]
+            cont = stores.get(skey)
+            if cont is None:
+                continue
+            level = float(cont.level)
+            cap = float(cont.capacity) if getattr(cont, "capacity", None) is not None else None
+            if rule == "min_level" or cap in (None, 0.0):
+                metric = level
+            else:
+                try:
+                    metric = level / max(cap, 1e-9)
+                except Exception:
+                    metric = 1.0
+            if best_i is None or metric < best_metric:
+                best_i = i
+                best_metric = metric
+        return best_i if best_i is not None else 0
+
+    def producer(env: simpy.Environment, unit: simpy.Resource, cands: list[dict[str, Any]], step_h: float, rule: str, nd_meta: dict):
+        # Single-output-at-a-time production; choose destination each step by rule across all outputs
+        while True:
+            with unit.request() as req:
+                yield req
+                # Compute eligibility per candidate considering its own rate and dest capacity
+                eligible: list[dict[str, Any]] = []
+                for c in cands:
+                    dst_cont = stores.get(c["out_store_key"])
+                    if dst_cont is None:
+                        continue
+                    full_step_qty = float(c.get("rate_tph", 0.0)) * float(step_h)
+                    if getattr(dst_cont, "capacity", None) is None:
+                        eligible.append({**c, "full_step_qty": full_step_qty})
+                        continue
+                    room = float(dst_cont.capacity) - float(dst_cont.level)
+                    if full_step_qty <= 0 or room >= full_step_qty:
+                        eligible.append({**c, "full_step_qty": full_step_qty})
+                if not eligible:
+                    yield env.timeout(step_h)
+                    continue
+                idx = _choose_candidate(rule, eligible)
+                sel = eligible[idx]
+                out_store_key_ = sel["out_store_key"]
+                out_product_ = sel.get("product", "")
+                in_store_key_ = sel.get("in_store_key")
+                rate_tph_ = float(sel.get("rate_tph", 0.0))
+                cons_pct_ = float(sel.get("consumption_pct", 0.0))
+                full_step_qty = float(rate_tph_) * float(step_h)
+                # Input withdrawal proportional to output
+                qty_out = full_step_qty
+                qty_in = qty_out * cons_pct_ if in_store_key_ else 0.0
+                if in_store_key_ and qty_out > 0:
+                    src_cont = stores.get(in_store_key_)
+                    if src_cont is not None:
+                        take = min(float(src_cont.level), float(qty_in))
+                        if take > 0:
+                            yield src_cont.get(take)
+                            try:
+                                inp_token = in_store_key_.split("|")[3] if isinstance(in_store_key_, str) and "|" in in_store_key_ else ""
+                                log_action("Consumed", env.now, {
+                                    "product_class": str(nd_meta.get("product_class", "")),
+                                    "location": str(nd_meta.get("location", "")),
+                                    "equipment": str(nd_meta.get("equipment", "")),
+                                    "process": "Make",
+                                    "product": str(inp_token),
+                                    "qty_t": float(take),
+                                    "units": "TON",
+                                })
+                            except Exception:
+                                pass
+                        if float(qty_in) > 0 and take < float(qty_in):
+                            scale = float(take) / float(qty_in) if float(qty_in) > 0 else 0.0
+                            qty_out *= scale
+                dst_cont = stores.get(out_store_key_)
+                if dst_cont is not None and qty_out > 0:
+                    yield dst_cont.put(qty_out)
+                    try:
+                        log_action("Produced", env.now, {
+                            "product_class": str(nd_meta.get("product_class", "")),
+                            "location": str(nd_meta.get("location", "")),
+                            "equipment": str(nd_meta.get("equipment", "")),
+                            "process": "Make",
+                            "product": str(out_product_),
+                            "qty_t": float(qty_out),
+                            "units": "TON",
+                        })
+                    except Exception:
+                        pass
+                yield env.timeout(step_h)
+
+    # Instantiate and export aggregated MAKE units
+    for (pc_u, loc_u, eq_u), unit in units.items():
+        # Resource per (Location, Equipment)
+        _le_key = (loc_u, eq_u)
+        if _le_key not in unit_by_loc_eq:
+            unit_by_loc_eq[_le_key] = simpy.Resource(env, capacity=1)
+        res = unit_by_loc_eq[_le_key]
+        # Export
         try:
             export["makes"].append({
-                "node": nid,
-                "product_class": str(nd.get("product_class", "")),
-                "location": str(nd.get("location", "")),
-                "equipment": str(nd.get("equipment", "")),
-                "input": inp,
-                "candidates": candidates,
-                "in_store_key": in_store_key,
-                "mean_rate_tph": float(mean_rate),
-                "consumption_pct": float(cons_pct),
+                "product_class": unit["pc"],
+                "location": unit["location"],
+                "equipment": unit["equipment"],
+                "candidates": unit["candidates"],
                 "step_hours": float(settings.step_hours()),
                 "choice_rule": _make_choice_rule,
             })
         except Exception:
             pass
-
-        # Bind snapshot of this node's identity to avoid late-binding issues in closure
-        nd_meta = {
-            "product_class": nd.get("product_class", ""),
-            "location": nd.get("location", ""),
-            "equipment": nd.get("equipment", ""),
-        }
-        env.process(producer(env, res, candidates, in_store_key, mean_rate, cons_pct, settings.step_hours(), _make_choice_rule, nd_meta))
+        # Spawn
+        nd_meta = {"product_class": unit["pc"], "location": unit["location"], "equipment": unit["equipment"]}
+        env.process(producer(env, res, unit["candidates"], settings.step_hours(), _make_choice_rule, nd_meta))
 
     # Create Move processes: per (PC, Location, Equipment Name, Next Location)
     # Each route spawns #Equipment parallel transporters cycling
@@ -808,32 +805,79 @@ def build_simpy_from_generated(
             # Determine the product-class token to prefix store keys. We assume it equals the product token (e.g., GP, SG, CL).
             pc = product.upper()
             # Helper: resolve a store key from current stores by criteria
-            def _pick_store_key(candidate_keys: list[str]) -> str | None:
+            def _normalize_token(s: str) -> str:
+                import re as _re
+                return _re.sub(r"[^A-Za-z0-9]", "", (s or "").upper())
+
+            def _pick_store_key(candidate_keys: list[str], prefer_eq: str | None = None) -> str | None:
                 if not candidate_keys:
                     return None
-                # Prefer equipment names ending with '_STORE'
-                best = None
+                # Parse candidates into (key, eq)
+                parsed = []
                 for k in candidate_keys:
                     try:
                         _pc, _loc, _eq, _inp = k.split("|")
                     except Exception:
-                        _pc = _loc = _eq = _inp = ""
-                    if _eq.endswith("_STORE"):
-                        return k
-                    if best is None:
-                        best = k
-                return best
-            # Origin: search across product classes by location/equipment and material (input)
+                        _eq = ""
+                    parsed.append((k, _eq))
+                # If a preferred equipment token is provided, try best-match selection by normalized comparison
+                if prefer_eq:
+                    pref = _normalize_token(prefer_eq)
+                    if pref:
+                        # 1) exact normalized equality
+                        exact = [k for k, eq in parsed if _normalize_token(eq) == pref]
+                        if exact:
+                            return exact[0]
+                        # 2) normalized contains (either direction)
+                        contains = [k for k, eq in parsed if pref in _normalize_token(eq) or _normalize_token(eq) in pref]
+                        # Prefer ones ending with '_STORE' among contains
+                        contains_sorted = sorted(contains, key=lambda kk: 0 if kk.split("|")[2].endswith("_STORE") else 1)
+                        if contains_sorted:
+                            return contains_sorted[0]
+                # Fallback: prefer equipment names ending with '_STORE'
+                store_suffix = [k for k, eq in parsed if eq.endswith("_STORE")]
+                if store_suffix:
+                    return store_suffix[0]
+                # Else: first candidate stable order
+                return parsed[0][0]
+            # Origin: select the correct store at source location that feeds this Move lane
             src_loc_u, src_eq_u, product_u = src_loc.upper(), src_eq.upper(), product.upper()
-            # Try exact with equipment first, across all PCs
+
+            # Try to infer the preferred ORIGIN store equipment from the Network graph:
+            # Find a Store node at src_loc whose input==product and which routes to a Move node with equipment==src_eq (e.g., TRAIN)
+            preferred_origin_eq = None
+            try:
+                for _nid, _nd in nodes_by_id.items():
+                    if str(_nd.get("process", "")).strip().lower() != "store":
+                        continue
+                    if str(_nd.get("location", "")).strip().upper() != src_loc_u:
+                        continue
+                    if str(_nd.get("input", "")).strip().upper() != product_u:
+                        continue
+                    # Check its outgoing routes
+                    for (_dst_id, _edge_out) in routes.get(_nid, []) or []:
+                        _dst = nodes_by_id.get(_dst_id)
+                        if not _dst:
+                            continue
+                        if str(_dst.get("process", "")).strip().lower() != "move":
+                            continue
+                        if str(_dst.get("equipment", "")).strip().upper() == src_eq_u:
+                            preferred_origin_eq = str(_nd.get("equipment", "")).strip().upper()
+                            break
+                    if preferred_origin_eq:
+                        break
+            except Exception:
+                preferred_origin_eq = None
+
+            # Build candidate list(s) from available stores and resolve using preferred_origin_eq if available
             cand_exact = [k for k in stores.keys()
                           if k.split("|")[1] == src_loc_u and k.split("|")[2] == src_eq_u and k.split("|")[3] == product_u]
-            origin_key = _pick_store_key(cand_exact)
-            # Fallback: any store at origin location with matching material, prefer *_STORE
+            origin_key = _pick_store_key(cand_exact, prefer_eq=preferred_origin_eq)
+            # Fallback: any store at origin location with matching material, prefer *_STORE or preferred_origin_eq
             if origin_key is None:
                 cand = [k for k in stores.keys()
                         if k.split("|")[1] == src_loc_u and k.split("|")[3] == product_u]
-                origin_key = _pick_store_key(cand)
+                origin_key = _pick_store_key(cand, prefer_eq=preferred_origin_eq)
             if origin_key is None:
                 _warn("move_origin_not_found", "Move origin store not found for lane", {"product": product, "location": src_loc, "equipment": src_eq})
                 continue
@@ -894,7 +938,7 @@ def build_simpy_from_generated(
             payload = parcels * cap_per_parcel  # tons
             step_h = settings.step_hours()
 
-            rkey = f"{pc.upper()}|{src_loc.upper()}|{src_eq.upper()}→{dst_loc.upper()}|{product.upper()}"
+            rkey = f"{pc.upper()}|{src_loc.upper()}|{src_eq.upper()}->{dst_loc.upper()}|{product.upper()}"
             route_stats.setdefault(rkey, RouteStats())
 
             def transporter(env: simpy.Environment, origin: simpy.Container, dest: simpy.Container, payload_t: float, load_rate_tph: float, unload_rate_tph: float, to_min: float, back_min: float, stats: RouteStats):
@@ -1003,52 +1047,63 @@ def build_simpy_from_generated(
                     except Exception:
                         pass
                     yield env.timeout(to_min / 60.0)
-                    # Unload at rate
-                    unload_time_h = take / max(unload_rate_tph, 1e-9)
-                    # Respect destination capacity
-                    room = dest.capacity - dest.level if dest.capacity is not None else take
-                    put_amt = min(take, max(room, 0))
-                    if put_amt > 0:
-                        yield env.timeout(unload_time_h)
-                        yield dest.put(put_amt)
-                        stats.trips_completed += 1
-                        stats.tons_moved += put_amt
-                        # Log unload event
-                        try:
-                            if fast_transport_cycle:
-                                rec = dict(_log_unloaded_tpl)
-                                rec["qty_t"] = float(put_amt)
-                                log_action("Unloaded", env.now, rec)
-                            else:
-                                _pc_o, _loc_o, _eq_o, _inp = _parse_store_key(origin_key)
-                                _pc_d, _loc_d, _eq_d, _ = _parse_store_key(dest_key)
-                                log_action(
-                                    "Unloaded",
-                                    env.now,
-                                    {
-                                        "product_class": _pc_o,
-                                        "product": _inp,
-                                        "qty_t": float(put_amt),
-                                        "units": "TON",
-                                        "src_location": _loc_o,
-                                        "src_equipment": _eq_o,
-                                        "dst_location": _loc_d,
-                                        "dst_equipment": _eq_d,
-                                    },
-                                )
-                        except Exception:
-                            pass
-                        # Travel back
-                        yield env.timeout(back_min / 60.0)
-                    else:
-                        # No room: return without unloading and try later
-                        if fast_transport_cycle:
-                            yield env.timeout(step_h + back_min / 60.0)
-                            continue
-                        else:
+                    # Unload preserving mass: wait until destination has room to accept the full carried amount
+                    remaining = float(take)
+                    while remaining > 0:
+                        room = dest.capacity - dest.level if dest.capacity is not None else remaining
+                        if room <= 0:
+                            # Wait for room to free up
+                            try:
+                                log_action("WaitingForRoom", env.now, {
+                                    "product_class": _pc_o,
+                                    "product": _inp,
+                                    "qty_t": float(remaining),
+                                    "units": "TON",
+                                    "dst_location": _loc_d,
+                                    "dst_equipment": _eq_d,
+                                })
+                            except Exception:
+                                pass
                             yield env.timeout(step_h)
-                            # Travel back
-                            yield env.timeout(back_min / 60.0)
+                            continue
+                        # Amount we can unload now (up to remaining and available room)
+                        chunk = min(remaining, max(room, 0.0))
+                        if unload_rate_tph > 0 and chunk > 0:
+                            unload_time_h = float(chunk) / max(float(unload_rate_tph), 1e-9)
+                            yield env.timeout(unload_time_h)
+                        if chunk > 0:
+                            yield dest.put(chunk)
+                            remaining -= float(chunk)
+                            stats.tons_moved += float(chunk)
+                            # Log partial unload
+                            try:
+                                if fast_transport_cycle:
+                                    rec = dict(_log_unloaded_tpl)
+                                    rec["qty_t"] = float(chunk)
+                                    log_action("Unloaded", env.now, rec)
+                                else:
+                                    _pc_o, _loc_o, _eq_o, _inp = _parse_store_key(origin_key)
+                                    _pc_d, _loc_d, _eq_d, _ = _parse_store_key(dest_key)
+                                    log_action(
+                                        "Unloaded",
+                                        env.now,
+                                        {
+                                            "product_class": _pc_o,
+                                            "product": _inp,
+                                            "qty_t": float(chunk),
+                                            "units": "TON",
+                                            "src_location": _loc_o,
+                                            "src_equipment": _eq_o,
+                                            "dst_location": _loc_d,
+                                            "dst_equipment": _eq_d,
+                                        },
+                                    )
+                            except Exception:
+                                pass
+                    # Full unload completed
+                    stats.trips_completed += 1
+                    # Travel back after fully unloading
+                    yield env.timeout(back_min / 60.0)
 
             origin = stores.get(origin_key)
             dest = stores.get(dest_key)

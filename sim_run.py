@@ -168,6 +168,15 @@ def _write_csvs(cfg, summary: Dict[str, Any]) -> None:
     out_dir = Path(cfg.resolve_out_dir())
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    def _cleanup_legacy(names: list[str]) -> None:
+        for name in names:
+            try:
+                legacy = out_dir / name
+                if legacy.exists():
+                    legacy.unlink()
+            except Exception:
+                pass
+
     try:
         import pandas as pd  # lazy import
     except Exception:
@@ -176,32 +185,36 @@ def _write_csvs(cfg, summary: Dict[str, Any]) -> None:
     # Stores
     if "stores" in summary:
         rows = [(k, v) for k, v in summary["stores"].items()]
+        new_name = "sim_outputs_store_levels.csv"
         if pd is not None:
             df = pd.DataFrame(rows, columns=["Store", "Level"])
-            df.to_csv(out_dir / "store_levels.csv", index=False)
+            df.to_csv(out_dir / new_name, index=False)
         else:
-            with open(out_dir / "store_levels.csv", "w", encoding="utf-8") as f:
+            with open(out_dir / new_name, "w", encoding="utf-8") as f:
                 f.write("Store,Level\n")
                 for k, v in rows:
                     f.write(f"{k},{v}\n")
+        _cleanup_legacy(["store_levels.csv"])  # remove old name if present
 
     # Unmet demand
     if "unmet_demand" in summary:
         unmet = summary["unmet_demand"]
+        new_name = "sim_outputs_unmet_demand.csv"
         if isinstance(unmet, dict):
             rows = [(k, v) for k, v in unmet.items()]
             if pd is not None:
                 df = pd.DataFrame(rows, columns=["Key", "Unmet"])
-                df.to_csv(out_dir / "unmet_demand.csv", index=False)
+                df.to_csv(out_dir / new_name, index=False)
             else:
-                with open(out_dir / "unmet_demand.csv", "w", encoding="utf-8") as f:
+                with open(out_dir / new_name, "w", encoding="utf-8") as f:
                     f.write("Key,Unmet\n")
                     for k, v in rows:
                         f.write(f"{k},{v}\n")
         else:
-            with open(out_dir / "unmet_demand.csv", "w", encoding="utf-8") as f:
+            with open(out_dir / new_name, "w", encoding="utf-8") as f:
                 f.write("TotalUnmet\n")
                 f.write(f"{unmet}\n")
+        _cleanup_legacy(["unmet_demand.csv"])  # remove old name if present
 
     # Route stats if present (objects or dicts). Serialize sensibly.
     if "route_stats" in summary and isinstance(summary["route_stats"], dict):
@@ -244,12 +257,13 @@ def _write_csvs(cfg, summary: Dict[str, Any]) -> None:
                 key_set.update(m.keys())
             keys = sorted(key_set)
 
-            with open(out_dir / "route_stats.csv", "w", encoding="utf-8") as f:
+            with open(out_dir / "sim_outputs_route_stats.csv", "w", encoding="utf-8") as f:
                 f.write(",".join(["Route"] + keys) + "\n")
                 for route, metrics in normed.items():
                     route_str = str(route).replace("→", "->")
                     row = [route_str] + [str(metrics.get(k, "")) for k in keys]
                     f.write(",".join(row) + "\n")
+            _cleanup_legacy(["route_stats.csv"])  # remove old name if present
         except Exception:
             # best effort; don't fail the whole run on export problems
             pass
@@ -271,7 +285,7 @@ def _write_csvs(cfg, summary: Dict[str, Any]) -> None:
         other_keys = [k for k in all_keys if k not in preferred]
         header = preferred + other_keys
         # Write CSV
-        out_path = out_dir / "warnings.csv"
+        out_path = out_dir / "sim_outputs_warnings.csv"
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(",".join(header) + "\n")
             for item in rows:
@@ -280,6 +294,7 @@ def _write_csvs(cfg, summary: Dict[str, Any]) -> None:
                 else:
                     vals = [str(item)]
                 f.write(",".join(vals).replace("\n", " ") + "\n")
+        _cleanup_legacy(["warnings.csv"])  # remove old name if present
 
 
 def _write_action_log(cfg, meta: Dict[str, Any]) -> None:
@@ -296,14 +311,14 @@ def _write_action_log(cfg, meta: Dict[str, Any]) -> None:
     out_dir = Path(cfg.resolve_out_dir())
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # CSV (structured)
+    # CSV (structured) — keep raw values as emitted by the engine for downstream consumers
     csv_cols = [
         "hour", "time_h", "event", "product_class", "location", "equipment", "process",
         "product", "qty_t", "units", "src_location", "src_equipment", "dst_location", "dst_equipment", "duration_h",
     ]
     try:
         import csv as _csv
-        with open(out_dir / "sim_log.csv", "w", newline="", encoding="utf-8") as f:
+        with open(out_dir / "sim_outputs_sim_log.csv", "w", newline="", encoding="utf-8") as f:
             w = _csv.DictWriter(f, fieldnames=csv_cols)
             w.writeheader()
             for e in entries:
@@ -311,6 +326,13 @@ def _write_action_log(cfg, meta: Dict[str, Any]) -> None:
                 row = {k: e.get(k, "") for k in csv_cols}
                 row.update({"hour": hour})
                 w.writerow(row)
+        # cleanup legacy file name
+        try:
+            old = out_dir / "sim_log.csv"
+            if old.exists():
+                old.unlink()
+        except Exception:
+            pass
     except Exception:
         # best effort
         pass
@@ -321,6 +343,31 @@ def _write_action_log(cfg, meta: Dict[str, Any]) -> None:
             return f"{round(float(q)):,}"
         except Exception:
             return str(q)
+
+    # Build preferred-casing maps for locations/equipment from any non-all-caps occurrences present in the log
+    def _is_all_caps(s: str) -> bool:
+        s = str(s or "")
+        return (s.upper() == s) and (s.lower() != s.upper())
+
+    loc_case: Dict[str, str] = {}
+    eq_case: Dict[str, str] = {}
+    for e in entries:
+        for k in ("location", "src_location", "dst_location"):
+            v = str(e.get(k, ""))
+            if v and not _is_all_caps(v):
+                loc_case.setdefault(v.upper(), v)
+        for k in ("equipment", "src_equipment", "dst_equipment"):
+            v = str(e.get(k, ""))
+            if v and not _is_all_caps(v):
+                eq_case.setdefault(v.upper(), v)
+
+    def norm_loc(v: str) -> str:
+        vs = str(v)
+        return loc_case.get(vs.upper(), vs)
+
+    def norm_eq(v: str) -> str:
+        vs = str(v)
+        return eq_case.get(vs.upper(), vs)
 
     by_hour: Dict[int, list[dict]] = {}
     for e in entries:
@@ -334,45 +381,53 @@ def _write_action_log(cfg, meta: Dict[str, Any]) -> None:
             ev = str(e.get("event", ""))
             prod = str(e.get("product", "")).upper()
             if ev == "Produced":
-                loc = e.get("location", "")
-                eq = e.get("equipment", "")
+                loc = norm_loc(e.get("location", ""))
+                eq = norm_eq(e.get("equipment", ""))
                 lines.append(f"  {loc} {eq} Produced {fmt_qty(e.get('qty_t'))} TON {prod}")
             elif ev == "Consumed":
-                loc = e.get("location", "")
-                eq = e.get("equipment", "")
+                loc = norm_loc(e.get("location", ""))
+                eq = norm_eq(e.get("equipment", ""))
                 lines.append(f"  {loc} {eq} Consumed {fmt_qty(e.get('qty_t'))} TON {prod}")
             elif ev == "Loaded":
-                src_loc = e.get("src_location", "")
-                src_eq = e.get("src_equipment", "")
-                dst_loc = e.get("dst_location", "")
-                dst_eq = e.get("dst_equipment", "")
+                src_loc = norm_loc(e.get("src_location", ""))
+                src_eq = norm_eq(e.get("src_equipment", ""))
+                dst_loc = norm_loc(e.get("dst_location", ""))
+                dst_eq = norm_eq(e.get("dst_equipment", ""))
                 lines.append(f"  {src_loc} {src_eq} Loaded {fmt_qty(e.get('qty_t'))} TON {prod} to {dst_loc} {dst_eq}")
             elif ev == "Unloaded":
-                src_loc = e.get("src_location", "")
-                src_eq = e.get("src_equipment", "")
-                dst_loc = e.get("dst_location", "")
-                dst_eq = e.get("dst_equipment", "")
+                src_loc = norm_loc(e.get("src_location", ""))
+                src_eq = norm_eq(e.get("src_equipment", ""))
+                dst_loc = norm_loc(e.get("dst_location", ""))
+                dst_eq = norm_eq(e.get("dst_equipment", ""))
                 lines.append(f"  {dst_loc} {dst_eq} Unloaded {fmt_qty(e.get('qty_t'))} TON {prod} from {src_loc} {src_eq}")
             elif ev == "Transit":
-                src_loc = e.get("src_location", "")
-                src_eq = e.get("src_equipment", "")
-                dst_loc = e.get("dst_location", "")
-                dst_eq = e.get("dst_equipment", "")
+                src_loc = norm_loc(e.get("src_location", ""))
+                src_eq = norm_eq(e.get("src_equipment", ""))
+                dst_loc = norm_loc(e.get("dst_location", ""))
+                dst_eq = norm_eq(e.get("dst_equipment", ""))
                 dur = e.get("duration_h", "")
                 dur_str = f" in {dur} h" if dur not in (None, "") else ""
                 lines.append(f"  {src_loc} {src_eq} Transit {fmt_qty(e.get('qty_t'))} TON {prod} to {dst_loc} {dst_eq}{dur_str}")
             elif ev == "Delivered":
-                loc = e.get("location", "")
+                loc = norm_loc(e.get("location", ""))
                 lines.append(f"  {loc} Delivered {fmt_qty(e.get('qty_t'))} TON {prod}")
             elif ev == "Unmet":
-                loc = e.get("location", "")
+                loc = norm_loc(e.get("location", ""))
                 lines.append(f"  {loc} Unmet {fmt_qty(e.get('qty_t'))} TON {prod}")
             else:
                 lines.append(f"  {ev}: {e}")
         lines.append("")
 
     try:
-        (out_dir / "sim_log.txt").write_text("\n".join(lines), encoding="utf-8")
+        # Write new prefixed text log
+        (out_dir / "sim_outputs_sim_log.txt").write_text("\n".join(lines), encoding="utf-8")
+        # Cleanup legacy name
+        try:
+            legacy = out_dir / "sim_log.txt"
+            if legacy.exists():
+                legacy.unlink()
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -403,16 +458,28 @@ def _write_inventory_snapshots(cfg, meta: Dict[str, Any]) -> None:
         df = pd.DataFrame(rows, columns=cols)
         # Keep rows sorted by time then by store_key for readability
         df = df.sort_values(["time_h", "store_key"]).reset_index(drop=True)
-        df.to_csv(out_dir / "inventory_daily.csv", index=False)
+        df.to_csv(out_dir / "sim_outputs_inventory_daily.csv", index=False)
+        try:
+            legacy = out_dir / "inventory_daily.csv"
+            if legacy.exists():
+                legacy.unlink()
+        except Exception:
+            pass
     except Exception:
         try:
-            with open(out_dir / "inventory_daily.csv", "w", encoding="utf-8") as f:
+            with open(out_dir / "sim_outputs_inventory_daily.csv", "w", encoding="utf-8") as f:
                 f.write(",".join(cols) + "\n")
                 for e in sorted(entries, key=lambda x: (float(x.get("time_h", 0.0)), str(x.get("store_key", "")))):
                     row = [str(e.get(k, "")) for k in cols]
                     # replace commas/newlines for safety
                     row = [c.replace("\n", " ").replace(",", " ") for c in row]
                     f.write(",".join(row) + "\n")
+            try:
+                legacy = out_dir / "inventory_daily.csv"
+                if legacy.exists():
+                    legacy.unlink()
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -492,7 +559,7 @@ def _render_plot_task(task: dict, save_path: str | None = None) -> str | None:
             cum = task.get("cum", [])
             per = task.get("per", [])
             x_is_hour = bool(task.get("x_is_hour", False))
-            fig, ax1 = _plt.subplots(figsize=(9, 4.5))
+            fig, ax1 = _plt.subplots(figsize=(9, 4.8))
             ax1.plot(x, cum, color="tab:blue", label="Cumulative Produced (t)")
             ax1.set_title(title)
             ax1.set_xlabel("Hour" if x_is_hour else "Time (h)")
@@ -504,27 +571,82 @@ def _render_plot_task(task: dict, save_path: str | None = None) -> str | None:
             ax2.plot(x, per, color="tab:orange", linestyle="--", linewidth=1.5, label="Per Period Produced (t)")
             ax2.set_ylabel("Per-Period Tons Produced", color="tab:orange")
             ax2.tick_params(axis='y', labelcolor="tab:orange")
+            # Place a single combined legend below the plot area
             h1, l1 = ax1.get_legend_handles_labels()
             h2, l2 = ax2.get_legend_handles_labels()
-            ax1.legend(h1 + h2, l1 + l2, loc="upper left")
-            fig.tight_layout()
+            fig.legend(h1 + h2, l1 + l2, loc="lower center", ncol=2, frameon=True)
+            # Reserve space at the bottom for the legend
+            fig.subplots_adjust(bottom=0.22)
         elif kind == "store":
             x = task.get("x", [])
             y = task.get("y", [])
-            fig, ax = _plt.subplots(figsize=(9, 4.5))
+            fig, ax = _plt.subplots(figsize=(9, 4.8))
             ax.plot(x, y, label="Inventory Level (t)")
             ax.set_title(title)
             ax.set_xlabel("Time (h)")
             ax.set_ylabel("Inventory (t)")
             ax.grid(True, alpha=0.3)
-            ax.legend()
-            fig.tight_layout()
+            # Place legend below the plot area
+            fig.legend(loc="lower center", ncol=1, frameon=True)
+            # Reserve space at the bottom for the legend
+            fig.subplots_adjust(bottom=0.18)
         else:
             return None
         if save_path:
-            _plt.savefig(save_path, dpi=120)
-            _plt.close(fig)
-            return save_path
+            # Robust overwrite on Windows: save to a temp file, then atomically replace target with retries
+            import time as _time
+            from pathlib import Path as _P
+            tmp_path = str(_P(str(save_path)).with_suffix(_P(str(save_path)).suffix + ".tmp"))
+            try:
+                _plt.savefig(tmp_path, dpi=120, format="png")
+                # Try atomic replace with a few retries in case a viewer temporarily locks the file
+                ok = False
+                for _ in range(6):
+                    try:
+                        os.replace(tmp_path, save_path)
+                        ok = True
+                        break
+                    except PermissionError:
+                        _time.sleep(0.25)
+                    except OSError:
+                        # Brief wait and retry for other transient errors
+                        _time.sleep(0.1)
+                if not ok:
+                    # Fallback: attempt to remove existing file and move again
+                    try:
+                        if os.path.exists(save_path):
+                            os.remove(save_path)
+                        os.replace(tmp_path, save_path)
+                        ok = True
+                    except Exception:
+                        ok = False
+                if ok:
+                    _plt.close(fig)
+                    return save_path
+                else:
+                    # Could not overwrite; leave temp-rendered file alongside with a unique name
+                    alt_path = str(_P(str(save_path)).with_name(_P(str(save_path)).stem + "_new" + _P(str(save_path)).suffix))
+                    try:
+                        os.replace(tmp_path, alt_path)
+                    except Exception:
+                        # Last resort: try copy-like save directly to alt path
+                        try:
+                            _plt.savefig(alt_path, dpi=120, format="png")
+                        except Exception:
+                            pass
+                    _plt.close(fig)
+                    try:
+                        print(f"Warning: could not replace existing plot file (possibly locked). Wrote new image to: {alt_path}")
+                    except Exception:
+                        pass
+                    return alt_path
+            finally:
+                # Clean up stray temp file if it still exists
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except Exception:
+                    pass
         else:
             _plt.show()
             _plt.close(fig)
@@ -569,8 +691,16 @@ def _plot_output_graphs(cfg, frames: Dict[str, Any], horizon_h: float | None = N
     if make_df is not None:
         try:
             import pandas as _pd  # local alias
-            grp_keys = ["product_class", "location", "equipment"]
-            for (pc, loc, eq), g in make_df.groupby(grp_keys):
+            # If the output product column exists, include it in grouping so charts separate by product
+            has_product_col = "product" in make_df.columns
+            grp_keys = ["product_class", "location", "equipment"] + (["product"] if has_product_col else [])
+            for keys, g in make_df.groupby(grp_keys):
+                # Unpack keys depending on presence of product
+                if has_product_col:
+                    pc, loc, eq, prod = keys
+                else:
+                    pc, loc, eq = keys
+                    prod = None
                 g = g.copy()
                 if "hour" not in g.columns and "time_h" in g.columns:
                     try:
@@ -610,9 +740,12 @@ def _plot_output_graphs(cfg, frames: Dict[str, Any], horizon_h: float | None = N
                 for v in y_per:
                     total += float(v)
                     cum_vals.append(total)
-                # If hourly and padded out, cum_vals already extend; if time_h padded with final point, cum_vals also extended
-                title = f"Make Output — {pc or '(all)'} @ {loc or '(loc)'} — {eq or '(equip)'}"
-                tasks.append({
+                # Build title including output product if known
+                if prod is None or str(prod).strip() == "":
+                    title = f"Make Output — {pc or '(all)'} @ {loc or '(loc)'} — {eq or '(equip)'}"
+                else:
+                    title = f"Make Output — {pc or '(all)'} @ {loc or '(loc)'} — {eq or '(equip)'} — Product: {prod}"
+                item = {
                     "kind": "make",
                     "x": x,
                     "cum": cum_vals,
@@ -622,7 +755,10 @@ def _plot_output_graphs(cfg, frames: Dict[str, Any], horizon_h: float | None = N
                     "pc": str(pc or ""),
                     "loc": str(loc or ""),
                     "eq": str(eq or ""),
-                })
+                }
+                if prod is not None:
+                    item["prod"] = str(prod or "")
+                tasks.append(item)
         except Exception as e:
             print("Warning: failed to prepare Make plots:", e)
 
@@ -675,6 +811,18 @@ def _plot_output_graphs(cfg, frames: Dict[str, Any], horizon_h: float | None = N
     plots_dir = out_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
 
+    # Optional: clean old PNGs before rendering to avoid confusion with stale images
+    try:
+        if bool(getattr(cfg, "plot_clean_dir", False)):
+            for p in plots_dir.glob("*.png"):
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception:
+                    # Ignore files locked by viewers; they will be overwritten using atomic replace logic
+                    pass
+    except Exception:
+        pass
+
     # Decide execution mode
     use_parallel = bool(getattr(cfg, "plot_parallel", True))
     save_images = bool(getattr(cfg, "plot_save_images", True))
@@ -696,6 +844,11 @@ def _plot_output_graphs(cfg, frames: Dict[str, Any], horizon_h: float | None = N
         if not workers or int(workers) <= 0:
             import os as _os
             workers = min(32, max(1, (_os.cpu_count() or 2)))
+        # Announce how many workers will render graphs (parallel mode)
+        try:
+            print(f"Generating output graphs with {int(workers)} worker(s) using ProcessPool...")
+        except Exception:
+            pass
         try:
             with _fut.ProcessPoolExecutor(max_workers=int(workers)) as ex:
                 futs = [ex.submit(_render_plot_task, t, t.get("save_path")) for t in tasks]
@@ -705,8 +858,12 @@ def _plot_output_graphs(cfg, frames: Dict[str, Any], horizon_h: float | None = N
                     if res:
                         saved += 1
         except Exception as e:
-            print("ProcessPool failed (falling back to threads):", e)
+            print(f"ProcessPool failed (falling back to ThreadPool with {int(workers)} worker(s)):", e)
             try:
+                try:
+                    print(f"Generating output graphs with {int(workers)} worker(s) using ThreadPool...")
+                except Exception:
+                    pass
                 with _fut.ThreadPoolExecutor(max_workers=int(workers)) as ex:
                     futs = [ex.submit(_render_plot_task, t, t.get("save_path")) for t in tasks]
                     for f in _fut.as_completed(futs):
@@ -723,6 +880,11 @@ def _plot_output_graphs(cfg, frames: Dict[str, Any], horizon_h: float | None = N
                         saved += 1
     else:
         # Serial interactive or serial save
+        try:
+            mode = "interactive" if not save_images else "serial save"
+            print(f"Generating output graphs {mode} with 1 worker (no parallelism)...")
+        except Exception:
+            pass
         for t in tasks:
             res = _render_plot_task(t, t.get("save_path") if save_images else None)
             completed += 1
@@ -734,11 +896,257 @@ def _plot_output_graphs(cfg, frames: Dict[str, Any], horizon_h: float | None = N
     else:
         print(f"Rendered {completed} plots interactively.")
 
+    # Optionally build a single HTML file that aggregates all charts
+    try:
+        build_single_html = bool(getattr(cfg, "plot_single_html", False))
+    except Exception:
+        build_single_html = False
+
+    # If single HTML requested but images weren't saved, force-enable for this call
+    if build_single_html and not save_images:
+        try:
+            print("Note: plot_single_html=True but plot_save_images=False; generating images temporarily to build HTML...")
+        except Exception:
+            pass
+        # Re-render serially to files for HTML assembly
+        for t in tasks:
+            safe_name = f"{_slug(t.get('pc',''))}__{_slug(t.get('loc',''))}__{_slug(t.get('eq',''))}"
+            sub = "make" if t.get("kind") == "make" else "store"
+            t["save_path"] = str(plots_dir / f"{sub}__{safe_name}.png")
+        completed2 = 0
+        saved2 = 0
+        for t in tasks:
+            res = _render_plot_task(t, t.get("save_path"))
+            completed2 += 1
+            if res:
+                saved2 += 1
+        try:
+            print(f"Saved {saved2}/{completed2} plot images to: {plots_dir} (for HTML)")
+        except Exception:
+            pass
+
+    if build_single_html:
+        # Collect saved images and metadata from tasks
+        from pathlib import Path as _P
+        import base64 as _b64
+        import html as _html
+        items = []
+        for t in tasks:
+            p = t.get("save_path")
+            if not p:
+                continue
+            if _P(p).exists():
+                items.append({
+                    "path": str(_P(p)),
+                    "rel": str(_P(p).resolve().relative_to(out_dir.resolve())),
+                    "title": str(t.get("title", "")),
+                    "kind": str(t.get("kind", "")),
+                })
+        if not items:
+            try:
+                print("No plot images found to include in single HTML.")
+            except Exception:
+                pass
+        else:
+            # Optionally group items by (Product Class, Location)
+            group_by = True
+            try:
+                group_by = bool(getattr(cfg, "plot_html_group_by_loc_pc", True))
+            except Exception:
+                group_by = True
+
+            # Enrich items with parsing of pc/loc/eq from their relative path if not present
+            def _parse_meta_from_rel(rel_path: str):
+                # rel like 'plots/make__PC__LOC__EQ.png' or 'plots/store__PC__LOC__EQ.png'
+                try:
+                    name = os.path.basename(rel_path)
+                    base = os.path.splitext(name)[0]
+                    # pattern: kind__PC__LOC__EQ
+                    parts = base.split("__")
+                    if len(parts) >= 4:
+                        return parts[1], parts[2], parts[3]
+                except Exception:
+                    pass
+                return "", "", ""
+
+            for it in items:
+                if 'pc' not in it or 'loc' not in it or 'eq' not in it:
+                    pc_v, loc_v, eq_v = _parse_meta_from_rel(it.get('rel',''))
+                    it['pc'] = pc_v
+                    it['loc'] = loc_v
+                    it['eq'] = eq_v
+
+            # Sort items for stable grouping: by (pc, loc), Make before Store, then equipment, then title
+            def _kind_rank(k: str) -> int:
+                return 0 if str(k).lower() == 'make' else 1
+            items.sort(key=lambda it: (str(it.get('loc','')).upper(), str(it.get('pc','')).upper(), _kind_rank(it.get('kind','')), str(it.get('eq','')).upper(), str(it.get('title',''))))
+
+            # Build HTML content
+            html_lines = []
+            html_lines.append("<!DOCTYPE html>")
+            html_lines.append("<html lang=\"en\">")
+            html_lines.append("<head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+                              "<title>Simulation Plots</title>"
+                              "<style>body{font-family:Arial,sans-serif;margin:20px;} .toc a{display:block;margin:2px 0;}"
+                              ".sec{margin-top:24px;} .group{margin-top:36px;border-top:1px solid #e5e5e5;padding-top:12px;}"
+                              "img{max-width:100%;height:auto;border:1px solid #ddd;padding:4px;background:#fff;}"
+                              ".caption{font-size:14px;color:#333;margin:6px 0 14px;} .muted{color:#666;font-size:13px;}</style></head>")
+            html_lines.append("<body>")
+            html_lines.append(f"<h2>Simulation charts</h2>")
+            # Timestamp
+            try:
+                from datetime import datetime as _dt
+                html_lines.append(f"<div>Generated: {_html.escape(_dt.now().strftime('%Y-%m-%d %H:%M:%S'))}</div>")
+            except Exception:
+                pass
+            # TOC
+            html_lines.append("<h3>Contents</h3>")
+            if group_by:
+                # Build grouped TOC
+                html_lines.append("<div class=\"toc\">")
+                current = None
+                group_counts = {}
+                for it in items:
+                    key = (str(it.get('loc','')).upper(), str(it.get('pc','')).upper())
+                    group_counts[key] = group_counts.get(key, 0) + 1
+                # Announce grouping in console
+                try:
+                    grp_str = ", ".join([f"{k[0]} @ {k[1]}: {v}" for k, v in sorted(group_counts.items())])
+                    if grp_str:
+                        print(f"Single-HTML grouping by (Location, PC): {grp_str} chart(s)")
+                except Exception:
+                    pass
+                # Emit TOC entries per group with nested charts
+                last_group = None
+                idx = 0
+                for it in items:
+                    grp = (str(it.get('loc','')).upper(), str(it.get('pc','')).upper())
+                    if grp != last_group:
+                        if last_group is not None:
+                            html_lines.append("</div>")  # close previous group's chart list
+                        html_lines.append(f"<div class=\"muted\"><b>{_html.escape(grp[0])}</b> @ <b>{_html.escape(grp[1])}</b></div>")
+                        html_lines.append("<div style=\"margin-left:10px;\">")
+                        last_group = grp
+                    idx += 1
+                    anchor = f"sec{idx}"
+                    it['__anchor'] = anchor
+                    html_lines.append(f"<a href=\"#{anchor}\">{_html.escape(it['title'])}</a>")
+                if last_group is not None:
+                    html_lines.append("</div>")
+                html_lines.append("</div>")
+            else:
+                html_lines.append("<div class=\"toc\">")
+                for i, it in enumerate(items):
+                    anchor = f"sec{i+1}"
+                    it['__anchor'] = anchor
+                    html_lines.append(f"<a href=\"#{anchor}\">{_html.escape(it['title'])}</a>")
+                html_lines.append("</div>")
+
+            # Sections
+            embed = True
+            try:
+                embed = bool(getattr(cfg, "plot_html_embed_images", True))
+            except Exception:
+                embed = True
+            # Render grouped sections
+            if group_by:
+                last_group = None
+                idx = 0
+                for it in items:
+                    grp = (str(it.get('loc','')).upper(), str(it.get('pc','')).upper())
+                    if grp != last_group:
+                        # New group header (Location first, then PC)
+                        html_lines.append(f"<div class=\"group\"><h3>{_html.escape(grp[0])} @ { _html.escape(grp[1]) }</h3>")
+                        last_group = grp
+                    idx += 1
+                    anchor = it.get('__anchor') or f"sec{idx}"
+                    html_lines.append(f"<div class=\"sec\" id=\"{anchor}\">")
+                    html_lines.append(f"<h4>{_html.escape(it['title'])}</h4>")
+                    if embed:
+                        try:
+                            with open(it["path"], "rb") as f:
+                                b64 = _b64.b64encode(f.read()).decode("ascii")
+                            html_lines.append(f"<img alt=\"{_html.escape(it['title'])}\" src=\"data:image/png;base64,{b64}\"/>")
+                        except Exception as e:
+                            html_lines.append(f"<div>Failed to embed image: {_html.escape(str(e))}</div>")
+                    else:
+                        html_lines.append(f"<img alt=\"{_html.escape(it['title'])}\" src=\"{_html.escape(it['rel']).replace('\\\\','/')}\"/>")
+                    html_lines.append(f"<div class=\"caption\">{_html.escape(it['kind'].title())} — Eq: {_html.escape(str(it.get('eq','')))}</div>")
+                    html_lines.append("</div>")
+                if last_group is not None:
+                    html_lines.append("</div>")  # close final group
+            else:
+                for i, it in enumerate(items):
+                    anchor = it.get('__anchor') or f"sec{i+1}"
+                    html_lines.append(f"<div class=\"sec\" id=\"{anchor}\">")
+                    html_lines.append(f"<h3>{_html.escape(it['title'])}</h3>")
+                    if embed:
+                        try:
+                            with open(it["path"], "rb") as f:
+                                b64 = _b64.b64encode(f.read()).decode("ascii")
+                            html_lines.append(f"<img alt=\"{_html.escape(it['title'])}\" src=\"data:image/png;base64,{b64}\"/>")
+                        except Exception as e:
+                            html_lines.append(f"<div>Failed to embed image: {_html.escape(str(e))}</div>")
+                    else:
+                        html_lines.append(f"<img alt=\"{_html.escape(it['title'])}\" src=\"{_html.escape(it['rel']).replace('\\\\','/')}\"/>")
+                    html_lines.append(f"<div class=\"caption\">{_html.escape(it['kind'].title())}</div>")
+                    html_lines.append("</div>")
+            html_lines.append("</body></html>")
+
+            # Write HTML
+            html_name = getattr(cfg, "plot_html_filename", "plots_all.html")
+            # If using default, apply sim_outputs_ prefix for naming convention
+            legacy_html = None
+            if str(html_name) == "plots_all.html":
+                legacy_html = out_dir / "plots_all.html"
+                html_name = "sim_outputs_plots_all.html"
+            html_path = out_dir / str(html_name)
+            try:
+                with open(html_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(html_lines))
+                # Remove legacy default-named file if present
+                try:
+                    if legacy_html is not None and legacy_html.exists() and legacy_html != html_path:
+                        legacy_html.unlink()
+                except Exception:
+                    pass
+                print(f"Wrote single-HTML plots file: {html_path}")
+                # Auto-open the generated HTML if configured
+                try:
+                    if bool(getattr(cfg, "plot_open_html_after", False)):
+                        opened = False
+                        try:
+                            # Prefer Windows shell open when available
+                            if hasattr(os, 'startfile'):
+                                os.startfile(str(html_path))  # type: ignore[attr-defined]
+                                opened = True
+                        except Exception:
+                            opened = False
+                        if not opened:
+                            try:
+                                import webbrowser as _wb
+                                _wb.open_new_tab(Path(html_path).resolve().as_uri())
+                                opened = True
+                            except Exception:
+                                opened = False
+                        try:
+                            if opened:
+                                print(f"Opened HTML in default browser: {html_path}")
+                            else:
+                                print(f"Note: could not auto-open HTML. You can open it manually: {html_path}")
+                        except Exception:
+                            pass
+                except Exception:
+                    # Do not let UI nicety break the run
+                    pass
+            except Exception as e:
+                print("Failed to write single HTML:", e)
+
 
 def _write_frozen_model(cfg, meta: Dict[str, Any]) -> None:
     """Write a standalone Python file that contains the exact SimPy model that was built
     from the Excel inputs and executed. This file can be run independently without Excel.
-    Output path: sim_outputs/frozen_sim_model.py
+    Output path: sim_outputs/sim_outputs_simpy_model.py
     """
     export = None
     try:
@@ -750,9 +1158,10 @@ def _write_frozen_model(cfg, meta: Dict[str, Any]) -> None:
 
     out_dir = Path(cfg.resolve_out_dir())
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "frozen_sim_model.py"
+    out_path = out_dir / "sim_outputs_simpy_model.py"
 
     import json
+    from pprint import pformat
     settings = export.get("settings", {})
     stores = export.get("stores", [])
     makes = export.get("makes", [])
@@ -768,11 +1177,12 @@ def _write_frozen_model(cfg, meta: Dict[str, Any]) -> None:
     script.append("from typing import Dict\n")
     script.append("import simpy\n\n")
 
-    script.append(f"SETTINGS = {json.dumps(settings, indent=2)}\n\n")
-    script.append(f"STORES = {json.dumps(stores, indent=2)}\n\n")
-    script.append(f"MAKES = {json.dumps(makes, indent=2)}\n\n")
-    script.append(f"MOVES = {json.dumps(moves, indent=2)}\n\n")
-    script.append(f"DELIVERIES = {json.dumps(deliveries, indent=2)}\n\n")
+    # Use Python literals (not JSON) so booleans are True/False and None is valid
+    script.append(f"SETTINGS = {pformat(settings, width=100, indent=2, sort_dicts=False)}\n\n")
+    script.append(f"STORES = {pformat(stores, width=100, indent=2, sort_dicts=False)}\n\n")
+    script.append(f"MAKES = {pformat(makes, width=100, indent=2, sort_dicts=False)}\n\n")
+    script.append(f"MOVES = {pformat(moves, width=100, indent=2, sort_dicts=False)}\n\n")
+    script.append(f"DELIVERIES = {pformat(deliveries, width=100, indent=2, sort_dicts=False)}\n\n")
 
     script.append("def build():\n")
     script.append("    env = simpy.Environment()\n")
@@ -822,7 +1232,10 @@ def _write_frozen_model(cfg, meta: Dict[str, Any]) -> None:
     script.append("        stores[key] = simpy.Container(env, init=opening, capacity=cap)\n\n")
 
     # Makes
-    script.append("    # Make producer processes\n")
+    script.append("    # Make producer processes with shared unit resources and detailed logging\n")
+    script.append("    from collections import defaultdict\n")
+    script.append("    unit_by_loc_eq = {}  # (loc, eq) -> simpy.Resource(shared)\n")
+    script.append("\n")
     script.append("    def _choose_candidate(rule: str, cands: list[dict]):\n")
     script.append("        best_i = None\n")
     script.append("        best_metric = None\n")
@@ -845,59 +1258,87 @@ def _write_frozen_model(cfg, meta: Dict[str, Any]) -> None:
     script.append("                best_metric = metric\n")
     script.append("        return 0 if best_i is None else best_i\n\n")
 
-    script.append("    def _producer_multi(env, candidates, in_key, rate_tph, cons_pct, step_h, rule):\n")
+    script.append("    def _producer(env, unit, candidates, step_h, rule, meta):\n")
+    script.append("        # Single-output-at-a-time production across all candidates; each candidate has its own input/rate.\n")
     script.append("        while True:\n")
-    script.append("            idx = _choose_candidate(rule, candidates)\n")
-    script.append("            tgt = candidates[idx]\n")
-    script.append("            out_key = tgt['out_store_key']\n")
-    script.append("            qty_out = max(0.0, float(rate_tph)) * float(step_h)\n")
-    script.append("            dst = stores.get(out_key)\n")
-    script.append("            if dst is not None and qty_out > 0:\n")
-    script.append("                room = dst.capacity - dst.level if dst.capacity is not None else qty_out\n")
-    script.append("                qty_out = max(0.0, min(qty_out, room))\n")
-    script.append("            else:\n")
-    script.append("                qty_out = 0.0\n")
-    script.append("            qty_in = qty_out * float(cons_pct) if in_key else 0.0\n")
-    script.append("            if in_key and qty_out > 0:\n")
-    script.append("                src = stores.get(in_key)\n")
-    script.append("                if src is not None and qty_in > 0:\n")
-    script.append("                    take = min(src.level, qty_in)\n")
-    script.append("                    if take > 0:\n")
-    script.append("                        yield src.get(take)\n")
-    script.append("                    if qty_in > 0 and take < qty_in:\n")
-    script.append("                        scale = take/qty_in if qty_in > 0 else 0.0\n")
-    script.append("                        qty_out *= scale\n")
-    script.append("            if dst is not None and qty_out > 0:\n")
-    script.append("                yield dst.put(qty_out)\n")
-    script.append("            yield env.timeout(float(step_h))\n\n")
+    script.append("            with unit.request() as req:\n")
+    script.append("                yield req\n")
+    script.append("                # Build list of eligible candidates that have enough room for their own full step output\n")
+    script.append("                eligible = []\n")
+    script.append("                for c in candidates:\n")
+    script.append("                    dst = stores.get(c.get('out_store_key'))\n")
+    script.append("                    if dst is None:\n")
+    script.append("                        continue\n")
+    script.append("                    rate_tph = float(c.get('rate_tph', 0.0))\n")
+    script.append("                    full_step = rate_tph * float(step_h)\n")
+    script.append("                    if getattr(dst, 'capacity', None) is None:\n")
+    script.append("                        eligible.append({**c, 'full_step': full_step})\n")
+    script.append("                        continue\n")
+    script.append("                    room = float(dst.capacity) - float(dst.level)\n")
+    script.append("                    if full_step <= 0 or room >= full_step:\n")
+    script.append("                        eligible.append({**c, 'full_step': full_step})\n")
+    script.append("                if not eligible:\n")
+    script.append("                    yield env.timeout(float(step_h))\n")
+    script.append("                    continue\n")
+    script.append("                idx = _choose_candidate(str(rule), eligible)\n")
+    script.append("                sel = eligible[idx]\n")
+    script.append("                out_key = sel.get('out_store_key')\n")
+    script.append("                out_product = sel.get('product', '')\n")
+    script.append("                dst = stores.get(out_key)\n")
+    script.append("                qty_out = float(sel.get('full_step', 0.0))\n")
+    script.append("                in_key = sel.get('in_store_key')\n")
+    script.append("                cons_pct = float(sel.get('consumption_pct', 0.0))\n")
+    script.append("                # Compute input needed and try to take; scale output if input short\n")
+    script.append("                qty_in = qty_out * float(cons_pct) if in_key else 0.0\n")
+    script.append("                if in_key and qty_out > 0:\n")
+    script.append("                    src = stores.get(in_key)\n")
+    script.append("                    if src is not None:\n")
+    script.append("                        take = min(float(src.level), float(qty_in))\n")
+    script.append("                        if take > 0:\n")
+    script.append("                            yield src.get(take)\n")
+    script.append("                            try:\n")
+    script.append("                                log_action('Consumed', env.now, {\n")
+    script.append("                                    'product_class': str(meta.get('product_class','')),\n")
+    script.append("                                    'location': str(meta.get('location','')),\n")
+    script.append("                                    'equipment': str(meta.get('equipment','')),\n")
+    script.append("                                    'process': 'Make',\n")
+    script.append("                                    'product': str(in_key.split('|')[3] if isinstance(in_key,str) and '|' in in_key else ''),\n")
+    script.append("                                    'qty_t': float(take),\n")
+    script.append("                                    'units': 'TON',\n")
+    script.append("                                })\n")
+    script.append("                            except Exception:\n")
+    script.append("                                pass\n")
+    script.append("                        if float(qty_in) > 0 and take < float(qty_in):\n")
+    script.append("                            scale = float(take) / float(qty_in) if float(qty_in) > 0 else 0.0\n")
+    script.append("                            qty_out *= scale\n")
+    script.append("                if dst is not None and qty_out > 0:\n")
+    script.append("                    yield dst.put(qty_out)\n")
+    script.append("                    try:\n")
+    script.append("                        log_action('Produced', env.now, {\n")
+    script.append("                            'product_class': str(meta.get('product_class','')),\n")
+    script.append("                            'location': str(meta.get('location','')),\n")
+    script.append("                            'equipment': str(meta.get('equipment','')),\n")
+    script.append("                            'process': 'Make',\n")
+    script.append("                            'product': str(out_product),\n")
+    script.append("                            'qty_t': float(qty_out),\n")
+    script.append("                            'units': 'TON',\n")
+    script.append("                        })\n")
+    script.append("                    except Exception:\n")
+    script.append("                        pass\n")
+    script.append("                yield env.timeout(float(step_h))\n\n")
 
-    script.append("    def _producer_single(env, out_key, in_key, rate_tph, cons_pct, step_h):\n")
-    script.append("        while True:\n")
-    script.append("            qty_out = max(0.0, float(rate_tph)) * float(step_h)\n")
-    script.append("            qty_in = qty_out * float(cons_pct) if in_key else 0.0\n")
-    script.append("            if in_key:\n")
-    script.append("                src = stores.get(in_key)\n")
-    script.append("                if src is not None and qty_in > 0:\n")
-    script.append("                    take = min(src.level, qty_in)\n")
-    script.append("                    if take > 0:\n")
-    script.append("                        yield src.get(take)\n")
-    script.append("                    if qty_in > 0 and take < qty_in:\n")
-    script.append("                        scale = take/qty_in if qty_in > 0 else 0.0\n")
-    script.append("                        qty_out *= scale\n")
-    script.append("            dst = stores.get(out_key)\n")
-    script.append("            if dst is not None and qty_out > 0:\n")
-    script.append("                room = dst.capacity - dst.level if dst.capacity is not None else qty_out\n")
-    script.append("                put_amt = min(qty_out, max(room, 0))\n")
-    script.append("                if put_amt > 0:\n")
-    script.append("                    yield dst.put(put_amt)\n")
-    script.append("            yield env.timeout(float(step_h))\n\n")
-
+    script.append("    # Instantiate shared resources and spawn producers\n")
     script.append("    for m in MAKES:\n")
-    script.append("        if 'candidates' in m and m['candidates']:\n")
-    script.append("            rule = m.get('choice_rule', SETTINGS.get('make_output_choice', 'min_fill_pct'))\n")
-    script.append("            env.process(_producer_multi(env, m['candidates'], m.get('in_store_key'), m['mean_rate_tph'], m['consumption_pct'], m['step_hours'], rule))\n")
-    script.append("        else:\n")
-    script.append("            env.process(_producer_single(env, m.get('out_store_key'), m.get('in_store_key'), m['mean_rate_tph'], m['consumption_pct'], m['step_hours']))\n\n")
+    script.append("        loc = str(m.get('location',''))\n")
+    script.append("        eq = str(m.get('equipment',''))\n")
+    script.append("        le = (loc.upper(), eq.upper())\n")
+    script.append("        if le not in unit_by_loc_eq:\n")
+    script.append("            unit_by_loc_eq[le] = simpy.Resource(env, capacity=1)\n")
+    script.append("        unit = unit_by_loc_eq[le]\n")
+    script.append("        rule = m.get('choice_rule', SETTINGS.get('make_output_choice', 'min_fill_pct'))\n")
+    script.append("        meta = {'product_class': m.get('product_class',''), 'location': loc, 'equipment': eq}\n")
+    script.append("        cands = list(m.get('candidates', []))\n")
+    script.append("        env.process(_producer(env, unit, cands, m.get('step_hours', SETTINGS.get('step_hours', 1.0)), rule, meta))\n\n")
 
     # Moves
     script.append("    # Transporter (move) processes\n")
@@ -911,6 +1352,7 @@ def _write_frozen_model(cfg, meta: Dict[str, Any]) -> None:
     script.append("        pc_o, loc_o, eq_o, inp = _parse_store_key(origin_key)\n")
     script.append("        pc_d, loc_d, eq_d, _ = _parse_store_key(dest_key)\n")
     script.append("        is_train = ('TRAIN' in str(eq_o).upper()) or ('TRAIN' in str(eq_d).upper())\n")
+    script.append("        fast = bool(SETTINGS.get('fast_transport_cycle', False))\n")
     script.append("        while True:\n")
     script.append("            if load_rate_tph <= 0 or payload_t <= 0:\n")
     script.append("                yield env.timeout((float(to_min)+float(back_min))/60.0 if (to_min or back_min) else float(step_h))\n")
@@ -931,37 +1373,13 @@ def _write_frozen_model(cfg, meta: Dict[str, Any]) -> None:
     script.append("            if is_train:\n")
     script.append("                take = float(payload_t)\n")
     script.append("            else:\n")
-    script.append("                take = min(origin.level, float(payload_t))\n")
+    script.append("                take = min(float(origin.level), float(payload_t))\n")
     script.append("            if take > 0:\n")
     script.append("                yield env.timeout(load_time_h)\n")
     script.append("                yield origin.get(take)\n")
     script.append("                # Log load\n")
     script.append("                try:\n")
-    script.append("                    log_action(\n")
-    script.append("                        'Loaded',\n")
-    script.append("                        env.now,\n")
-    script.append("                        {\n")
-    script.append("                            'product_class': pc_o,\n")
-    script.append("                            'product': inp,\n")
-    script.append("                            'qty_t': float(take),\n")
-    script.append("                            'units': 'TON',\n")
-    script.append("                            'src_location': loc_o,\n")
-    script.append("                            'src_equipment': eq_o,\n")
-    script.append("                            'dst_location': loc_d,\n")
-    script.append("                            'dst_equipment': eq_d,\n")
-    script.append("                        },\n")
-    script.append("                    )\n")
-    script.append("                except Exception:\n")
-    script.append("                    pass\n")
-    script.append("            else:\n")
-    script.append("                yield env.timeout(float(step_h))\n")
-    script.append("                continue\n")
-    script.append("            # Transit to destination\n")
-    script.append("            try:\n")
-    script.append("                log_action(\n")
-    script.append("                    'Transit',\n")
-    script.append("                    env.now,\n")
-    script.append("                    {\n")
+    script.append("                    log_action('Loaded', env.now, {\n")
     script.append("                        'product_class': pc_o,\n")
     script.append("                        'product': inp,\n")
     script.append("                        'qty_t': float(take),\n")
@@ -970,39 +1388,67 @@ def _write_frozen_model(cfg, meta: Dict[str, Any]) -> None:
     script.append("                        'src_equipment': eq_o,\n")
     script.append("                        'dst_location': loc_d,\n")
     script.append("                        'dst_equipment': eq_d,\n")
-    script.append("                        'duration_h': float(to_min)/60.0,\n")
-    script.append("                    },\n")
-    script.append("                )\n")
+    script.append("                    })\n")
+    script.append("                except Exception:\n")
+    script.append("                    pass\n")
+    script.append("            else:\n")
+    script.append("                yield env.timeout(float(step_h))\n")
+    script.append("                continue\n")
+    script.append("            # Transit to destination\n")
+    script.append("            try:\n")
+    script.append("                log_action('Transit', env.now, {\n")
+    script.append("                    'product_class': pc_o,\n")
+    script.append("                    'product': inp,\n")
+    script.append("                    'qty_t': float(take),\n")
+    script.append("                    'units': 'TON',\n")
+    script.append("                    'src_location': loc_o,\n")
+    script.append("                    'src_equipment': eq_o,\n")
+    script.append("                    'dst_location': loc_d,\n")
+    script.append("                    'dst_equipment': eq_d,\n")
+    script.append("                    'duration_h': float(to_min)/60.0,\n")
+    script.append("                })\n")
     script.append("            except Exception:\n")
     script.append("                pass\n")
     script.append("            yield env.timeout(float(to_min)/60.0)\n")
-    script.append("            unload_time_h = float(take) / max(float(unload_rate_tph), 1e-9) if unload_rate_tph else 0.0\n")
-    script.append("            if is_train:\n")
-    script.append("                put_amt = float(take)\n")
-    script.append("            else:\n")
-    script.append("                room = dest.capacity - dest.level if dest.capacity is not None else take\n")
-    script.append("                put_amt = min(take, max(room, 0))\n")
-    script.append("            if put_amt > 0 and unload_rate_tph > 0:\n")
-    script.append("                yield env.timeout(unload_time_h)\n")
-    script.append("                yield dest.put(put_amt)\n")
-    script.append("                # Log unload\n")
-    script.append("                try:\n")
-    script.append("                    log_action(\n")
-    script.append("                        'Unloaded',\n")
-    script.append("                        env.now,\n")
-    script.append("                        {\n")
+    script.append("            # Unload preserving mass: wait until destination has room and unload in chunks at the configured rate\n")
+    script.append("            remaining = float(take)\n")
+    script.append("            while remaining > 0:\n")
+    script.append("                room = dest.capacity - dest.level if dest.capacity is not None else remaining\n")
+    script.append("                if room <= 0:\n")
+    script.append("                    try:\n")
+    script.append("                        log_action('WaitingForRoom', env.now, {\n")
     script.append("                            'product_class': pc_o,\n")
     script.append("                            'product': inp,\n")
-    script.append("                            'qty_t': float(put_amt),\n")
+    script.append("                            'qty_t': float(remaining),\n")
+    script.append("                            'units': 'TON',\n")
+    script.append("                            'dst_location': loc_d,\n")
+    script.append("                            'dst_equipment': eq_d,\n")
+    script.append("                        })\n")
+    script.append("                    except Exception:\n")
+    script.append("                        pass\n")
+    script.append("                    yield env.timeout(float(step_h))\n")
+    script.append("                    continue\n")
+    script.append("                chunk = min(remaining, max(room, 0.0))\n")
+    script.append("                if float(unload_rate_tph) > 0 and chunk > 0:\n")
+    script.append("                    unload_time_h = float(chunk) / max(float(unload_rate_tph), 1e-9)\n")
+    script.append("                    yield env.timeout(unload_time_h)\n")
+    script.append("                if chunk > 0:\n")
+    script.append("                    yield dest.put(chunk)\n")
+    script.append("                    remaining -= float(chunk)\n")
+    script.append("                    # Log partial unload\n")
+    script.append("                    try:\n")
+    script.append("                        log_action('Unloaded', env.now, {\n")
+    script.append("                            'product_class': pc_o,\n")
+    script.append("                            'product': inp,\n")
+    script.append("                            'qty_t': float(chunk),\n")
     script.append("                            'units': 'TON',\n")
     script.append("                            'src_location': loc_o,\n")
     script.append("                            'src_equipment': eq_o,\n")
     script.append("                            'dst_location': loc_d,\n")
     script.append("                            'dst_equipment': eq_d,\n")
-    script.append("                        },\n")
-    script.append("                    )\n")
-    script.append("                except Exception:\n")
-    script.append("                    pass\n")
+    script.append("                        })\n")
+    script.append("                    except Exception:\n")
+    script.append("                        pass\n")
     script.append("            yield env.timeout(float(back_min)/60.0)\n\n")
 
     script.append("    for mv in MOVES:\n")
@@ -1047,7 +1493,14 @@ def _write_frozen_model(cfg, meta: Dict[str, Any]) -> None:
     script.append("if __name__ == '__main__':\n")
     script.append("    main()\n")
 
+    # Write new-named frozen model and clean up legacy filename
     out_path.write_text("".join(script), encoding="utf-8")
+    try:
+        legacy = out_dir / "frozen_sim_model.py"
+        if legacy.exists() and legacy != out_path:
+            legacy.unlink()
+    except Exception:
+        pass
 
 
 
@@ -1214,7 +1667,7 @@ def main():
         try:
             _log(cfg, "Writing detailed simulation log (text + CSV)...")
             _write_action_log(cfg, meta)
-            print(f"Detailed simulation log written to: {Path(cfg.resolve_out_dir()).resolve() / 'sim_log.txt'}")
+            print(f"Detailed simulation log written to: {Path(cfg.resolve_out_dir()).resolve() / 'sim_outputs_sim_log.txt'}")
         except Exception as e:
             print("Warning: Failed to write detailed log:", e)
 
@@ -1224,7 +1677,7 @@ def main():
             _log(cfg, "Writing frozen model source (standalone) ...")
             _write_frozen_model(cfg, meta)
             out_dir_path = Path(cfg.resolve_out_dir()).resolve()
-            print(f"Frozen model source written to: {out_dir_path / 'frozen_sim_model.py'}")
+            print(f"Frozen model source written to: {out_dir_path / 'sim_outputs_simpy_model.py'}")
         except Exception as e:
             print("Warning: Failed to write frozen model source:", e)
 
@@ -1233,7 +1686,7 @@ def main():
         try:
             _log(cfg, "Writing inventory snapshots CSV...")
             _write_inventory_snapshots(cfg, meta)
-            print(f"Inventory snapshots written to: {Path(cfg.resolve_out_dir()).resolve() / 'inventory_daily.csv'}")
+            print(f"Inventory snapshots written to: {Path(cfg.resolve_out_dir()).resolve() / 'sim_outputs_inventory_daily.csv'}")
         except Exception as e:
             print("Warning: Failed to write inventory snapshots:", e)
 

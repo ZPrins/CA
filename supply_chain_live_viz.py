@@ -5,8 +5,8 @@ of supply_chain_viz.py and replays inventory + transporter events from CSV logs.
 What it does
 - Builds the network from your workbook using the same grid layout as supply_chain_viz.py
   (fixed swimlanes: rows by Location, columns by Product Class panels; uses Config spacing).
-- Reads inventory snapshots (sim_outputs/inventory_daily.csv) to update tank fills over time.
-- Reads the detailed action log (sim_outputs/sim_log.csv) and reconstructs vehicle trips
+- Reads inventory snapshots (sim_outputs/sim_outputs_inventory_daily.csv) to update tank fills over time.
+- Reads the detailed action log (sim_outputs/sim_outputs_sim_log.csv) and reconstructs vehicle trips
   from each Loaded→Unloaded pair to animate moving dots along edges with exact event timing.
 - Exports a single HTML file (my_supply_chain_live.html) with embedded JSON data and
   a vis-network canvas + lightweight DOM overlay for vehicle dots and HUD controls.
@@ -21,8 +21,8 @@ Requirements
 Notes
 - This first version expects you to run sim_run.py with write_daily_snapshots=True and write_log=True.
   That produces the CSVs we consume:
-    sim_outputs/inventory_daily.csv  # per store_key per snapshot hour
-    sim_outputs/sim_log.csv          # events with time_h, Loaded/Unloaded, src/dst, qty
+    sim_outputs/sim_outputs_inventory_daily.csv  # per store_key per snapshot hour
+    sim_outputs/sim_outputs_sim_log.csv          # events with time_h, Loaded/Unloaded, src/dst, qty
 - Vehicle reconstruction: loads are paired to the next matching unload with same product and
   same src→dst (by location+equipment). If exact counts differ, excess events are ignored.
 - Layout fidelity: we compute the same coordinates as export_pyvis() uses when physics=False.
@@ -81,10 +81,12 @@ class Trip:
 
 def _compute_positions(G, config) -> Dict[str, NodePos]:
     """Recompute the exact fixed positions used in export_pyvis when physics=False."""
-    XSEP = int(getattr(config, 'grid_x_sep', 120))
-    YSEP = int(getattr(config, 'grid_y_sep', 160))
-    PCSEP = int(getattr(config, 'grid_pc_sep', 560))
-    STAG = int(getattr(config, 'cell_stack_sep', 140))
+    # Scale factor to spread nodes further apart (2.5x default spacing)
+    SCALE = 2.5
+    XSEP = int(getattr(config, 'grid_x_sep', 120) * SCALE)
+    YSEP = int(getattr(config, 'grid_y_sep', 160) * SCALE)
+    PCSEP = int(getattr(config, 'grid_pc_sep', 560) * SCALE)
+    STAG = int(getattr(config, 'cell_stack_sep', 140) * SCALE)
 
     # Product-class columns present (and order)
     pcs_present: List[str] = []
@@ -186,37 +188,55 @@ def _build_edges(G) -> List[EdgeDef]:
 
 
 def _read_inventory_snapshots(path: Path) -> pd.DataFrame:
-    """Return DataFrame with columns: time_h, store_key, level, capacity."""
-    if not path.exists():
-        # As a fallback, try store_levels.csv (single snapshot only)
-        alt = SIM_OUT / "store_levels.csv"
-        if not alt.exists():
-            raise FileNotFoundError(
-                "Inventory snapshots not found. Run sim_run.py with write_daily_snapshots=True, or provide store_levels.csv."
-            )
-        df = pd.read_csv(alt)
-        df["time_h"] = 0.0
-        df.rename(columns={"Store": "store_key", "Level": "level"}, inplace=True)
-        df["capacity"] = None
-        return df[["time_h", "store_key", "level", "capacity"]]
-    df = pd.read_csv(path)
-    # keep necessary columns
-    cols = ["time_h", "store_key", "level", "capacity"]
-    missing = [c for c in cols if c not in df.columns]
-    if missing:
-        raise ValueError(f"inventory_daily.csv missing columns: {missing}")
-    return df[cols].copy()
+    """Return DataFrame with columns: time_h, store_key, level, capacity.
+    Preferred file: sim_outputs_inventory_daily.csv
+    Fallbacks: inventory_daily.csv (legacy), sim_outputs_store_levels.csv (single snapshot), store_levels.csv (legacy)
+    """
+    # Try primary path
+    if path.exists():
+        df = pd.read_csv(path)
+        cols = ["time_h", "store_key", "level", "capacity"]
+        missing = [c for c in cols if c not in df.columns]
+        if missing:
+            raise ValueError(f"{path.name} missing columns: {missing}")
+        return df[cols].copy()
+    # Fallback: legacy inventory_daily.csv
+    alt_inv_legacy = SIM_OUT / "inventory_daily.csv"
+    if alt_inv_legacy.exists():
+        df = pd.read_csv(alt_inv_legacy)
+        cols = ["time_h", "store_key", "level", "capacity"]
+        missing = [c for c in cols if c not in df.columns]
+        if missing:
+            raise ValueError(f"{alt_inv_legacy.name} missing columns: {missing}")
+        return df[cols].copy()
+    # Fallback: single snapshot store_levels (new then legacy)
+    alt_new = SIM_OUT / "sim_outputs_store_levels.csv"
+    alt_legacy = SIM_OUT / "store_levels.csv"
+    alt = alt_new if alt_new.exists() else alt_legacy
+    if not alt.exists():
+        raise FileNotFoundError(
+            "Inventory snapshots not found. Run sim_run.py with write_daily_snapshots=True, or provide sim_outputs_inventory_daily.csv."
+        )
+    df = pd.read_csv(alt)
+    df["time_h"] = 0.0
+    df.rename(columns={"Store": "store_key", "Level": "level"}, inplace=True)
+    df["capacity"] = None
+    return df[["time_h", "store_key", "level", "capacity"]]
 
 
 def _read_sim_log(path: Path) -> pd.DataFrame:
+    # Prefer new naming; fallback to legacy
     if not path.exists():
-        raise FileNotFoundError("sim_log.csv not found. Ensure sim_config.write_log=True and rerun sim_run.py")
+        legacy = SIM_OUT / "sim_log.csv"
+        if not legacy.exists():
+            raise FileNotFoundError("sim_outputs_sim_log.csv not found (nor legacy sim_log.csv). Ensure sim_config.write_log=True and rerun sim_run.py")
+        path = legacy
     df = pd.read_csv(path)
     # Expected columns include: time_h, event, product, src_location, src_equipment, dst_location, dst_equipment, qty_t
     need = ["time_h", "event", "product", "src_location", "src_equipment", "dst_location", "dst_equipment", "qty_t"]
     for c in need:
         if c not in df.columns:
-            raise ValueError(f"sim_log.csv missing required column: {c}")
+            raise ValueError(f"{path.name} missing required column: {c}")
     return df
 
 
@@ -230,12 +250,14 @@ def _store_key_from_row(row) -> str:
 
 
 def _node_lookup_triplet(G) -> Dict[Tuple[str, str, str], str]:
-    """Map (product_class, location, equipment) -> node_id used in the graph."""
+    """Map (product_class, location, equipment) -> node_id used in the graph.
+    Uses uppercase keys for case-insensitive matching.
+    """
     m: Dict[Tuple[str, str, str], str] = {}
     for n, d in G.nodes(data=True):
-        pc = str(d.get("product_class", ""))
-        loc = str(d.get("location", ""))
-        eq = str(d.get("equipment", ""))
+        pc = str(d.get("product_class", "")).upper()
+        loc = str(d.get("location", "")).upper()
+        eq = str(d.get("equipment", "")).upper()
         m[(pc, loc, eq)] = n
     return m
 
@@ -264,12 +286,12 @@ def _pair_trips(log_df: pd.DataFrame, node_id_by_triplet: Dict[Tuple[str, str, s
         t = float(row.get("time_h", 0.0) or 0.0)
 
         if ev == "Loaded":
-            loads[(pc, src_loc, src_eq, dst_loc, dst_eq)].append((t, qty))
+            loads[(pc, src_loc.upper(), src_eq.upper(), dst_loc.upper(), dst_eq.upper())].append((t, qty))
         elif ev == "Unloaded":
-            key = (pc, src_loc, src_eq, dst_loc, dst_eq)
+            key = (pc, src_loc.upper(), src_eq.upper(), dst_loc.upper(), dst_eq.upper())
             if not loads[key]:
                 # try reversed src/dst; some logs may flip columns
-                key2 = (pc, dst_loc, dst_eq, src_loc, src_eq)
+                key2 = (pc, dst_loc.upper(), dst_eq.upper(), src_loc.upper(), src_eq.upper())
                 if loads[key2]:
                     t_load, q = loads[key2].popleft()
                     src_loc, src_eq, dst_loc, dst_eq = dst_loc, dst_eq, src_loc, src_eq
@@ -277,9 +299,9 @@ def _pair_trips(log_df: pd.DataFrame, node_id_by_triplet: Dict[Tuple[str, str, s
                     continue
             else:
                 t_load, q = loads[key].popleft()
-            # Resolve node ids
-            src_id = node_id_by_triplet.get((pc, src_loc, src_eq))
-            dst_id = node_id_by_triplet.get((pc, dst_loc, dst_eq))
+            # Resolve node ids (use uppercase for case-insensitive matching)
+            src_id = node_id_by_triplet.get((pc, src_loc.upper(), src_eq.upper()))
+            dst_id = node_id_by_triplet.get((pc, dst_loc.upper(), dst_eq.upper()))
             if not src_id or not dst_id:
                 continue
             edge_id = f"{src_id}__TO__{dst_id}"
@@ -345,12 +367,16 @@ def _render_html(out_path: Path, payload: dict) -> None:
     #controls { position: absolute; left: 12px; bottom: 10px; z-index: 5; background: rgba(255,255,255,0.9); padding: 6px 8px; border-radius: 6px; font-family: Inter, Arial, sans-serif; font-size: 12px; color: #333; display: flex; gap: 8px; align-items: center; }
     #filters { position: absolute; left: 12px; top: 10px; z-index: 5; background: rgba(255,255,255,0.9); padding: 6px 8px; border-radius: 6px; font-family: Inter, Arial, sans-serif; font-size: 12px; color: #333; display: flex; gap: 8px; align-items: center; }
     #overlay { position: absolute; left: 0; top: 0; right: 0; bottom: 0; pointer-events: none; z-index: 4; }
-    .vehicle { position: absolute; width: 10px; height: 10px; border-radius: 50%; border: 1px solid #fff; box-shadow: 0 0 2px rgba(0,0,0,0.5); }
-    .rail { background: #ff3333; }
-    .ship { background: #00c3ff; }
-    .tank { position: absolute; width: 24px; height: 60px; border: 1px solid #444; background: #eee; border-radius: 3px; overflow: hidden; transform: translate(-50%, -50%); z-index: 6; }
-    .fill { position: absolute; left: 1px; right: 1px; bottom: 1px; height: 0; background: #ffb347; }
-    .label { position: absolute; top: -28px; left: 50%; transform: translateX(-50%); font-size: 10px; color: #222; text-align: center; white-space: nowrap; }
+    .vehicle { position: absolute; font-size: 28px; z-index: 8; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; }
+    .vehicle.truck::after { content: '\\1F69A'; }
+    .vehicle.ship::after { content: '\\1F6A2'; }
+    .vehicle.train::after { content: '\\1F682'; }
+    .vehicle.rail::after { content: '\\1F682'; }
+    .tank { position: absolute; width: 32px; height: 50px; border: 2px solid #444; background: #f5f5f5; border-radius: 4px; transform: translate(-50%, -50%); z-index: 6; }
+    .tank.no-inventory { width: 20px; height: 20px; border-radius: 50%; border: 2px solid #888; }
+    .fill { position: absolute; left: 2px; right: 2px; bottom: 2px; height: 0; background: #ffb347; border-radius: 2px; overflow: hidden; }
+    .label { position: absolute; top: -28px; left: 50%; transform: translateX(-50%); font-size: 8px; color: #333; text-align: center; white-space: nowrap; font-weight: 500; background: rgba(255,255,255,0.95); padding: 1px 3px; border-radius: 2px; z-index: 10; max-width: 120px; text-overflow: ellipsis; overflow: hidden; }
+    .qty-label { position: absolute; bottom: -14px; left: 50%; transform: translateX(-50%); font-size: 7px; color: #555; white-space: nowrap; background: rgba(255,255,255,0.9); padding: 0 2px; border-radius: 2px; }
   {% endraw %}
   </style>
 </head>
@@ -362,7 +388,8 @@ def _render_html(out_path: Path, payload: dict) -> None:
     </div>
     <div id=\"controls\">
       <button id=\"playPause\">Play</button>
-      <label>Speed <input id=\"speed\" type=\"range\" min=\"0.25\" max=\"8\" step=\"0.25\" value=\"1\"/></label>
+      <label><input type=\"checkbox\" id=\"loopChk\" checked/> Loop</label>
+      <label>Speed <input id=\"speed\" type=\"range\" min=\"0.02\" max=\"4\" step=\"0.02\" value=\"0.5\"/><span id=\"speedVal\">0.5x</span></label>
       <label>Time <input id=\"scrub\" type=\"range\" min=\"0\" max=\"{{ max_frames }}\" step=\"1\" value=\"0\"/></label>
     </div>
     <div id=\"hud\">t=0 h</div>
@@ -379,6 +406,8 @@ def _render_html(out_path: Path, payload: dict) -> None:
     const hud = document.getElementById('hud');
     const playBtn = document.getElementById('playPause');
     const speedEl = document.getElementById('speed');
+    const speedVal = document.getElementById('speedVal');
+    const loopChk = document.getElementById('loopChk');
     const scrub = document.getElementById('scrub');
     const pcFilter = document.getElementById('pcFilter');
     const locFilter = document.getElementById('locFilter');
@@ -390,8 +419,21 @@ def _render_html(out_path: Path, payload: dict) -> None:
     // Edge geometry cache (must exist before any computeEdgeGeom calls)
     var edgeGeom = new Map();
 
-    // Position tank overlays over node positions (DOM coordinates)
+    // Position tank overlays over node positions (DOM coordinates) and scale with zoom
     function placeTanks(){
+      const scale = network.getScale();
+      const baseSize = 64;
+      const baseHeight = 100;
+      const baseFontSize = 14;
+      const baseQtyFontSize = 12;
+      
+      // Clamp scale for reasonable sizing (0.3x to 3x)
+      const effectiveScale = Math.max(0.4, Math.min(2.5, scale));
+      const tankW = baseSize * effectiveScale;
+      const tankH = baseHeight * effectiveScale;
+      const fontSize = baseFontSize * effectiveScale;
+      const qtyFontSize = baseQtyFontSize * effectiveScale;
+      
       DATA.nodes.forEach(n => {
         const pos = network.getPositions([n.id])[n.id];
         if (!pos) return;
@@ -400,6 +442,21 @@ def _render_html(out_path: Path, payload: dict) -> None:
         if (!t) return;
         t.root.style.left = p.x + 'px';
         t.root.style.top  = p.y + 'px';
+        // Scale tank size and fonts based on zoom
+        if (t.hasInventory) {
+          t.root.style.width = tankW + 'px';
+          t.root.style.height = tankH + 'px';
+        } else {
+          const circleSize = 40 * effectiveScale;
+          t.root.style.width = circleSize + 'px';
+          t.root.style.height = circleSize + 'px';
+        }
+        t.label.style.fontSize = fontSize + 'px';
+        t.label.style.top = (-32 * effectiveScale) + 'px';
+        if (t.qtyLabel) {
+          t.qtyLabel.style.fontSize = qtyFontSize + 'px';
+          t.qtyLabel.style.bottom = (-20 * effectiveScale) + 'px';
+        }
       });
     }
 
@@ -412,30 +469,52 @@ def _render_html(out_path: Path, payload: dict) -> None:
 
     // Build overlays (tanks + labels) so we can animate fills without re-rendering nodes
     const tankByNode = new Map();
+    const nodeToStores = DATA.nodeToStores || {};
+    
     function createTank(n) {
       const div = document.createElement('div');
-      div.className = 'tank';
-      div.style.width = '26px';
-      div.style.height = '70px';
+      const hasInventory = n.hasInventory || (n.storeKeys && n.storeKeys.length > 0);
+      div.className = hasInventory ? 'tank' : 'tank no-inventory';
+      
       const fill = document.createElement('div');
       fill.className = 'fill';
+      
       const label = document.createElement('div');
       label.className = 'label';
-      label.textContent = n.labelCompact;
-      div.appendChild(fill); div.appendChild(label);
+      // Use overlayLabel (single line) or fallback to readable format
+      label.textContent = n.overlayLabel || (n.location + ' - ' + (n.equipment || n.product_class));
+      
+      const qtyLabel = document.createElement('div');
+      qtyLabel.className = 'qty-label';
+      qtyLabel.textContent = '';
+      
+      div.appendChild(fill);
+      div.appendChild(label);
+      if (hasInventory) div.appendChild(qtyLabel);
       overlay.appendChild(div);
-      tankByNode.set(n.id, {root: div, fill, label, pc: n.product_class, loc: n.location});
+      
+      tankByNode.set(n.id, {
+        root: div, 
+        fill, 
+        label, 
+        qtyLabel,
+        pc: n.product_class, 
+        loc: n.location,
+        storeKeys: n.storeKeys || [],
+        capacity: n.capacity || 0,
+        hasInventory: hasInventory
+      });
     }
     DATA.nodes.forEach(n => createTank(n));
 
     // Vehicle pool
     const vehiclePool = new Map();
-    function vehicleEl(edgeId, idx, cls) {
+    function vehicleEl(edgeId, idx, mode) {
       const key = edgeId + '::' + idx;
       let el = vehiclePool.get(key);
       if (!el) {
         el = document.createElement('div');
-        el.className = 'vehicle ' + cls;
+        el.className = 'vehicle ' + mode;
         overlay.appendChild(el);
         vehiclePool.set(key, el);
       }
@@ -482,11 +561,19 @@ def _render_html(out_path: Path, payload: dict) -> None:
       });
     }
 
-    function setTankLevel(nid, pct){
+    function setTankLevel(nid, pct, qty, cap){
       const t=tankByNode.get(nid); if (!t) return;
-      pct=Math.max(0,Math.min(1,pct)); const h=68;
-      t.fill.style.height = (h*pct)+'px';
+      if (!t.hasInventory) return;  // No inventory display for non-inventory nodes
+      pct=Math.max(0,Math.min(1,pct));
+      // Get current tank height and calculate fill (leave 4px for border/padding)
+      const tankHeight = parseFloat(t.root.style.height) || 50;
+      const fillHeight = (tankHeight - 4) * pct;
+      t.fill.style.height = fillHeight + 'px';
       t.fill.style.background = pct<0.1 ? '#ff4d4d' : (pct>0.9 ? '#44c767' : '#ffb347');
+      // Update quantity label if available
+      if (t.qtyLabel && qty !== undefined) {
+        t.qtyLabel.textContent = Math.round(qty).toLocaleString() + (cap ? '/' + Math.round(cap).toLocaleString() : '');
+      }
     }
 
     const times = DATA.timeline.t; const storeLevels = DATA.timeline.levels; const storeCaps = DATA.timeline.capacity || {};
@@ -515,26 +602,41 @@ def _render_html(out_path: Path, payload: dict) -> None:
         const v = series[frame];
         const cap = nodeCaps.get(nid) || (DATA.nodeCap && DATA.nodeCap[nid]) || Math.max(1, v||0);
         const pct = v!=null ? (v/cap) : 0;
-        setTankLevel(nid, pct);
+        setTankLevel(nid, pct, v, cap);
       }
       hud.textContent = `t=${Math.round(ts)} h (day ${(ts/24).toFixed(1)})`;
     }
 
-    let playing=false; let speed=1.0; let frame=0; let lastTs=null;
-    playBtn.onclick = function(){ playing = !playing; playBtn.textContent = playing ? 'Pause' : 'Play'; if (playing) requestAnimationFrame(tick); };
-    speedEl.oninput = function(){ speed = parseFloat(speedEl.value)||1.0; };
+    let playing=false; let speed=0.5; let frame=0; let lastTs=null; let accumulator=0;
+    playBtn.onclick = function(){ playing = !playing; playBtn.textContent = playing ? 'Pause' : 'Play'; lastTs=null; if (playing) requestAnimationFrame(tick); };
+    speedEl.oninput = function(){ speed = parseFloat(speedEl.value)||0.5; speedVal.textContent = speed.toFixed(2) + 'x'; };
     scrub.oninput = function(){ frame = parseInt(scrub.value)||0; drawLevels(frame); drawVehicles(frame); };
 
     function tick(ts){
       if (!playing) return;
-      if (lastTs==null) lastTs=ts;
+      if (lastTs==null) { lastTs=ts; accumulator=0; }
       const dt=(ts-lastTs)/1000; lastTs=ts;
-      const step = Math.max(1, Math.floor(speed*dt*30));
-      frame = Math.min(times.length-1, frame + step);
-      scrub.value = String(frame);
-      drawLevels(frame);
-      drawVehicles(frame);
-      if (frame < times.length-1) requestAnimationFrame(tick); else playing=false;
+      // Accumulate fractional frames for smooth slow playback
+      accumulator += speed * dt * 10;  // 10 frames per second at speed=1
+      const step = Math.floor(accumulator);
+      if (step >= 1) {
+        accumulator -= step;
+        frame = frame + step;
+        // Loop if enabled and at end
+        if (frame >= times.length) {
+          if (loopChk.checked) {
+            frame = 0;
+          } else {
+            frame = times.length - 1;
+            playing = false;
+            playBtn.textContent = 'Play';
+          }
+        }
+        scrub.value = String(frame);
+        drawLevels(frame);
+        drawVehicles(frame);
+      }
+      if (playing) requestAnimationFrame(tick);
     }
 
     // Trips rendering (event-paired)
@@ -546,14 +648,24 @@ def _render_html(out_path: Path, payload: dict) -> None:
       DATA.trips.forEach((tr, idx) => {
         const g = edgeGeom.get(tr.edge_id); if (!g) return;
         let x=g.a.x, y=g.a.y;
+        let isMoving = false;
         if (ts < tr.t_load){ x=g.a.x; y=g.a.y; }
-        else if (ts < tr.t_depart){ x=g.a.x + g.nx*8; y=g.a.y + g.ny*8; }
-        else if (ts < tr.t_arrive){ const prog = (ts - tr.t_depart)/Math.max(1e-9, (tr.t_arrive - tr.t_depart)); x = g.a.x + (g.b.x - g.a.x)*prog; y = g.a.y + (g.b.y - g.a.y)*prog; }
-        else if (ts < tr.t_done){ x=g.b.x - g.nx*8; y=g.b.y - g.ny*8; }
+        else if (ts < tr.t_depart){ x=g.a.x + g.nx*12; y=g.a.y + g.ny*12; }
+        else if (ts < tr.t_arrive){ 
+          const prog = (ts - tr.t_depart)/Math.max(1e-9, (tr.t_arrive - tr.t_depart)); 
+          x = g.a.x + (g.b.x - g.a.x)*prog; 
+          y = g.a.y + (g.b.y - g.a.y)*prog;
+          isMoving = true;
+        }
+        else if (ts < tr.t_done){ x=g.b.x - g.nx*12; y=g.b.y - g.ny*12; }
         else { x=g.a.x; y=g.a.y; }
-        const lane = laneOffset(tr.edge_id, idx); x += g.px*lane*6; y += g.py*lane*6;
-        const cls = tr.mode === 'rail' ? 'rail' : 'ship';
-        const el = vehicleEl(tr.edge_id, idx, cls); el.style.transform = `translate(${x-5}px, ${y-5}px)`;
+        const lane = laneOffset(tr.edge_id, idx); x += g.px*lane*10; y += g.py*lane*10;
+        // Calculate rotation angle based on travel direction
+        const angle = Math.atan2(g.b.y - g.a.y, g.b.x - g.a.x) * (180 / Math.PI);
+        const mode = tr.mode || 'truck';
+        const el = vehicleEl(tr.edge_id, idx, mode);
+        el.style.transform = `translate(${x-12}px, ${y-12}px) rotate(${angle}deg)`;
+        el.style.opacity = isMoving ? '1' : '0.6';
       });
     }
 
@@ -611,48 +723,93 @@ def main():
     triplet_to_node = _node_lookup_triplet(G)
 
     # Inventory snapshots
-    inv_df = _read_inventory_snapshots(SIM_OUT / "inventory_daily.csv")
+    inv_df = _read_inventory_snapshots(SIM_OUT / "sim_outputs_inventory_daily.csv")
     times, level_series, capacity = _levels_series(inv_df)
 
     # Map store_key values in inventory to node ids; tolerate 3-part keys (PC|Location|Equipment)
+    # Use uppercase for case-insensitive matching
     store_to_node: Dict[str, str] = {}
     for sk in level_series.keys():
         parts = sk.split('|')
         node_id = None
         if len(parts) >= 3:
-            node_id = triplet_to_node.get((parts[0], parts[1], parts[2]))
+            # Try exact match first (all uppercase)
+            key = (parts[0].upper(), parts[1].upper(), parts[2].upper())
+            node_id = triplet_to_node.get(key)
         if node_id:
             store_to_node[sk] = node_id
         else:
-            # best-effort: find any node at location with same pc
+            # best-effort: find any node at location with same pc (case-insensitive)
+            pc_upper = parts[0].upper() if parts else ""
+            loc_upper = parts[1].upper() if len(parts) > 1 else ""
+            eq_upper = parts[2].upper() if len(parts) > 2 else ""
             for (pc, loc, eq), nid in triplet_to_node.items():
-                if pc == parts[0] and loc == parts[1]:
-                    store_to_node[sk] = nid
-                    break
+                # Try to match by location and product class, with fuzzy equipment match
+                if pc == pc_upper and loc == loc_upper:
+                    # Check if equipment names are similar (contain each other)
+                    if eq == eq_upper or eq in eq_upper or eq_upper in eq:
+                        store_to_node[sk] = nid
+                        break
+            # If still no match, try just by location and product class
+            if sk not in store_to_node:
+                for (pc, loc, eq), nid in triplet_to_node.items():
+                    if pc == pc_upper and loc == loc_upper:
+                        store_to_node[sk] = nid
+                        break
 
     # Vehicle trips from sim_log
-    log_df = _read_sim_log(SIM_OUT / "sim_log.csv")
+    log_df = _read_sim_log(SIM_OUT / "sim_outputs_sim_log.csv")
     trips_basic = _pair_trips(log_df, triplet_to_node)
 
-    # Enrich trips with src/dst ids + infer mode by edge pc or equipment names in node id
+    # Build lookup for transport edges: (src_location, dst_location, pc) -> edge info
+    # Transport nodes are TRAIN, TRUCK, SHIP - they connect stores at different locations
+    transport_edge_lookup = {}
+    for e in edges:
+        src_node = G.nodes.get(e.src, {})
+        dst_node = G.nodes.get(e.dst, {})
+        src_eq = src_node.get('equipment', '').upper()
+        src_loc = src_node.get('location', '').upper()
+        dst_loc = dst_node.get('location', '').upper()
+        dst_eq = dst_node.get('equipment', '').upper()
+        pc = dst_node.get('product_class', src_node.get('product_class', '')).upper()
+        
+        # If this edge goes from a transport mode to a different location, record it
+        if src_eq in ('TRAIN', 'TRUCK', 'SHIP') and src_loc != dst_loc:
+            key = (src_loc, dst_loc, pc)
+            transport_edge_lookup[key] = {'edge': e, 'mode': src_eq.lower()}
+    
+    # Enrich trips with src/dst ids + match to transport edges
     edge_map = {e.id: e for e in edges}
     trips_out = []
     for tr in trips_basic:
         e = edge_map.get(tr.edge_id)
-        if not e:
-            # try to parse
+        if e:
+            src = e.src
+            dst = e.dst
+            src_eq = G.nodes[src].get('equipment', '').lower()
+            mode = 'ship' if 'ship' in src_eq else ('train' if 'train' in src_eq else 'truck')
+        else:
+            # Try to find matching transport edge
             try:
-                src, dst = tr.edge_id.split("__TO__")
+                src_id, dst_id = tr.edge_id.split("__TO__")
+                src_loc = G.nodes.get(src_id, {}).get('location', '').upper()
+                dst_loc = G.nodes.get(dst_id, {}).get('location', '').upper()
+                pc = G.nodes.get(src_id, {}).get('product_class', '').upper()
+                
+                key = (src_loc, dst_loc, pc)
+                match = transport_edge_lookup.get(key)
+                if match:
+                    e = match['edge']
+                    src = e.src
+                    dst = e.dst
+                    mode = match['mode']
+                else:
+                    continue  # No matching edge found
             except Exception:
                 continue
-        else:
-            src = e.src; dst = e.dst
-        # mode heuristic
-        src_eq = G.nodes[src].get('equipment', '').lower()
-        dst_eq = G.nodes[dst].get('equipment', '').lower()
-        mode = 'ship' if ('ship' in src_eq or 'ship' in dst_eq or 'port' in src_eq or 'port' in dst_eq) else 'rail'
+        
         trips_out.append({
-            'edge_id': tr.edge_id,
+            'edge_id': e.id,
             'src': src,
             'dst': dst,
             'mode': mode,
@@ -667,27 +824,37 @@ def main():
     nodes_payload = []
     node_labels = {}
     node_cap = {}
+    # Build reverse mapping: node ID -> list of store_keys
+    node_to_stores: Dict[str, List[str]] = {}
+    for sk, nid in store_to_node.items():
+        node_to_stores.setdefault(nid, []).append(sk)
+
     for nid, np in nodepos.items():
-        label_compact = f"{G.nodes[nid].get('location','')}, {G.nodes[nid].get('equipment','')}\n{np.product_class}"
+        location = G.nodes[nid].get('location', '')
+        equipment = G.nodes[nid].get('equipment', '')
+        process_key = G.nodes[nid].get('primary_process_key', '')
+        
+        # Get store keys and total capacity for this node
+        store_keys = node_to_stores.get(nid, [])
+        node_capacity = sum(capacity.get(sk, 0) for sk in store_keys)
+        
         nodes_payload.append({
             'id': nid,
             'x': np.x,
             'y': np.y,
             'product_class': np.product_class,
             'location': np.location,
-            'labelCompact': label_compact,
+            'equipment': equipment,
+            'processKey': process_key,
+            'labelCompact': f"{location}\n{equipment}",
+            'overlayLabel': f"{location} - {equipment}",
+            'storeKeys': store_keys,
+            'capacity': node_capacity if node_capacity > 0 else None,
+            'hasInventory': len(store_keys) > 0,
         })
-        # try to map a capacity from inventory store mapping if any
-        node_labels[nid] = label_compact
-        # no per-node capacity in graph; we’ll rely on per-store capacity, else leave unset
-        # node_cap can be filled from capacity of a mapped store if unique
-    # heuristic: if exactly one store_key maps to a node, use its capacity
-    node_to_store = {}
-    for sk, nid in store_to_node.items():
-        node_to_store.setdefault(nid, []).append(sk)
-    for nid, sks in node_to_store.items():
-        if len(sks) == 1 and sks[0] in capacity:
-            node_cap[nid] = capacity[sks[0]]
+        node_labels[nid] = f"{location} - {equipment}"
+        if node_capacity > 0:
+            node_cap[nid] = node_capacity
 
     edges_payload = [{'id': e.id, 'src': e.src, 'dst': e.dst, 'product_class': e.product_class} for e in edges]
 
@@ -696,6 +863,7 @@ def main():
         'nodes': nodes_payload,
         'edges': edges_payload,
         'storeToNode': store_to_node,
+        'nodeToStores': node_to_stores,
         'nodeLabels': node_labels,
         'nodeCap': node_cap,
         'timeline': {

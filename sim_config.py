@@ -42,12 +42,12 @@ class Config:
     generated_output_name: str | Path = "generated_model_inputs.xlsx"
 
     # Outputs
-    write_csvs: bool = False
-    write_log: bool = False  # Write per-hour detailed simulation log (text and CSV)
+    write_csvs: bool = True
+    write_log: bool = True  # Write per-hour detailed simulation log (text and CSV)
     write_model_source: bool = True  # Write a standalone Python script of the built model
 
     # Inventory snapshot monitor
-    write_daily_snapshots: bool = False                    # Write daily (or configured interval) inventory snapshots
+    write_daily_snapshots: bool = True                    # Write daily (or configured interval) inventory snapshots
     snapshot_hours: float = 24.0                          # Interval in hours between snapshots
     out_dir: str | Path = "sim_outputs"
     open_folder_after: bool = True
@@ -58,9 +58,17 @@ class Config:
     plot_workers: Optional[int] = None                    # None = auto (cpu_count); else specify number of workers
     plot_save_images: bool = True                         # Save plots as PNGs instead of interactive windows
     plot_full_horizon: bool = True                        # Pad/extend x-axis to the full simulation horizon (e.g., 8760 h)
+    plot_clean_dir: bool = False                          # If True, delete existing PNGs in out_dir/plots before rendering
+
+    # Aggregate plots into a single HTML report (in addition to individual images)
+    plot_single_html: bool = True                        # When True, build one HTML file containing all charts
+    plot_html_filename: str | Path = "plots_all.html"      # Output HTML file name (written under out_dir)
+    plot_html_embed_images: bool = True                   # Embed PNGs as base64 in HTML (False = link to files)
+    plot_html_group_by_loc_pc: bool = True                # Group charts together by (Product Class, Location) in single HTML
+    plot_open_html_after: bool = True                     # Automatically open the generated HTML in the default browser when built
 
     # Performance/behavior toggles
-    fast_transport_cycle: bool = True                   # When True, coalesce unload+return timing in transporter (same outcomes)
+    fast_transport_cycle: bool = False                   # When True, coalesce unload+return timing in transporter (same outcomes)
 
     # Console logging / UX
     verbose_logging: bool = True                      # Print detailed progress to console
