@@ -6,7 +6,7 @@ from dataclasses import dataclass
 @dataclass
 class Config:
     excel_file: Path = Path("generated_model_inputs.xlsx")
-    out_dir: Path = Path("sim_outputs")
+    out_dir: Path = Path("sim_outputs_grok")
 
     # Simulation settings
     horizon_days: int = 365

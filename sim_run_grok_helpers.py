@@ -108,6 +108,9 @@ def plot_results(sim, out_dir: Path):
             template="plotly_white",
             height=600
         )
+        # Drop decimals on axis tick labels
+        fig.update_yaxes(tickformat=",.0f", secondary_y=False)
+        fig.update_yaxes(tickformat=",.0f", secondary_y=True)
         fig.update_xaxes(tick0=1, dtick=30, range=[1, 366])
         figs.append(fig)
 
@@ -139,6 +142,9 @@ def plot_results(sim, out_dir: Path):
         template="plotly_white",
         height=700
     )
+    # Drop decimals on axis tick labels for summary as well
+    fig_summary.update_yaxes(tickformat=",.0f", secondary_y=False)
+    fig_summary.update_yaxes(tickformat=",.0f", secondary_y=True)
     fig_summary.update_xaxes(tick0=1, dtick=30, range=[1, 366])
     figs.insert(0, fig_summary)
 

@@ -9,9 +9,10 @@ app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 @app.route('/')
 def index():
     from sim_run_grok_config import config
-    
-    outputs_exist = Path('sim_outputs/sim_outputs_plots_all.html').exists()
-    csv_files = list(Path('sim_outputs').glob('*.csv')) if Path('sim_outputs').exists() else []
+    out_dir = Path(config.out_dir)
+
+    outputs_exist = (out_dir / 'sim_outputs_plots_all.html').exists()
+    csv_files = list(out_dir.glob('*.csv')) if out_dir.exists() else []
     
     return render_template('index.html', 
                          config=config,
@@ -48,11 +49,16 @@ def run_simulation():
         
         success = result.returncode == 0
         output = result.stdout + result.stderr
+
+        # Determine report path based on Grok config
+        from sim_run_grok_config import config as grok_config
+        out_dir = Path(grok_config.out_dir)
+        report_html = out_dir / 'sim_outputs_plots_all.html'
         
         return jsonify({
             'success': success,
             'output': output,
-            'report_ready': Path('sim_outputs/sim_outputs_plots_all.html').exists()
+            'report_ready': report_html.exists()
         })
     except subprocess.TimeoutExpired:
         return jsonify({'success': False, 'output': 'Simulation timed out (5 min limit)'})
@@ -61,20 +67,26 @@ def run_simulation():
 
 @app.route('/report')
 def report():
-    report_path = Path('sim_outputs/sim_outputs_plots_all.html')
+    from sim_run_grok_config import config
+    out_dir = Path(config.out_dir)
+    report_path = out_dir / 'sim_outputs_plots_all.html'
     if report_path.exists():
-        return send_from_directory('sim_outputs', 'sim_outputs_plots_all.html')
+        return send_from_directory(str(out_dir), 'sim_outputs_plots_all.html')
     return "Report not found. Run a simulation first.", 404
 
 @app.route('/outputs/<filename>')
 def get_output_file(filename):
-    return send_from_directory('sim_outputs', filename)
+    from sim_run_grok_config import config
+    out_dir = Path(config.out_dir)
+    return send_from_directory(str(out_dir), filename)
 
 @app.route('/api/status')
 def status():
+    from sim_run_grok_config import config
+    out_dir = Path(config.out_dir)
     return jsonify({
-        'report_exists': Path('sim_outputs/sim_outputs_plots_all.html').exists(),
-        'csv_files': [f.name for f in Path('sim_outputs').glob('*.csv')] if Path('sim_outputs').exists() else []
+        'report_exists': (out_dir / 'sim_outputs_plots_all.html').exists(),
+        'csv_files': [f.name for f in out_dir.glob('*.csv')] if out_dir.exists() else []
     })
 
 if __name__ == '__main__':
