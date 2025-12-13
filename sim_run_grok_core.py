@@ -62,27 +62,30 @@ class SupplyChainSimulation:
         self.action_log.append({"event": event, "time_h": self.env.now, **details})
 
     def snapshot(self):
-        # Change from daily to hourly snapshots
-        if self.env.now % 1 < 0.01:  # Hourly (was % 24)
-            for key, cont in self.stores.items():
-                parts = key.split("|")
-                pc = parts[0] if len(parts) > 0 else ""
-                loc = parts[1] if len(parts) > 1 else ""
-                eq = parts[2] if len(parts) > 2 else ""
-                inp = parts[3] if len(parts) > 3 else ""
-                fill = cont.level / cont.capacity if cont.capacity > 0 else 1.0
-                self.inventory_snapshots.append({
-                    "day": int(self.env.now // 24) + 1,
-                    "time_h": self.env.now,
-                    "product_class": pc,
-                    "location": loc,
-                    "equipment": eq,
-                    "input": inp,
-                    "store_key": key,
-                    "level": cont.level,
-                    "capacity": cont.capacity,
-                    "fill_pct": fill,
-                })
+        for key, cont in self.stores.items():
+            parts = key.split("|")
+            pc = parts[0] if len(parts) > 0 else ""
+            loc = parts[1] if len(parts) > 1 else ""
+            eq = parts[2] if len(parts) > 2 else ""
+            inp = parts[3] if len(parts) > 3 else ""
+            fill = cont.level / cont.capacity if cont.capacity > 0 else 1.0
+            self.inventory_snapshots.append({
+                "day": int(self.env.now // 24) + 1,
+                "time_h": self.env.now,
+                "product_class": pc,
+                "location": loc,
+                "equipment": eq,
+                "input": inp,
+                "store_key": key,
+                "level": cont.level,
+                "capacity": cont.capacity,
+                "fill_pct": fill,
+            })
+
+    def periodic_snapshot_process(self):
+        while True:
+            self.snapshot()
+            yield self.env.timeout(1)
 
     def build_stores(self, store_configs: List[StoreConfig]):
         if self.settings.get("random_seed") is not None:
@@ -130,7 +133,6 @@ class SupplyChainSimulation:
 
                 yield self.stores[cand.out_store_key].put(qty)
                 self.log("Produced", location=unit.location, equipment=unit.equipment, qty=qty, product=cand.product)
-                self.snapshot()
                 yield self.env.timeout(unit.step_hours)
 
     def transporter(self, route: TransportRoute):
@@ -189,9 +191,11 @@ class SupplyChainSimulation:
             take = min(store.level, demand.rate_per_hour)
             if take > 0:
                 yield store.get(take)
+                self.log("Consumed_Demand", store_key=demand.store_key, qty=take)
             unmet = demand.rate_per_hour - take
             if unmet > 0:
                 self.unmet[demand.store_key] = self.unmet.get(demand.store_key, 0) + unmet
+                self.log("Unmet_Demand", store_key=demand.store_key, unmet=unmet)
             yield self.env.timeout(1)
 
     def run(self, stores_cfg, makes, moves, demands):
@@ -213,6 +217,8 @@ class SupplyChainSimulation:
 
         for d in demands:
             self.env.process(self.consumer(d))
+
+        self.env.process(self.periodic_snapshot_process())
 
         horizon = self.settings.get("horizon_days", 365) * 24
         self.env.run(until=horizon)
