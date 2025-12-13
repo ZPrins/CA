@@ -83,6 +83,7 @@ class SupplyChainSimulation:
             })
 
     def periodic_snapshot_process(self):
+        # No longer used - snapshots are taken in run() method
         while True:
             self.snapshot()
             yield self.env.timeout(24)
@@ -218,10 +219,15 @@ class SupplyChainSimulation:
         for d in demands:
             self.env.process(self.consumer(d))
 
-        self.env.process(self.periodic_snapshot_process())
+        horizon_days = self.settings.get("horizon_days", 365)
+        horizon = horizon_days * 24
 
-        horizon = self.settings.get("horizon_days", 365) * 24
-        self.env.run(until=horizon)
+        # Run simulation in daily steps, taking snapshots at each day boundary
+        self.snapshot()  # Initial snapshot at t=0
+        for day in range(1, horizon_days + 1):
+            target_time = day * 24
+            self.env.run(until=target_time)
+            self.snapshot()  # Snapshot at end of each day
 
         print("\n=== Simulation Complete ===")
         print("Final store levels:")

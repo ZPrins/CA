@@ -51,6 +51,7 @@ Preferred communication style: Simple, everyday language.
 2. **Composite keys for stores**: Format `{product}|{location}|{equipment}|{input}` enables unique identification
 3. **Min-fill-percent production rule**: Make units produce to the store with lowest percentage full
 4. **Random opening stock**: Optional uniform sampling between Low/High bounds for stochastic runs
+5. **Step-by-step simulation with daily snapshots**: Simulation runs in daily increments with inventory snapshots taken at each day boundary for reliable data capture
 
 ## External Dependencies
 
