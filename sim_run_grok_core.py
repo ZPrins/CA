@@ -85,7 +85,7 @@ class SupplyChainSimulation:
     def periodic_snapshot_process(self):
         while True:
             self.snapshot()
-            yield self.env.timeout(1)
+            yield self.env.timeout(24)
 
     def build_stores(self, store_configs: List[StoreConfig]):
         if self.settings.get("random_seed") is not None:
