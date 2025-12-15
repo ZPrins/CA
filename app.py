@@ -1,4 +1,5 @@
-from flask import Flask, render_template, request, jsonify, send_from_directory
+from flask import Flask, render_template, request, jsonify, send_from_directory, Response, stream_with_context
+import time
 import subprocess
 import os
 from pathlib import Path
@@ -65,6 +66,92 @@ def run_simulation():
     except Exception as e:
         return jsonify({'success': False, 'output': str(e)})
 
+@app.route('/stream-simulation')
+def stream_simulation():
+    # SSE endpoint that streams live logs from the sim process
+    try:
+        # Query params
+        horizon = int(request.args.get('horizon_days', 365))
+        random_opening = request.args.get('random_opening', 'true').lower() == 'true'
+        rs = request.args.get('random_seed', '')
+        try:
+            random_seed = str(int(rs)) if rs != '' else ''
+        except Exception:
+            random_seed = ''
+
+        env = os.environ.copy()
+        env['SIM_HORIZON_DAYS'] = str(horizon)
+        env['SIM_RANDOM_OPENING'] = 'true' if random_opening else 'false'
+        env['SIM_RANDOM_SEED'] = random_seed
+        env['PYTHONUNBUFFERED'] = '1'
+
+        # Start child process in unbuffered mode
+        proc = subprocess.Popen(
+            ['python', '-u', 'sim_run_grok.py'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=env,
+            encoding='utf-8',
+            errors='replace'
+        )
+
+        def sse_lines():
+            try:
+                # Inform client that stream started
+                yield 'event: start\ndata: Simulation started\n\n'
+                last_heartbeat = time.time()
+                if proc.stdout is not None:
+                    # Use readline loop to avoid buffering issues on Windows
+                    while True:
+                        line = proc.stdout.readline()
+                        if line:
+                            msg = line.rstrip('\r\n')
+                            if msg:
+                                if msg.startswith('Progress:'):
+                                    yield f'event: progress\ndata: {msg}\n\n'
+                                else:
+                                    yield f'data: {msg}\n\n'
+                            last_heartbeat = time.time()
+                        else:
+                            # No line available; check if process ended
+                            if proc.poll() is not None:
+                                break
+                            # Send heartbeat every 1.5s to keep connection alive
+                            now = time.time()
+                            if now - last_heartbeat >= 1.5:
+                                yield ': keep-alive\n\n'
+                                last_heartbeat = now
+                            time.sleep(0.2)
+                proc.wait()
+                # Check report existence
+                from sim_run_grok_config import config as grok_config
+                out_dir = Path(grok_config.out_dir)
+                report_html = out_dir / 'sim_outputs_plots_all.html'
+                payload = {
+                    'success': proc.returncode == 0,
+                    'report_ready': report_html.exists(),
+                    'exit_code': proc.returncode,
+                }
+                import json as _json
+                yield 'event: done\ndata: ' + _json.dumps(payload) + '\n\n'
+            finally:
+                # Ensure process is terminated if still running
+                try:
+                    if proc.poll() is None:
+                        proc.terminate()
+                except Exception:
+                    pass
+        headers = {
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',  # for Nginx: disable buffering
+        }
+        return Response(stream_with_context(sse_lines()), mimetype='text/event-stream', headers=headers)
+    except Exception as e:
+        # If we fail before starting stream, return JSON error
+        return jsonify({'success': False, 'output': str(e)})
+
 @app.route('/report')
 def report():
     from sim_run_grok_config import config
@@ -91,4 +178,5 @@ def status():
 
 if __name__ == '__main__':
     os.makedirs('templates', exist_ok=True)
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    # Enable threaded server to support streaming SSE without blocking
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)

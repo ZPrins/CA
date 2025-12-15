@@ -6,7 +6,7 @@ from sim_run_grok_core import SupplyChainSimulation
 from sim_run_grok_data_loader import load_data
 
 if __name__ == "__main__":
-    print("sim_run_grok.py: Starting simulation...")
+    print("sim_run_grok.py: Starting simulation...", flush=True)
 
     horizon_days = int(os.environ.get('SIM_HORIZON_DAYS', config.horizon_days))
     random_opening = os.environ.get('SIM_RANDOM_OPENING', str(config.random_opening)).lower() == 'true'
@@ -17,19 +17,42 @@ if __name__ == "__main__":
         "horizon_days": horizon_days,
         "random_opening": random_opening,
         "random_seed": random_seed,
+        "progress_step_pct": getattr(config, 'progress_step_pct', 10),
+        # Demand modeling knobs
+        "demand_truck_load_tons": getattr(config, 'demand_truck_load_tons', 25.0),
+        "demand_step_hours": getattr(config, 'demand_step_hours', 1.0),
+        # Transport policy
+        "require_full_payload": getattr(config, 'require_full_payload', True),
+        "debug_full_payload": getattr(config, 'debug_full_payload', False),
     }
 
     settings, stores, makes, moves, demands = load_data()
     settings.update(settings_override)
 
-    print(f"Loaded: {len(stores)} stores, {len(makes)} make units, {len(moves)} routes, {len(demands)} demands")
+    # Detailed route breakdown by transport mode
+    try:
+        train_count = sum(1 for m in moves if getattr(m, 'mode', 'TRAIN').upper() == 'TRAIN')
+        ship_count = sum(1 for m in moves if getattr(m, 'mode', 'TRAIN').upper() == 'SHIP')
+        other_count = sum(1 for m in moves if getattr(m, 'mode', 'TRAIN').upper() not in ('TRAIN', 'SHIP'))
+        print(
+            f"Loaded: {len(stores)} stores, {len(makes)} make units, {len(moves)} routes "
+            f"(TRAIN: {train_count}, SHIP: {ship_count}" + (f", OTHER: {other_count}" if other_count else "") + "), "
+            f"{len(demands)} demands",
+            flush=True,
+        )
+    except Exception:
+        # Fallback to legacy summary if anything goes wrong
+        print(
+            f"Loaded: {len(stores)} stores, {len(makes)} make units, {len(moves)} routes, {len(demands)} demands",
+            flush=True,
+        )
 
     sim = SupplyChainSimulation(settings)
     sim.run(stores, makes, moves, demands)
 
     out_dir = config.out_dir
     write_csv_outputs(sim, out_dir)
-    plot_results(sim, out_dir)
+    plot_results(sim, out_dir, moves)
     generate_standalone(settings, stores, makes, moves, demands, out_dir)
 
-    print(f"\nAll complete! Check '{out_dir}' for results, plots, and standalone model.")
+    print(f"\nAll complete! Check '{out_dir}' for results, plots, and standalone model.", flush=True)

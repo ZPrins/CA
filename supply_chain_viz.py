@@ -1290,28 +1290,50 @@ STORE_REQUIRED_INPUT_COLS = [
     "Silo Max Capacity",
     "Silo Opening Stock (High)",
     "Silo Opening Stock (Low)",
+    "Load Rate (ton/hr)",
+    "Unload Rate (ton/hr)",
 ]
 STORE_KEY_COLS = ["Location", "Equipment Name", "Input"]
 STORE_SHEET_COLS = STORE_KEY_COLS + STORE_REQUIRED_INPUT_COLS
 
+# Deliver sheet columns: now include an optional 'Demand Store' selector after 'Input'
 DELIVERY_REQUIRED_INPUT_COLS = [
-    "Demand per Location",
+]
+DELIVERY_OPTIONAL_INPUT_COLS = [
+    "Demand Store",
 ]
 DELIVERY_KEY_COLS = ["Location", "Input"]
-DELIVERY_SHEET_COLS = DELIVERY_KEY_COLS + DELIVERY_REQUIRED_INPUT_COLS
+# Column set used when creating new sheet (order will be adjusted to place 'Demand Store' after 'Input')
+DELIVERY_SHEET_COLS = DELIVERY_KEY_COLS + DELIVERY_OPTIONAL_INPUT_COLS + DELIVERY_REQUIRED_INPUT_COLS
 
-# MOVE sheet
-MOVE_REQUIRED_INPUT_COLS = [
-    "#Equipment (99-unlimited)",
-    "#Parcels",
-    "Capacity Per Parcel",
-    "Load Rate (Ton/hr)",
-    "Travel to Time (Min)",
-    "Unload Rate (Ton/Hr)",
-    "Travel back Time (Min)",
+# MOVE_TRAIN sheet (replaces legacy 'Move')
+MOVE_TRAIN_REQUIRED_INPUT_COLS = [
+    "Distance",
+    "# Trains",
+    "# Carraiges",
+    "# Carraige Capacity (ton)",
+    "Avg Speed - Loaded (km/hr)",
+    "Avg Speed - Empty (km/hr)",
 ]
-MOVE_KEY_COLS = ["Product", "Location", "Equipment Name", "Next Location"]
-MOVE_SHEET_COLS = MOVE_KEY_COLS + MOVE_REQUIRED_INPUT_COLS
+MOVE_TRAIN_KEY_COLS = ["Product Class", "Product", "Origin Location", "Destination Location"]
+MOVE_TRAIN_SHEET_COLS = MOVE_TRAIN_KEY_COLS + [
+    "Origin Store",
+    "Destination Store",
+    "Load Rate (tons/hr)",
+    "Unload Rate (tons/hr)",
+] + MOVE_TRAIN_REQUIRED_INPUT_COLS
+
+# MOVE_SHIP sheet per spec
+# Updated to include two additional columns: "#Hulls" and "Payload per Hull"
+# placed immediately after "Route avg Speed (knots)" for clarity.
+MOVE_SHIP_SHEET_COLS = [
+    "Origin Location",
+    "Route Group",
+    "# Vessels",
+    "Route avg Speed (knots)",
+    "#Hulls",
+    "Payload per Hull",
+]
 
 # BERTHS sheet
 BERTHS_REQUIRED_INPUT_COLS = [
@@ -1320,6 +1342,43 @@ BERTHS_REQUIRED_INPUT_COLS = [
 ]
 BERTHS_KEY_COLS = ["Berth"]
 BERTHS_SHEET_COLS = BERTHS_KEY_COLS + BERTHS_REQUIRED_INPUT_COLS
+
+# New ship-related sheets
+SHIP_BERTHS_SHEET_COLS = [
+    "Location",
+    "# Berths",
+    "Probability Berth Occupied %",
+    "Pilot In (Hours)",
+    "Pilot Out (Hours)",
+]
+
+SHIP_ROUTES_SHEET_COLS = [
+    "Route Group",
+    "Route ID",
+    "Origin Location",
+    "Product 1 Load",
+    "Product 1 Store",
+    "Product 2 Load",
+    "Product 2 Store",
+    "Destination 1 Location",
+    "Product 1 Unload",
+    "Product 1 Unload Store",
+    "Product 2 Unload",
+    "Product 2 Unload Store",
+    "Destination 2 Location",
+    "Product 3 Load ",
+    "Product 3 Store",
+    "Destination 3 Location",
+    "Destination 3 Unload",
+    "Destination 3 Store",
+    "Return Location",
+]
+
+SHIP_DISTANCES_SHEET_COLS = [
+    "Location 1",
+    "Location 2",
+    "Distance (nM)",
+]
 
 
 def _normalize_key_triplet(df_like: pd.DataFrame, loc_col: str, eq_col: str, in_col: str) -> pd.Series:
@@ -1343,7 +1402,9 @@ def _normalize_key_quad(df_like: pd.DataFrame, pc_col: str, loc_col: str, eq_col
 def _ensure_columns(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     for c in cols:
         if c not in df.columns:
-            df[c] = pd.NA
+            # Create missing columns explicitly as object dtype to avoid pandas
+            # inferring float64 (from all-NA) which later rejects string writes.
+            df[c] = pd.Series(pd.NA, dtype="object")
     return df
 
 
@@ -1377,12 +1438,18 @@ ACTION_LOG: list[dict] = []
 def _log_action(action: str, details: str = "") -> None:
     """Append an action entry with timestamp to the in-memory action log.
     The log is later written to the generated workbook as a 'Log' sheet.
+    Also echo to console for immediate visibility.
     """
     try:
         ts = pd.Timestamp.now(tz=None)
     except Exception:
         ts = pd.Timestamp.utcnow()
     ACTION_LOG.append({"Timestamp": ts, "Action": action, "Details": details})
+    try:
+        print(f"[prepare_inputs] {ts}: {action} — {details}")
+    except Exception:
+        # Console printing is best-effort
+        pass
 
 
 def ensure_settings_sheet(xlsx_path: Path) -> dict:
@@ -1595,6 +1662,9 @@ def ensure_store_sheet(xlsx_path: Path) -> dict:
             current = pd.concat([current, pd.DataFrame([new_row])], ignore_index=True)
             added_count += 1
 
+    # Ensure required columns exist to avoid KeyError during reordering
+    current = _ensure_columns(current, STORE_SHEET_COLS)
+
     extra_cols = [c for c in current.columns if c not in STORE_SHEET_COLS]
     ordered_cols = STORE_SHEET_COLS + extra_cols
     sort_cols = ["Location", "Equipment Name", "Input"]
@@ -1606,102 +1676,270 @@ def ensure_store_sheet(xlsx_path: Path) -> dict:
     return summary
 
 
-def ensure_move_sheet(xlsx_path: Path) -> dict:
-    """Ensure the 'Move' sheet exists and includes a row for every unique
-    (Product, Location, Equipment Name, Next Location) quad from the Network with Process=Move.
+def ensure_move_train_sheet(xlsx_path: Path) -> dict:
+    """Ensure the 'Move_TRAIN' sheet exists with unique rows for train moves from the Network.
 
-    The following parameter fields are created and left blank for user input per route:
-      - #Equipment (99-unlimited)
-      - #Parcels
-      - Capacity Per Parcel
-      - Load Rate (Ton/hr)
-      - Travel to Time (Min)
-      - Unload Rate (Ton/Hr)
-      - Travel back Time (Min)
+    Fields:
+      - Product Class, Product, Origin Location, Origin Store, Destination Location, Destination Store,
+        Distance, # Trains, # Carraiges, # Carraige Capacity (ton),
+        Avg Speed - Loaded (km/hr), Avg Speed - Empty (km/hr)
+
+    New behavior:
+      - Auto-populate "Origin Store" and "Destination Store" from the Network when possible.
+        • Origin Store: Prefer a Store row at the origin with matching product (Input) where Next Process=Move and Next Equipment=TRAIN.
+          Fallback to any Store at origin with matching product.
+        • Destination Store: Prefer from the Move row (Process=Move, Equipment=TRAIN) whose Next Process=Store at the destination;
+          use Next Equipment as the destination store name. Fallback to any Store at destination with matching product.
+      - Existing user-entered values are preserved (only blank cells are filled).
     """
     net = _read_network_df(xlsx_path)
     if net.empty:
         raise ValueError("Network sheet is empty or missing required columns.")
 
-    move_rows = net[net["process"].str.upper() == "MOVE"].copy()
+    # Convenience uppercase/trimmed helpers
+    def _u(s: pd.Series) -> pd.Series:
+        return s.astype(str).fillna("").str.strip().str.upper()
 
-    if move_rows.empty:
-        existing = _read_sheet_df(xlsx_path, "Move")
+    mv = net[_u(net["process"]) == "MOVE"].copy()
+    if mv.empty:
+        existing = _read_sheet_df(xlsx_path, "Move_TRAIN")
         if existing is None:
-            empty_df = pd.DataFrame(columns=MOVE_SHEET_COLS)
-            _write_sheet_df(xlsx_path, "Move", empty_df)
+            empty_df = pd.DataFrame(columns=MOVE_TRAIN_SHEET_COLS)
+            _write_sheet_df(xlsx_path, "Move_TRAIN", empty_df)
         return {"rows_added": 0}
 
-    # Build unique key tuples using the Output material from the Network as 'Product'
-    uniq = (
-        move_rows[["output", "location", "equipment_name", "next_location"]]
-        .fillna("")
-        .drop_duplicates()
-        .rename(
-            columns={
-                "output": "Product",
-                "location": "Location",
-                "equipment_name": "Equipment Name",
-                "next_location": "Next Location",
-            }
+    # Filter to TRAIN equipment if present; otherwise ensure empty header
+    mv_train = mv[_u(mv["equipment_name"]) == "TRAIN"].copy()
+    if mv_train.empty:
+        existing = _read_sheet_df(xlsx_path, "Move_TRAIN")
+        if existing is None:
+            empty_df = pd.DataFrame(columns=MOVE_TRAIN_SHEET_COLS)
+            _write_sheet_df(xlsx_path, "Move_TRAIN", empty_df)
+        return {"rows_added": 0}
+
+    # Build helper maps from Network for store inference
+    # Destination store from Move rows where next is Store
+    dest_store_map: dict[tuple[str, str, str], str] = {}
+    mv_t = mv_train.copy()
+    for _, r in mv_t.iterrows():
+        try:
+            if str(r.get("next_process", "")).strip().upper() == "STORE":
+                key = (
+                    str(r.get("output", "")).strip().upper(),
+                    str(r.get("location", "")).strip().upper(),
+                    str(r.get("next_location", "")).strip().upper(),
+                )
+                dst_store = str(r.get("next_equipment", "")).strip()
+                if key not in dest_store_map and dst_store:
+                    dest_store_map[key] = dst_store
+        except Exception:
+            pass
+
+    # Origin store from Store rows that feed a TRAIN move
+    origin_store_map: dict[tuple[str, str], str] = {}
+    store_rows = net[_u(net["process"]) == "STORE"].copy()
+    for _, r in store_rows.iterrows():
+        try:
+            if str(r.get("next_process", "")).strip().upper() == "MOVE" and str(r.get("next_equipment", "")).strip().upper() == "TRAIN":
+                key = (
+                    str(r.get("input", "")).strip().upper(),
+                    str(r.get("location", "")).strip().upper(),
+                )
+                origin_store = str(r.get("equipment_name", "")).strip()
+                if key not in origin_store_map and origin_store:
+                    origin_store_map[key] = origin_store
+        except Exception:
+            pass
+
+    # Fallback maps: any Store at (product, location)
+    any_store_map: dict[tuple[str, str], str] = {}
+    if not store_rows.empty:
+        tmp = (
+            store_rows[["input", "location", "equipment_name"]]
+            .dropna(subset=["input", "location", "equipment_name"]).copy()
         )
+        tmp["k_prod"] = _u(tmp["input"])
+        tmp["k_loc"] = _u(tmp["location"])
+        tmp_sorted = tmp.sort_values(["k_loc", "k_prod", "equipment_name"], kind="mergesort")
+        for _, r in tmp_sorted.iterrows():
+            key = (r["k_prod"], r["k_loc"])
+            if key not in any_store_map:
+                any_store_map[key] = str(r.get("equipment_name", "")).strip()
+
+    # Build unique template rows from MOVE rows
+    cols_map = {
+        "product_class": "Product Class",
+        "output": "Product",
+        "location": "Origin Location",
+        "next_location": "Destination Location",
+    }
+    uniq = (
+        mv_train[["product_class", "output", "location", "next_location"]]
+        .fillna("")
+        .rename(columns=cols_map)
+        .drop_duplicates()
         .reset_index(drop=True)
     )
+    uniq["KEY"] = (
+        _u(uniq["Product Class"]) + "|" + _u(uniq["Product"]) + "|" + _u(uniq["Origin Location"]) + "|" + _u(uniq["Destination Location"])
+    )
 
-    # If Product is entirely blank, we still allow the row, using empty string.
-    uniq["KEY"] = _normalize_key_quad(uniq, "Product", "Location", "Equipment Name", "Next Location")
-
-    # Read current Move sheet
-    current = _read_sheet_df(xlsx_path, "Move")
+    current = _read_sheet_df(xlsx_path, "Move_TRAIN")
     if current is None or current.empty:
-        current = pd.DataFrame(columns=MOVE_SHEET_COLS)
+        current = pd.DataFrame(columns=MOVE_TRAIN_SHEET_COLS)
+    else:
+        current = _ensure_columns(current, MOVE_TRAIN_SHEET_COLS)
 
-    # Build existing key set from current without altering headings
-    if not current.empty and all(c in current.columns for c in ["Product", "Location", "Equipment Name", "Next Location"]):
-        for c in ["Product", "Location", "Equipment Name", "Next Location"]:
-            current[c] = current[c].astype(str)
-        current_keys = _normalize_key_quad(current, "Product", "Location", "Equipment Name", "Next Location")
-        existing_key_set = set(current_keys.tolist())
+    if not current.empty and all(c in current.columns for c in ["Product Class", "Product", "Origin Location", "Destination Location"]):
+        cur_key = (
+            _u(current["Product Class"]) + "|" + _u(current["Product"]) + "|" + _u(current["Origin Location"]) + "|" + _u(current["Destination Location"]) 
+        )
+        existing_key_set = set(cur_key.tolist())
     else:
         existing_key_set = set()
 
     rows_to_add = uniq[~uniq["KEY"].isin(existing_key_set)].copy()
 
-    defaults = {name: "" for name in MOVE_REQUIRED_INPUT_COLS}
+    defaults = {name: "" for name in MOVE_TRAIN_REQUIRED_INPUT_COLS}
+
+    def infer_origin_store(prod: str, origin: str) -> str:
+        k = (prod.strip().upper(), origin.strip().upper())
+        if k in origin_store_map:
+            return origin_store_map[k]
+        if k in any_store_map:
+            return any_store_map[k]
+        return ""
+
+    def infer_destination_store(prod: str, origin: str, dest: str) -> str:
+        k3 = (prod.strip().upper(), origin.strip().upper(), dest.strip().upper())
+        if k3 in dest_store_map:
+            return dest_store_map[k3]
+        # fallback to any store at destination for product
+        k2 = (prod.strip().upper(), dest.strip().upper())
+        if k2 in any_store_map:
+            return any_store_map[k2]
+        return ""
 
     added_count = 0
     if not rows_to_add.empty:
         for _, r in rows_to_add.iterrows():
-            new_row = {}
-            for col in current.columns:
-                if col in {"Product", "Location", "Equipment Name", "Next Location"}:
-                    new_row[col] = r.get(col, "")
-                elif col in defaults:
+            prod = str(r.get("Product", ""))
+            o_loc = str(r.get("Origin Location", ""))
+            d_loc = str(r.get("Destination Location", ""))
+            new_row = {col: r.get(col, "") for col in ["Product Class", "Product", "Origin Location", "Destination Location"]}
+            new_row["Origin Store"] = infer_origin_store(prod, o_loc)
+            new_row["Destination Store"] = infer_destination_store(prod, o_loc, d_loc)
+            for col in MOVE_TRAIN_REQUIRED_INPUT_COLS:
+                if col not in new_row:
                     new_row[col] = defaults[col]
-                else:
-                    new_row[col] = ""
-            current = pd.concat([current, pd.DataFrame([new_row])], ignore_index=True)
+            # Respect existing column order and append
+            filled = {c: new_row.get(c, "") for c in current.columns}
+            for c in MOVE_TRAIN_SHEET_COLS:
+                if c not in filled:
+                    filled[c] = new_row.get(c, "")
+            current = pd.concat([current, pd.DataFrame([filled])], ignore_index=True)
             added_count += 1
 
-    # Preserve existing column order and only sort if key columns exist
-    ordered_cols = list(current.columns)
-    sort_cols = [c for c in ["Product", "Location", "Equipment Name", "Next Location"] if c in current.columns]
+    # Second pass: backfill blanks in existing rows, preserving user-entered values
+    if not current.empty:
+        # Ensure text dtype for store and per-move rate columns to avoid pandas FutureWarning when writing strings
+        for _col in ["Origin Store", "Destination Store", "Load Rate (tons/hr)", "Unload Rate (tons/hr)"]:
+            if _col in current.columns:
+                try:
+                    current[_col] = current[_col].astype("object")
+                except Exception:
+                    pass
+        for idx, r in current.iterrows():
+            prod = str(r.get("Product", ""))
+            o_loc = str(r.get("Origin Location", ""))
+            d_loc = str(r.get("Destination Location", ""))
+            if (pd.isna(r.get("Origin Store")) or str(r.get("Origin Store", "")).strip() == ""):
+                current.at[idx, "Origin Store"] = infer_origin_store(prod, o_loc)
+            if (pd.isna(r.get("Destination Store")) or str(r.get("Destination Store", "")).strip() == ""):
+                current.at[idx, "Destination Store"] = infer_destination_store(prod, o_loc, d_loc)
 
+    # Preserve existing column order
+    ordered_cols = list(current.columns)
+    sort_cols = [c for c in ["Product Class", "Product", "Origin Location", "Destination Location"] if c in current.columns]
     if sort_cols:
         current = current.drop_duplicates(subset=sort_cols, keep="first")
         current = current.sort_values(sort_cols)
-
     current = current[ordered_cols].reset_index(drop=True)
 
-    _write_sheet_df(xlsx_path, "Move", current)
+    _write_sheet_df(xlsx_path, "Move_TRAIN", current)
     summary = {"rows_added": added_count}
-    _log_action("ensure_move_sheet", f"rows_added={added_count}")
+    _log_action("ensure_move_train_sheet", f"rows_added={added_count}, auto_filled_origin_dest_stores")
     return summary
+
+
+def ensure_move_ship_sheet(xlsx_path: Path) -> dict:
+    """Ensure the 'Move_SHIP' sheet exists and is seeded with unique origin locations.
+
+    Rules:
+      - Find unique Origin Locations from Network where Process=Move and Equipment Name=Ship.
+      - Create or update 'Move_SHIP' with columns MOVE_SHIP_SHEET_COLS.
+      - Append missing Origin Location rows; leave other fields blank for user input.
+    """
+    net = _read_network_df(xlsx_path)
+    if net.empty:
+        # still ensure header exists
+        existing = _read_sheet_df(xlsx_path, "Move_SHIP")
+        if existing is None:
+            _write_sheet_df(xlsx_path, "Move_SHIP", pd.DataFrame(columns=MOVE_SHIP_SHEET_COLS))
+        _log_action("ensure_move_ship_sheet", "rows_added=0 (empty Network)")
+        return {"rows_added": 0}
+
+    def _u(s: pd.Series) -> pd.Series:
+        return s.astype(str).fillna("").str.strip().str.upper()
+
+    ship_moves = net[(_u(net["process"]) == "MOVE") & (_u(net["equipment_name"]) == "SHIP")]
+    origins = ship_moves["location"].astype(str).fillna("").str.strip()
+    origins = origins[origins != ""].drop_duplicates().sort_values().reset_index(drop=True)
+
+    # Read or create current sheet
+    current = _read_sheet_df(xlsx_path, "Move_SHIP")
+    if current is None or current.empty:
+        current = pd.DataFrame(columns=MOVE_SHIP_SHEET_COLS)
+    else:
+        current = _ensure_columns(current.copy(), MOVE_SHIP_SHEET_COLS)
+
+    # Build existing origin set
+    if "Origin Location" in current.columns:
+        existing_set = set(current["Origin Location"].astype(str).fillna("").str.strip().str.upper().tolist())
+    else:
+        existing_set = set()
+
+    rows_to_add = [o for o in origins if o.upper() not in existing_set]
+
+    added_count = 0
+    for o in rows_to_add:
+        row = {c: "" for c in MOVE_SHIP_SHEET_COLS}
+        row["Origin Location"] = o
+        current = pd.concat([current, pd.DataFrame([row])], ignore_index=True)
+        added_count += 1
+
+    # Ensure required columns and desired ordering (place new columns right after speed)
+    desired = [c for c in MOVE_SHIP_SHEET_COLS if c in current.columns]
+    # Include any extra legacy/user columns at the end to preserve previous data
+    for c in current.columns:
+        if c not in desired:
+            desired.append(c)
+    if "Origin Location" in current.columns:
+        current = current.drop_duplicates(subset=["Origin Location"], keep="first")
+        current = current.sort_values(["Origin Location"]).reset_index(drop=True)
+    current = current.reindex(columns=desired)
+
+    _write_sheet_df(xlsx_path, "Move_SHIP", current)
+    _log_action("ensure_move_ship_sheet", f"rows_added={added_count}")
+    return {"rows_added": added_count}
 
 
 def ensure_delivery_sheet(xlsx_path: Path) -> dict:
     """Ensure the 'Deliver' sheet exists and includes a row for every unique
-    (Location, Input) pair from the Network with Process=Deliver.
+    (Location, Input) pair from the Network with Process=Deliver. Also ensure a
+    'Demand Store' column exists immediately after 'Input' and auto-populate it
+    using Network mapping where Process=Store and Next Process=Deliver and
+    Next Equipment=TRUCK.
     """
     net = _read_network_df(xlsx_path)
     if net.empty:
@@ -1714,7 +1952,17 @@ def ensure_delivery_sheet(xlsx_path: Path) -> dict:
     if del_rows.empty:
         existing = _read_sheet_df(xlsx_path, SHEET_NAME)
         if existing is None:
+            # Create with defined columns (includes optional 'Demand Store')
             empty_df = pd.DataFrame(columns=DELIVERY_SHEET_COLS)
+            # Reorder to place 'Demand Store' after 'Input'
+            desired_order = []
+            for c in ["Location", "Input", "Demand Store"]:
+                if c in empty_df.columns:
+                    desired_order.append(c)
+            for c in empty_df.columns:
+                if c not in desired_order:
+                    desired_order.append(c)
+            empty_df = empty_df.reindex(columns=desired_order)
             _write_sheet_df(xlsx_path, SHEET_NAME, empty_df)
         _log_action("ensure_delivery_sheet", "rows_added=0 (no deliver rows in Network)")
         return {"rows_added": 0}
@@ -1735,6 +1983,20 @@ def ensure_delivery_sheet(xlsx_path: Path) -> dict:
     if current is None or current.empty:
         current = pd.DataFrame(columns=DELIVERY_SHEET_COLS)
 
+    # Ensure required columns exist and position 'Demand Store' right after 'Input'
+    for col in ["Location", "Input", "Demand Store"]:
+        if col not in current.columns:
+            current[col] = ""
+    # Reorder columns to have 'Location', 'Input', 'Demand Store', then others
+    ordered = []
+    for c in ["Location", "Input", "Demand Store"]:
+        if c in current.columns:
+            ordered.append(c)
+    for c in current.columns:
+        if c not in ordered:
+            ordered.append(c)
+    current = current.reindex(columns=ordered)
+
     if not current.empty and all(c in current.columns for c in ["Location", "Input"]):
         current["Location"] = current["Location"].astype(str)
         current["Input"] = current["Input"].astype(str)
@@ -1747,6 +2009,7 @@ def ensure_delivery_sheet(xlsx_path: Path) -> dict:
 
     defaults = {
         "Demand per Location": "",
+        "Demand Store": "",
     }
 
     added_count = 0
@@ -1763,6 +2026,82 @@ def ensure_delivery_sheet(xlsx_path: Path) -> dict:
             current = pd.concat([current, pd.DataFrame([new_row])], ignore_index=True)
             added_count += 1
 
+    # Build mapping from Network: Store -> Deliver/TRUCK per (Location, Input)
+    def _u(s: pd.Series) -> pd.Series:
+        return s.astype(str).fillna("").str.strip().str.upper()
+
+    store_to_deliver = net[( _u(net["process"]) == "STORE") & (_u(net["next_process"]) == "DELIVER") & (_u(net["next_equipment"]) == "TRUCK")]
+    # Key: (Location, Input), Value: list of Equipment Name
+    mapping: dict[tuple[str, str], list[str]] = {}
+    for _, r in store_to_deliver.iterrows():
+        loc = str(r.get("location", "")).strip()
+        inp = str(r.get("input", "")).strip()
+        eq = str(r.get("equipment_name", "")).strip()
+        if not loc or not inp or not eq:
+            continue
+        key = (loc.upper(), inp.upper())
+        mapping.setdefault(key, [])
+        if eq not in mapping[key]:
+            mapping[key].append(eq)
+
+    # Optional: if Store sheet exists, build a set of valid (loc, eq, input)
+    store_df = _read_sheet_df(xlsx_path, "Store")
+    valid_store = set()
+    if store_df is not None and not store_df.empty and all(c in store_df.columns for c in ["Location", "Equipment Name", "Input"]):
+        tmp = store_df[["Location", "Equipment Name", "Input"]].astype(str).fillna("")
+        for _, r in tmp.iterrows():
+            valid_store.add((r["Location"].strip().upper(), r["Equipment Name"].strip().upper(), r["Input"].strip().upper()))
+
+    # Populate or correct 'Demand Store'
+    filled, ambiguous, missing, corrected_invalid = 0, 0, 0, 0
+    if not current.empty:
+        for idx, r in current.iterrows():
+            loc = str(r.get("Location", "")).strip()
+            inp = str(r.get("Input", "")).strip()
+            cur = str(r.get("Demand Store", "")).strip()
+            if not loc or not inp:
+                continue
+            key_pair = (loc.upper(), inp.upper())
+            candidates = mapping.get(key_pair, [])
+
+            # Helper to choose best candidate deterministically (valid stores only)
+            def _choose(loc_u: str, inp_u: str, cand_list: list[str]) -> str:
+                if not cand_list:
+                    return ""
+                valid = [eq for eq in cand_list if (loc_u, eq.upper(), inp_u) in valid_store]
+                if not valid:
+                    return ""
+                if len(valid) == 1:
+                    return valid[0]
+                # Stable deterministic choice among valid candidates for repeatability
+                return sorted(valid, key=lambda s: s.upper())[0]
+
+            if cur == "":
+                # Fill when empty
+                chosen = _choose(key_pair[0], key_pair[1], candidates)
+                if chosen:
+                    current.at[idx, "Demand Store"] = chosen
+                    filled += 1
+                else:
+                    if candidates:
+                        ambiguous += 1  # multiple but could not choose uniquely
+                    else:
+                        missing += 1
+            else:
+                # Validate existing value; correct if invalid and we can determine a unique/preferred candidate
+                is_valid = (key_pair[0], cur.upper(), key_pair[1]) in valid_store
+                if not is_valid:
+                    chosen = _choose(key_pair[0], key_pair[1], candidates)
+                    if chosen:
+                        current.at[idx, "Demand Store"] = chosen
+                        corrected_invalid += 1
+                    else:
+                        # leave as-is but count as ambiguous/missing as appropriate
+                        if candidates:
+                            ambiguous += 1
+                        else:
+                            missing += 1
+
     ordered_cols = list(current.columns)
     sort_cols = [c for c in ["Location", "Input"] if c in current.columns]
 
@@ -1774,110 +2113,323 @@ def ensure_delivery_sheet(xlsx_path: Path) -> dict:
     current = current[ordered_cols].reset_index(drop=True)
 
     _write_sheet_df(xlsx_path, SHEET_NAME, current)
-    summary = {"rows_added": added_count}
-    _log_action("ensure_delivery_sheet", f"rows_added={added_count}")
+    summary = {"rows_added": added_count, "demand_store_filled": filled, "demand_store_ambiguous": ambiguous, "demand_store_missing": missing}
+    _log_action("ensure_delivery_sheet", f"rows_added={added_count}, demand_store_filled={filled}, ambiguous={ambiguous}, missing={missing}")
     return summary
 
 
-def ensure_berths_sheet(xlsx_path: Path) -> dict:
-    """Ensure the 'Berths' sheet exists and includes a row for every unique
+def ensure_ship_berths_sheet(xlsx_path: Path) -> dict:
+    """Ensure the 'SHIP_BERTHS' sheet exists and includes a row for every unique
     berth Location inferred from the Network using ship movement rules.
 
-    Rules for inferring a Berth name (string):
-      - If Process=Store AND Next Process=Move AND Next Equipment=SHIP, then Berth := Location
-      - If Process=Move AND Equipment Name=SHIP, then Berth := Next Location
+    We infer candidate Location values using the same logic as the legacy 'Berths' sheet:
+      - If Process=Store AND Next Process=Move AND Next Equipment=SHIP, then Location := current Location
+      - If Process=Move AND Equipment Name=SHIP, then Location := Next Location
 
-    Only non-empty berth names are considered. Existing rows are preserved and
-    only new berth names are appended, with required fields left blank for user input.
+    Existing rows are preserved; only new locations are appended with blank parameters.
     """
     net = _read_network_df(xlsx_path)
     if net.empty:
-        _log_action("ensure_berths_sheet", "rows_added=0 (empty Network)")
-        raise ValueError("Network sheet is empty or missing required columns.")
+        # Ensure header exists
+        current = _read_sheet_df(xlsx_path, "SHIP_BERTHS")
+        if current is None:
+            _write_sheet_df(xlsx_path, "SHIP_BERTHS", pd.DataFrame(columns=SHIP_BERTHS_SHEET_COLS))
+        _log_action("ensure_ship_berths_sheet", "rows_added=0 (empty Network)")
+        return {"rows_added": 0}
 
-    # Normalize strings used in conditions
     def _u(s: pd.Series) -> pd.Series:
         return s.astype(str).fillna("").str.strip().str.upper()
 
-    # Case A: Store -> Next Move by SHIP => current Location is a Berth
-    case_a = net[
-        (_u(net["process"]) == "STORE")
-        & (_u(net["next_process"]) == "MOVE")
-        & (_u(net["next_equipment"]) == "SHIP")
-    ]
-    berths_a = case_a["location"].astype(str).fillna("").str.strip()
+    case_a = net[( _u(net["process"]) == "STORE") & (_u(net["next_process"]) == "MOVE") & (_u(net["next_equipment"]) == "SHIP")]
+    loc_a = case_a["location"].astype(str).fillna("").str.strip()
+    case_b = net[( _u(net["process"]) == "MOVE") & (_u(net["equipment_name"]) == "SHIP")]
+    loc_b = case_b["next_location"].astype(str).fillna("").str.strip()
 
-    # Case B: Move by SHIP => Next Location is a Berth
-    case_b = net[
-        (_u(net["process"]) == "MOVE")
-        & (_u(net["equipment_name"]) == "SHIP")
-    ]
-    berths_b = case_b["next_location"].astype(str).fillna("").str.strip()
+    locations = pd.Series(pd.concat([loc_a, loc_b], ignore_index=True)).replace({"nan": ""})
+    locations = locations[locations != ""].drop_duplicates().sort_values().reset_index(drop=True)
 
-    berth_names = pd.Series(pd.concat([berths_a, berths_b], ignore_index=True)).replace({"nan": ""})
-    berth_names = berth_names[berth_names != ""]
-    berth_names = berth_names.drop_duplicates().sort_values().reset_index(drop=True)
-
-    # Build the unique df for candidate rows
-    uniq = pd.DataFrame({"Berth": berth_names})
-    if uniq.empty:
-        # Ensure sheet exists even if no berths inferred
-        existing = _read_sheet_df(xlsx_path, "Berths")
-        if existing is None:
-            empty_df = pd.DataFrame(columns=BERTHS_SHEET_COLS)
-            _write_sheet_df(xlsx_path, "Berths", empty_df)
-        _log_action("ensure_berths_sheet", "rows_added=0 (no berths inferred)")
-        return {"rows_added": 0}
-
-    # Read current Berths sheet
-    current = _read_sheet_df(xlsx_path, "Berths")
+    current = _read_sheet_df(xlsx_path, "SHIP_BERTHS")
     if current is None or current.empty:
-        current = pd.DataFrame(columns=BERTHS_SHEET_COLS)
-
-    # Build existing key set (normalized berth name) without altering headings
-    if not current.empty and "Berth" in current.columns:
-        cur_keys = current["Berth"].astype(str).fillna("").str.strip().str.upper()
-        existing_key_set = set(cur_keys.tolist())
+        current = pd.DataFrame(columns=SHIP_BERTHS_SHEET_COLS)
     else:
-        existing_key_set = set()
+        current = _ensure_columns(current.copy(), SHIP_BERTHS_SHEET_COLS)
 
-    uniq["KEY"] = uniq["Berth"].astype(str).fillna("").str.strip().str.upper()
-    rows_to_add = uniq[~uniq["KEY"].isin(existing_key_set)].copy()
+    existing = set(current.get("Location", pd.Series(dtype=str)).astype(str).fillna("").str.strip().str.upper().tolist())
 
-    defaults = {name: "" for name in BERTHS_REQUIRED_INPUT_COLS}
+    added = 0
+    for loc in locations:
+        if loc.upper() in existing:
+            continue
+        row = {c: "" for c in SHIP_BERTHS_SHEET_COLS}
+        row["Location"] = loc
+        current = pd.concat([current, pd.DataFrame([row])], ignore_index=True)
+        added += 1
 
-    added_count = 0
-    if not rows_to_add.empty:
-        for _, r in rows_to_add.iterrows():
-            new_row = {}
-            for col in current.columns:
-                if col == "Berth":
-                    new_row[col] = r["Berth"]
-                elif col in defaults:
-                    new_row[col] = defaults[col]
-                else:
-                    new_row[col] = ""
-            current = pd.concat([current, pd.DataFrame([new_row])], ignore_index=True)
-            added_count += 1
-
-    # Preserve existing column order and only sort if key column present
     ordered_cols = list(current.columns)
-    sort_cols = ["Berth"] if "Berth" in current.columns else []
+    if "Location" in ordered_cols:
+        current = current.drop_duplicates(subset=["Location"], keep="first").sort_values(["Location"]).reset_index(drop=True)
+    current = current[ordered_cols]
 
-    if sort_cols:
-        current = current.drop_duplicates(subset=sort_cols, keep="first")
-        current = current.sort_values(sort_cols)
-
-    current = current[ordered_cols].reset_index(drop=True)
-
-    _write_sheet_df(xlsx_path, "Berths", current)
-    summary = {"rows_added": added_count}
-    _log_action("ensure_berths_sheet", f"rows_added={added_count}")
+    _write_sheet_df(xlsx_path, "SHIP_BERTHS", current)
+    summary = {"rows_added": added}
+    _log_action("ensure_ship_berths_sheet", f"rows_added={added}")
     return summary
 
 
+def _is_routes_transposed(df: pd.DataFrame) -> bool:
+    try:
+        if df is None or df.empty:
+            return False
+        cols = [c for c in df.columns]
+        if len(cols) == 0:
+            return False
+        # If first column is named 'Field' or contains many of our expected field names, treat as transposed
+        first_col = cols[0]
+        if str(first_col).strip().lower() == "field":
+            return True
+        # Heuristic: count overlaps between first column values and known fields
+        values = set(str(v).strip() for v in df[first_col].dropna().tolist())
+        overlap = len(values.intersection(set(SHIP_ROUTES_SHEET_COLS)))
+        return overlap >= max(3, len(SHIP_ROUTES_SHEET_COLS)//4)
+    except Exception:
+        return False
+
+
+def read_ship_routes_normalized(xlsx_path: Path) -> pd.DataFrame:
+    """Read SHIP_ROUTES sheet and return a normalized wide dataframe with columns SHIP_ROUTES_SHEET_COLS.
+
+    Supports two formats:
+      1) Wide (columns are the field names) — returned as-is with ensured columns.
+      2) Transposed (first column lists field names, subsequent columns are routes) — converted to wide rows.
+    """
+    df = _read_sheet_df(xlsx_path, "SHIP_ROUTES")
+    if df is None or df.empty:
+        return pd.DataFrame(columns=SHIP_ROUTES_SHEET_COLS)
+
+    # If already wide
+    if not _is_routes_transposed(df) and all(col in df.columns for col in ["Route Group", "Route ID", "Origin Location"]):
+        df = _ensure_columns(df.copy(), SHIP_ROUTES_SHEET_COLS)
+        return df
+
+    # Transposed format
+    cols = list(df.columns)
+    field_col = cols[0]
+    # Build one row per subsequent column
+    rows: list[dict] = []
+    field_names = df[field_col].astype(str).fillna("").str.strip()
+    for col in cols[1:]:
+        route_vals = {}
+        series = df[col]
+        for i, fname in enumerate(field_names):
+            if fname in SHIP_ROUTES_SHEET_COLS:
+                route_vals[fname] = series.iloc[i] if i < len(series) else pd.NA
+        # Only append non-empty routes (must have at least Route Group or Route ID or Origin Location)
+        if any(str(route_vals.get(k, "")).strip() for k in ["Route Group", "Route ID", "Origin Location"]):
+            rows.append(route_vals)
+    out = pd.DataFrame(rows, columns=SHIP_ROUTES_SHEET_COLS)
+    out = _ensure_columns(out, SHIP_ROUTES_SHEET_COLS)
+    return out
+
+
+def ensure_ship_routes_sheet(xlsx_path: Path) -> dict:
+    """Ensure the 'SHIP_ROUTES' sheet exists in TRANSPOSED format going forward.
+
+    Behavior:
+      - If sheet is missing: create a transposed template with a 'Field' column listing SHIP_ROUTES_SHEET_COLS
+        and an example blank route column named 'Route 1'.
+      - If sheet exists in old WIDE format: migrate to transposed, preserving data as separate route columns
+        (column headers are Route Group-Route ID when available, otherwise 'Route N').
+      - If already transposed: preserve as-is, only ensure the 'Field' list contains all required entries.
+    """
+    current = _read_sheet_df(xlsx_path, "SHIP_ROUTES")
+    # Create fresh transposed template if missing or empty
+    if current is None or current.empty:
+        tdf = pd.DataFrame({
+            "Field": SHIP_ROUTES_SHEET_COLS,
+            "Route 1": ["" for _ in SHIP_ROUTES_SHEET_COLS],
+        })
+        _write_sheet_df(xlsx_path, "SHIP_ROUTES", tdf)
+        _log_action("ensure_ship_routes_sheet", "initialized transposed template with 'Route 1'")
+        return {"rows_added": 0}
+
+    # If already transposed, just ensure all fields are present in the first column
+    if _is_routes_transposed(current):
+        field_col = current.columns[0]
+        existing_fields = set(str(v).strip() for v in current[field_col].dropna().tolist())
+        missing = [f for f in SHIP_ROUTES_SHEET_COLS if f not in existing_fields]
+        if missing:
+            # Append missing rows at the bottom
+            add_df = pd.DataFrame({field_col: missing})
+            # Create blank cells for all route columns
+            for c in current.columns[1:]:
+                add_df[c] = ""
+            current = pd.concat([current, add_df], ignore_index=True)
+        # Preserve order according to SHIP_ROUTES_SHEET_COLS when possible
+        sorter = {name: i for i, name in enumerate(SHIP_ROUTES_SHEET_COLS)}
+        try:
+            current[field_col] = pd.Categorical(current[field_col], categories=SHIP_ROUTES_SHEET_COLS, ordered=True)
+            current = current.sort_values(field_col)
+            current[field_col] = current[field_col].astype(str)
+        except Exception:
+            pass
+        _write_sheet_df(xlsx_path, "SHIP_ROUTES", current)
+        _log_action("ensure_ship_routes_sheet", "kept transposed; ensured fields")
+        return {"rows_added": 0}
+
+    # Otherwise migrate from wide to transposed
+    wide = _ensure_columns(current.copy(), SHIP_ROUTES_SHEET_COLS)
+    cols = ["Field"]
+    route_cols: list[str] = []
+    # Build one column per route (row)
+    for i, (_, r) in enumerate(wide.iterrows()):
+        label_parts = []
+        rg = str(r.get("Route Group", "")).strip()
+        rid = str(r.get("Route ID", "")).strip()
+        if rg:
+            label_parts.append(rg)
+        if rid:
+            label_parts.append(rid)
+        label = "-".join(label_parts) if label_parts else f"Route {i+1}"
+        # Avoid duplicate column names
+        base_label = label or f"Route {i+1}"
+        label = base_label
+        suffix = 2
+        while label in route_cols:
+            label = f"{base_label} ({suffix})"
+            suffix += 1
+        route_cols.append(label)
+    cols += route_cols
+
+    # Create transposed DataFrame
+    tdf = pd.DataFrame({"Field": SHIP_ROUTES_SHEET_COLS})
+    for label, (_, r) in zip(route_cols, wide.iterrows()):
+        tdf[label] = [r.get(f, "") for f in SHIP_ROUTES_SHEET_COLS]
+
+    _write_sheet_df(xlsx_path, "SHIP_ROUTES", tdf)
+    _log_action("ensure_ship_routes_sheet", f"migrated from wide to transposed with {len(route_cols)} routes")
+    return {"rows_added": 0}
+
+
+def ensure_ship_distances_sheet(xlsx_path: Path) -> dict:
+    """Ensure the 'SHIP_DISTANCES' sheet exists, deriving unique undirected Location 1/Location 2 pairs from SHIP_ROUTES.
+    Existing distances are preserved; new pairs are appended with blank Distance (nM).
+    Supports both wide and transposed SHIP_ROUTES by normalizing via read_ship_routes_normalized().
+
+    Additionally enforces: no rows with blank endpoints and no NaN values in any column.
+    Also migrates legacy columns 'From'/'To' to 'Location 1'/'Location 2'.
+    """
+    routes = read_ship_routes_normalized(xlsx_path)
+
+    # Normalizer for location cells: treat None/NaN/"nan"/"none"/blank as empty string; otherwise trimmed text
+    def _norm_loc(val) -> str:
+        if pd.isna(val):
+            return ""
+        s = str(val).strip()
+        if s.lower() in {"", "nan", "none"}:
+            return ""
+        return s
+
+    # Start with existing distances
+    dist_df = _read_sheet_df(xlsx_path, "SHIP_DISTANCES")
+    migrated = False
+    if dist_df is None or dist_df.empty:
+        dist_df = pd.DataFrame(columns=SHIP_DISTANCES_SHEET_COLS)
+    else:
+        # If legacy columns present, rename them
+        cols_lower = {c.lower(): c for c in dist_df.columns}
+        if "from" in cols_lower and "to" in cols_lower:
+            dist_df = dist_df.rename(columns={cols_lower["from"]: "Location 1", cols_lower["to"]: "Location 2"})
+            migrated = True
+        # Ensure required columns present
+        dist_df = _ensure_columns(dist_df.copy(), SHIP_DISTANCES_SHEET_COLS)
+        # Clean existing rows: drop any with blank endpoints; replace NaN in Distance with empty string
+        dist_df["Location 1"] = dist_df["Location 1"].apply(_norm_loc).astype("object")
+        dist_df["Location 2"] = dist_df["Location 2"].apply(_norm_loc).astype("object")
+        # Drop rows where endpoints are empty
+        dist_df = dist_df[(dist_df["Location 1"] != "") & (dist_df["Location 2"] != "")].copy()
+        # Normalize Distance column to avoid NaN
+        if "Distance (nM)" in dist_df.columns:
+            dist_df["Distance (nM)"] = dist_df["Distance (nM)"].apply(lambda v: "" if pd.isna(v) else v)
+
+    if migrated:
+        _log_action("migrate_ship_distances_columns", "Renamed 'From'/'To' to 'Location 1'/'Location 2'")
+
+    # Build set of existing undirected keys to avoid duplicates (Location 1/2 treated as undirected pair)
+    def _pair_key(a: str, b: str) -> tuple[str, str]:
+        a_ = _norm_loc(a)
+        b_ = _norm_loc(b)
+        return tuple(sorted([a_, b_], key=lambda x: x.upper()))
+
+    existing_pairs = set()
+    if not dist_df.empty:
+        for _, r in dist_df.iterrows():
+            f = _norm_loc(r.get("Location 1", ""))
+            t = _norm_loc(r.get("Location 2", ""))
+            if f and t:
+                existing_pairs.add(_pair_key(f, t))
+
+    new_pairs: list[tuple[str, str]] = []
+
+    def _add_pair(a, b):
+        a = _norm_loc(a)
+        b = _norm_loc(b)
+        if not a or not b:
+            return
+        k = _pair_key(a, b)
+        if k not in existing_pairs and k not in new_pairs:
+            new_pairs.append(k)
+
+    if routes is not None and not routes.empty:
+        # Extract combos as specified using a COMPRESSED sequence of non-empty locations
+        # Sequence per route: Origin -> Dest1 -> Dest2 -> Dest3 -> Return
+        # If any intermediate field is empty, we skip it and still connect the previous
+        # non-empty location to the next non-empty location.
+        for _, r in routes.iterrows():
+            seq_raw = [
+                r.get("Origin Location", ""),
+                r.get("Destination 1 Location", ""),
+                r.get("Destination 2 Location", ""),
+                r.get("Destination 3 Location", ""),
+                r.get("Return Location", ""),
+            ]
+            # Normalize and drop empties
+            seq = [loc for loc in (_norm_loc(x) for x in seq_raw) if loc != ""]
+            # Remove successive duplicates (case-insensitive)
+            compressed: list[str] = []
+            for loc in seq:
+                if not compressed or compressed[-1].strip().upper() != loc.strip().upper():
+                    compressed.append(loc)
+            # Add consecutive pairs
+            for i in range(len(compressed) - 1):
+                _add_pair(compressed[i], compressed[i + 1])
+
+    # Append new rows with blank Distance (nM)
+    added = 0
+    for a, b in new_pairs:
+        row = {"Location 1": a, "Location 2": b, "Distance (nM)": ""}
+        dist_df = pd.concat([dist_df, pd.DataFrame([row])], ignore_index=True)
+        added += 1
+
+    # Final cleanup: enforce no blanks/NaN and stable ordering
+    if not dist_df.empty:
+        dist_df["Location 1"] = dist_df["Location 1"].apply(_norm_loc).astype("object")
+        dist_df["Location 2"] = dist_df["Location 2"].apply(_norm_loc).astype("object")
+        if "Distance (nM)" in dist_df.columns:
+            dist_df["Distance (nM)"] = dist_df["Distance (nM)"].apply(lambda v: "" if pd.isna(v) else v)
+        # Drop rows with blank endpoints
+        dist_df = dist_df[(dist_df["Location 1"] != "") & (dist_df["Location 2"] != "")]
+        # Drop exact duplicates
+        dist_df = dist_df.drop_duplicates(subset=["Location 1", "Location 2"], keep="first")
+        # Sort
+        dist_df = dist_df.sort_values(["Location 1", "Location 2"]).reset_index(drop=True)
+
+    _write_sheet_df(xlsx_path, "SHIP_DISTANCES", dist_df)
+    _log_action("ensure_ship_distances_sheet", f"rows_added={added}")
+    return {"rows_added": added}
+
+
 def prepare_inputs_excel(xlsx_path: Path) -> dict:
-    """High-level entry to prepare Excel inputs: Settings, Make, Store, Move, Deliver, and Berths sheets.
+    """High-level entry to prepare Excel inputs: Settings, Make, Store, Move, Deliver, and Ship sheets.
     Returns a combined summary.
     NOTE: This function updates the provided workbook IN-PLACE. For the new
     non-destructive workflow that writes to a separate file, use
@@ -1892,17 +2444,23 @@ def prepare_inputs_excel(xlsx_path: Path) -> dict:
     settings_summary = ensure_settings_sheet(xlsx_path)
     make_summary = ensure_make_sheet(xlsx_path)
     store_summary = ensure_store_sheet(xlsx_path)
-    move_summary = ensure_move_sheet(xlsx_path)
+    move_train_summary = ensure_move_train_sheet(xlsx_path)
+    move_ship_summary = ensure_move_ship_sheet(xlsx_path)
     delivery_summary = ensure_delivery_sheet(xlsx_path)
-    berths_summary = ensure_berths_sheet(xlsx_path)
+    ship_berths_summary = ensure_ship_berths_sheet(xlsx_path)
+    ship_routes_summary = ensure_ship_routes_sheet(xlsx_path)
+    ship_distances_summary = ensure_ship_distances_sheet(xlsx_path)
     
     return {
         "settings": settings_summary,
         "make": make_summary,
         "store": store_summary,
-        "move": move_summary,
+        "move_train": move_train_summary,
+        "move_ship": move_ship_summary,
         "deliver": delivery_summary,
-        "berths": berths_summary,
+        "ship_berths": ship_berths_summary,
+        "ship_routes": ship_routes_summary,
+        "ship_distances": ship_distances_summary,
     }
 
 
@@ -1939,7 +2497,12 @@ def prepare_inputs_generate(src_xlsx: Path, out_xlsx: Path) -> dict:
         raise RuntimeError(f"Failed to read 'Network' sheet from {src_xlsx}: {e}")
 
     # 2) Collect optional sheets to copy over
-    copy_sheet_names = ["Settings", "Make", "Store", "Move", "Deliver", "Delivery", "Berths"]
+    copy_sheet_names = [
+        "Settings", "Make", "Store", "Deliver", "Delivery",
+        "Berths",  # legacy, preserved if present
+        "Move_TRAIN", "Move_SHIP",
+        "SHIP_BERTHS", "SHIP_ROUTES", "SHIP_DISTANCES",
+    ]
     copied_dfs: dict[str, pd.DataFrame] = {}
     for nm in copy_sheet_names:
         df = _read_sheet_df(src_xlsx, nm)
@@ -1967,9 +2530,12 @@ def prepare_inputs_generate(src_xlsx: Path, out_xlsx: Path) -> dict:
     settings_summary = ensure_settings_sheet(out_xlsx)
     make_summary = ensure_make_sheet(out_xlsx)
     store_summary = ensure_store_sheet(out_xlsx)
-    move_summary = ensure_move_sheet(out_xlsx)
+    move_train_summary = ensure_move_train_sheet(out_xlsx)
+    move_ship_summary = ensure_move_ship_sheet(out_xlsx)
     delivery_summary = ensure_delivery_sheet(out_xlsx)
-    berths_summary = ensure_berths_sheet(out_xlsx)
+    ship_berths_summary = ensure_ship_berths_sheet(out_xlsx)
+    ship_routes_summary = ensure_ship_routes_sheet(out_xlsx)
+    ship_distances_summary = ensure_ship_distances_sheet(out_xlsx)
 
     # 5) Write the action log to a 'Log' sheet in the generated workbook
     try:
@@ -1981,14 +2547,28 @@ def prepare_inputs_generate(src_xlsx: Path, out_xlsx: Path) -> dict:
         # If writing log fails, we still return summaries
         _log_action("write_log_failed", str(ex))
 
+    # 6) Safety: remove legacy 'Move' sheet from the generated workbook if present
+    try:
+        wb = openpyxl.load_workbook(out_xlsx)
+        if "Move" in wb.sheetnames:
+            ws = wb["Move"]
+            wb.remove(ws)
+            wb.save(out_xlsx)
+            _log_action("remove_legacy_move_sheet", "Deleted 'Move' from generated workbook")
+    except Exception as ex:
+        _log_action("remove_legacy_move_sheet_failed", str(ex))
+
     return {
         "generated_path": str(out_xlsx),
         "settings": settings_summary,
         "make": make_summary,
         "store": store_summary,
-        "move": move_summary,
+        "move_train": move_train_summary,
+        "move_ship": move_ship_summary,
         "deliver": delivery_summary,
-        "berths": berths_summary,
+        "ship_berths": ship_berths_summary,
+        "ship_routes": ship_routes_summary,
+        "ship_distances": ship_distances_summary,
         "log_entries": len(ACTION_LOG),
     }
 
@@ -2163,9 +2743,12 @@ def main(argv=None) -> int:
             print(f"  Settings: added={summary['settings'].get('added', 0)}, updated={summary['settings'].get('updated', 0)}")
             print(f"  Make: rows_added={summary['make'].get('rows_added', 0)}")
             print(f"  Store: rows_added={summary['store'].get('rows_added', 0)}")
-            print(f"  Move: rows_added={summary['move'].get('rows_added', 0)}")
-            print(f"  Deliver: rows_added={summary['deliver'].get('rows_added', 0)}")
-            print(f"  Berths: rows_added={summary['berths'].get('rows_added', 0)}")
+            print(f"  Move_TRAIN: rows_added={summary.get('move_train', {}).get('rows_added', 0)}")
+            print(f"  Move_SHIP: rows_added={summary.get('move_ship', {}).get('rows_added', 0)}")
+            print(f"  Deliver: rows_added={summary.get('deliver', {}).get('rows_added', 0)}")
+            print(f"  SHIP_BERTHS: rows_added={summary.get('ship_berths', {}).get('rows_added', 0)}")
+            print(f"  SHIP_ROUTES: rows_added={summary.get('ship_routes', {}).get('rows_added', 0)}")
+            print(f"  SHIP_DISTANCES: rows_added={summary.get('ship_distances', {}).get('rows_added', 0)}")
         except Exception as e:
             print(f"Input preparation failed: {e}")
             return 1

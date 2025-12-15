@@ -114,8 +114,7 @@
                         </div>
                         <div class="col-md-4 d-flex align-items-end">
                             <div class="form-check">
-                                <input type="checkbox" class="form-check-input" id="random_opening"
-                                       {{ 'checked' if config.random_opening else '' }}>
+                                <input type="checkbox" class="form-check-input" id="random_opening" {% if config.random_opening %}checked{% endif %}>
                                 <label class="form-check-label" for="random_opening">
                                     Random Opening Stock
                                 </label>
@@ -176,54 +175,105 @@
             const statusBadge = document.getElementById('statusBadge');
             const resultsCard = document.getElementById('resultsCard');
             
+            // Reset UI
+            outputLog.textContent = '';
+            outputCard.style.display = 'block';
+            statusBadge.textContent = 'Running';
+            statusBadge.className = 'status-badge status-pending';
+
             runBtn.disabled = true;
             runBtnText.textContent = 'Running...';
             runBtnSpinner.classList.remove('d-none');
-            
-            outputCard.style.display = 'block';
-            outputLog.textContent = 'Starting simulation...';
-            statusBadge.textContent = 'Running';
-            statusBadge.className = 'status-badge status-pending';
-            
+
+            // Build SSE URL with query params
+            const horizon = parseInt(document.getElementById('horizon_days').value);
+            const ro = document.getElementById('random_opening').checked;
+            const rs = document.getElementById('random_seed').value;
+            const params = new URLSearchParams({
+                horizon_days: String(isNaN(horizon) ? 365 : horizon),
+                random_opening: ro ? 'true' : 'false',
+                random_seed: rs || ''
+            });
+            const url = '/stream-simulation?' + params.toString();
+
+            // Close any previous stream
+            if (window.__simStream) {
+                try { window.__simStream.close(); } catch (e) {}
+                window.__simStream = null;
+            }
+
             try {
-                const response = await fetch('/run-simulation', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        horizon_days: parseInt(document.getElementById('horizon_days').value),
-                        random_opening: document.getElementById('random_opening').checked,
-                        random_seed: document.getElementById('random_seed').value
-                    })
-                });
-                
-                const data = await response.json();
-                outputLog.textContent = data.output || 'Simulation completed';
-                
-                if (data.success) {
-                    statusBadge.textContent = 'Complete';
-                    statusBadge.className = 'status-badge status-ready';
-                    if (data.report_ready) {
-                        resultsCard.style.display = 'block';
-                        const statusResp = await fetch('/api/status');
-                        const statusData = await statusResp.json();
-                        const csvLinks = document.getElementById('csvLinks');
-                        csvLinks.innerHTML = statusData.csv_files.map(f => 
-                            `<a href="/outputs/${f}" class="me-3">${f}</a>`
-                        ).join('');
+                const es = new EventSource(url);
+                window.__simStream = es;
+
+                // Helper to append a line if it's not a duplicate of the last line
+                function appendLine(msg){
+                    if (!msg) return;
+                    const text = outputLog.textContent;
+                    const lastNewline = text.lastIndexOf('\n', text.length - 2);
+                    const lastLine = lastNewline >= 0 ? text.slice(lastNewline + 1).trim() : text.trim();
+                    if (msg.trim() !== lastLine) {
+                        outputLog.textContent += msg + "\n";
+                        outputLog.scrollTop = outputLog.scrollHeight;
                     }
-                } else {
-                    statusBadge.textContent = 'Failed';
-                    statusBadge.className = 'status-badge status-pending';
                 }
+
+                es.addEventListener('start', (ev) => {
+                    appendLine(ev.data || 'Simulation started');
+                });
+
+                es.addEventListener('progress', (ev) => {
+                    const msg = ev.data || '';
+                    appendLine(msg);
+                    // Extract percent if present
+                    const m = msg.match(/Progress:\s*(\d+)%/);
+                    if (m) {
+                        statusBadge.textContent = m[1] + '%';
+                    }
+                });
+
+                es.onmessage = (ev) => {
+                    if (!ev.data) return;
+                    appendLine(ev.data);
+                };
+
+                es.addEventListener('done', async (ev) => {
+                    try { es.close(); } catch (e) {}
+                    window.__simStream = null;
+                    let payload = {};
+                    try { payload = JSON.parse(ev.data || '{}'); } catch (e) {}
+                    const ok = !!payload.success;
+                    statusBadge.textContent = ok ? 'Complete' : 'Error';
+                    statusBadge.className = 'status-badge ' + (ok ? 'status-ready' : 'status-pending');
+                    runBtn.disabled = false;
+                    runBtnText.textContent = 'Run Simulation';
+                    runBtnSpinner.classList.add('d-none');
+                    // Refresh results section
+                    try {
+                        const st = await fetch('/api/status').then(r => r.json());
+                        if (st && (st.report_exists || (payload && payload.report_ready))) {
+                            resultsCard.style.display = '';
+                        }
+                        const csvLinks = document.getElementById('csvLinks');
+                        if (csvLinks && st && Array.isArray(st.csv_files)) {
+                            csvLinks.innerHTML = st.csv_files.map(fn => `<a href="/outputs/${fn}" class="me-3">${fn}</a>`).join('');
+                        }
+                    } catch (e) {}
+                });
+
+                es.addEventListener('error', (ev) => {
+                    // Generic error handler
+                    outputLog.textContent += 'Stream error.\n';
+                    outputLog.scrollTop = outputLog.scrollHeight;
+                });
             } catch (err) {
-                outputLog.textContent = 'Error: ' + err.message;
+                outputLog.textContent += 'Failed to start stream: ' + err.message + '\n';
                 statusBadge.textContent = 'Error';
                 statusBadge.className = 'status-badge status-pending';
+                runBtn.disabled = false;
+                runBtnText.textContent = 'Run Simulation';
+                runBtnSpinner.classList.add('d-none');
             }
-            
-            runBtn.disabled = false;
-            runBtnText.textContent = 'Run Simulation';
-            runBtnSpinner.classList.add('d-none');
         });
     </script>
 </body>

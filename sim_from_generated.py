@@ -100,6 +100,8 @@ def load_generated_inputs(xlsx_path: Path) -> dict[str, pd.DataFrame]:
     make = read_sheet("Make")
     store = read_sheet("Store")
     move = read_sheet("Move")
+    move_train = read_sheet("Move_TRAIN")
+    move_ship = read_sheet("Move_SHIP")
     deliver = read_sheet("Deliver")
     if deliver.empty:
         # Some books use "Delivery"
@@ -111,6 +113,8 @@ def load_generated_inputs(xlsx_path: Path) -> dict[str, pd.DataFrame]:
         "Make": make,
         "Store": store,
         "Move": move,
+        "Move_TRAIN": move_train,
+        "Move_SHIP": move_ship,
         "Deliver": deliver,
     }
 
@@ -222,7 +226,89 @@ def build_simpy_from_generated(
     # Normalize ancillary sheets: enforce the expected columns if present
     make_df = sheets["Make"].copy()
     store_df = sheets["Store"].copy()
-    move_df = sheets["Move"].copy()
+    # Prefer new Move_TRAIN if present by transforming it into legacy Move shape
+    _move_train_src = sheets.get("Move_TRAIN", pd.DataFrame()).copy()
+    if _move_train_src is not None and not getattr(_move_train_src, 'empty', True):
+        cols = [
+            "Product", "Location", "Equipment Name", "Next Location",
+            "#Equipment (99-unlimited)", "#Parcels", "Capacity Per Parcel",
+            "Load Rate (Ton/hr)", "Travel to Time (Min)", "Unload Rate (Ton/Hr)", "Travel back Time (Min)",
+        ]
+        rows = []
+        # Simple lookup for store load/unload rates by (Location, Input)
+        def _rate_for(loc: str, prod: str, which: str, default: float) -> float:
+            try:
+                df = store_df
+                c_loc = df.get("Location")
+                c_inp = df.get("Input")
+                c_rate = df.get(which)
+                if c_loc is None or c_inp is None or c_rate is None:
+                    return float(default)
+                mask = (c_loc.astype(str).str.upper().str.strip() == str(loc).upper().strip()) & (c_inp.astype(str).str.upper().str.strip() == str(prod).upper().strip())
+                sub = df[mask]
+                for _, r in sub.iterrows():
+                    try:
+                        v = float(r.get(which, None))
+                        if v == v and v > 0:  # not NaN and positive
+                            return v
+                    except Exception:
+                        continue
+                return float(default)
+            except Exception:
+                return float(default)
+        for _, r in _move_train_src.iterrows():
+            prod = str(r.get("Product", "")).strip()
+            o_loc = str(r.get("Origin Location", "")).strip()
+            d_loc = str(r.get("Destination Location", "")).strip()
+            if not prod or not o_loc or not d_loc:
+                continue
+            try:
+                n_trains = int(float(r.get("# Trains", 0) or 0))
+            except Exception:
+                n_trains = 0
+            try:
+                n_carr = float(r.get("# Carraiges", 0) or 0)
+            except Exception:
+                n_carr = 0.0
+            try:
+                carr_cap = float(r.get("# Carraige Capacity (ton)", 0) or 0)
+            except Exception:
+                carr_cap = 0.0
+            payload = max(0.0, float(n_carr * carr_cap))
+            # Synthesize timing from distance and speeds (minutes)
+            try:
+                dist = float(r.get("Distance", 0) or 0)
+            except Exception:
+                dist = 0.0
+            try:
+                v_loaded = float(r.get("Avg Speed - Loaded (km/hr)", 0) or 0)
+            except Exception:
+                v_loaded = 0.0
+            try:
+                v_empty = float(r.get("Avg Speed - Empty (km/hr)", 0) or 0)
+            except Exception:
+                v_empty = 0.0
+            to_min = (dist / v_loaded * 60.0) if v_loaded > 0 else 0.0
+            back_min = (dist / v_empty * 60.0) if v_empty > 0 else 0.0
+            # Load/Unload from Store sheet new columns if available
+            load_rate = _rate_for(o_loc, prod, "Load Rate (ton/hr)", 500.0)
+            unload_rate = _rate_for(d_loc, prod, "Unload Rate (ton/hr)", 400.0)
+            rows.append({
+                "Product": prod,
+                "Location": o_loc,
+                "Equipment Name": "TRAIN",
+                "Next Location": d_loc,
+                "#Equipment (99-unlimited)": n_trains,
+                "#Parcels": 1.0,  # derived mode keeps single parcel with capacity=payload
+                "Capacity Per Parcel": payload,
+                "Load Rate (Ton/hr)": load_rate,
+                "Travel to Time (Min)": to_min,
+                "Unload Rate (Ton/Hr)": unload_rate,
+                "Travel back Time (Min)": back_min,
+            })
+        move_df = pd.DataFrame(rows, columns=cols)
+    else:
+        move_df = sheets["Move"].copy()
     deliver_df = sheets["Deliver"].copy()
 
     # Build key lookups
