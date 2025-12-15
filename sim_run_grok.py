@@ -1,58 +1,59 @@
-# sim_run_grok.py - Main runner
-import os
-from sim_run_grok_config import config
-from sim_run_grok_helpers import write_csv_outputs, plot_results, generate_standalone
+import sys
+import pandas as pd
+
+# Data Loading Modules
+from sim_run_grok_data_ingest import load_data_frames, get_config_map
+from sim_run_grok_data_clean import clean_all_data
+from sim_run_grok_data_factory import build_store_configs, build_make_units, build_transport_routes, build_demands
+
+# Core Logic
+from sim_run_grok_config import config, run_settings
 from sim_run_grok_core import SupplyChainSimulation
-from sim_run_grok_data_loader import load_data
 
-if __name__ == "__main__":
-    print("sim_run_grok.py: Starting simulation...", flush=True)
+# NEW: Reporting Modules (Replacing helpers)
+from sim_run_grok_report_csv import write_csv_outputs
+from sim_run_grok_report_plot import plot_results
+from sim_run_grok_report_codegen import generate_standalone
 
-    horizon_days = int(os.environ.get('SIM_HORIZON_DAYS', config.horizon_days))
-    random_opening = os.environ.get('SIM_RANDOM_OPENING', str(config.random_opening)).lower() == 'true'
-    random_seed_env = os.environ.get('SIM_RANDOM_SEED', '')
-    random_seed = int(random_seed_env) if random_seed_env else config.random_seed
 
-    settings_override = {
-        "horizon_days": horizon_days,
-        "random_opening": random_opening,
-        "random_seed": random_seed,
-        "progress_step_pct": getattr(config, 'progress_step_pct', 10),
-        # Demand modeling knobs
-        "demand_truck_load_tons": getattr(config, 'demand_truck_load_tons', 25.0),
-        "demand_step_hours": getattr(config, 'demand_step_hours', 1.0),
-        # Transport policy
-        "require_full_payload": getattr(config, 'require_full_payload', True),
-        "debug_full_payload": getattr(config, 'debug_full_payload', False),
-    }
+def main():
+    if len(sys.argv) > 1:
+        INPUT_FILE = sys.argv[1]
+    else:
+        INPUT_FILE = "generated_model_inputs.xlsx"
 
-    settings, stores, makes, moves, demands = load_data()
-    settings.update(settings_override)
+    print(f"Starting simulation with input file prefix: {INPUT_FILE}")
 
-    # Detailed route breakdown by transport mode
-    try:
-        train_count = sum(1 for m in moves if getattr(m, 'mode', 'TRAIN').upper() == 'TRAIN')
-        ship_count = sum(1 for m in moves if getattr(m, 'mode', 'TRAIN').upper() == 'SHIP')
-        other_count = sum(1 for m in moves if getattr(m, 'mode', 'TRAIN').upper() not in ('TRAIN', 'SHIP'))
-        print(
-            f"Loaded: {len(stores)} stores, {len(makes)} make units, {len(moves)} routes "
-            f"(TRAIN: {train_count}, SHIP: {ship_count}" + (f", OTHER: {other_count}" if other_count else "") + "), "
-            f"{len(demands)} demands",
-            flush=True,
-        )
-    except Exception:
-        # Fallback to legacy summary if anything goes wrong
-        print(
-            f"Loaded: {len(stores)} stores, {len(makes)} make units, {len(moves)} routes, {len(demands)} demands",
-            flush=True,
-        )
+    # 1. Load & Clean
+    raw_data = load_data_frames(INPUT_FILE)
+    settings = get_config_map(raw_data.get('Settings', pd.DataFrame()))
+    clean_data = clean_all_data(raw_data)
+
+    # 2. Build Objects
+    stores_cfg = build_store_configs(clean_data.get('Store', pd.DataFrame()))
+    makes = build_make_units(clean_data.get('Make', pd.DataFrame()))
+    moves = build_transport_routes(clean_data)
+    demands = build_demands(clean_data.get('Deliver', pd.DataFrame()))
+
+    # 3. Configure & Run
+    settings.update(run_settings)
+
+    # Optional: Override settings from config object if not in Excel
+    if 'out_dir' not in settings:
+        settings['out_dir'] = config.out_dir
 
     sim = SupplyChainSimulation(settings)
-    sim.run(stores, makes, moves, demands)
+    sim.run(stores_cfg, makes, moves, demands)
 
-    out_dir = config.out_dir
+    # 4. Report
+    out_dir = settings.get('out_dir', config.out_dir)
+
     write_csv_outputs(sim, out_dir)
     plot_results(sim, out_dir, moves)
-    generate_standalone(settings, stores, makes, moves, demands, out_dir)
+    generate_standalone(settings, stores_cfg, makes, moves, demands, out_dir)
 
-    print(f"\nAll complete! Check '{out_dir}' for results, plots, and standalone model.", flush=True)
+    print(f"\nAll complete! Check '{out_dir}' for results.")
+
+
+if __name__ == "__main__":
+    main()
