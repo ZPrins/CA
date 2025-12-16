@@ -108,7 +108,8 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                 if selected_out:
                     # Check input availability if required
                     if in_keys:
-                        if selected_in and stores[selected_in].level >= needed - 1e-6:
+                        # Accept if input store has ANY inventory (partial runs allowed - scaling handles it)
+                        if selected_in and stores[selected_in].level > 1e-6:
                             eligible.append((cand, selected_in, selected_out))
                     else:
                         # No input required

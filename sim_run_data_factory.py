@@ -32,12 +32,25 @@ def build_make_units(df_make: pd.DataFrame) -> List[MakeUnit]:
         unit_key = (location, equipment)
         unit_params[unit_key]['choice_rule'] = row.get('Choice_Rule', 'min_fill_pct')
         unit_params[unit_key]['step_hours'] = float(row.get('Step_Hours', 1.0))
+        
+        # Get lists of input/output stores if available
+        in_store_keys = row.get('Input_Store_Keys') if 'Input_Store_Keys' in row.index else None
+        out_store_keys = row.get('Output_Store_Keys') if 'Output_Store_Keys' in row.index else None
+        
+        # Ensure they are lists (not None or other types)
+        if in_store_keys is not None and not isinstance(in_store_keys, list):
+            in_store_keys = [in_store_keys] if in_store_keys else None
+        if out_store_keys is not None and not isinstance(out_store_keys, list):
+            out_store_keys = [out_store_keys] if out_store_keys else None
+        
         candidate = ProductionCandidate(
             product=row['Product_Class'],
             out_store_key=row['Output_Store_Key'],
             in_store_key=row['Input_Store_Key'] if row['Input_Store_Key'] else None,
             rate_tph=float(row['Rate_TPH']),
-            consumption_pct=float(row['Consumption_Pct'])
+            consumption_pct=float(row['Consumption_Pct']),
+            in_store_keys=in_store_keys if in_store_keys else None,
+            out_store_keys=out_store_keys if out_store_keys else None
         )
         make_groups[unit_key].append(candidate)
     make_units: List[MakeUnit] = []

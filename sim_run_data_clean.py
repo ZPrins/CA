@@ -146,15 +146,29 @@ def clean_all_data(raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]
         df_make['Equipment'] = df_make['Equipment'].str.upper()
 
         def resolve_make_keys(row):
-            inp_key = None
+            # Find ALL input stores for this location and input product
+            inp_keys = []
             if row['Input_Product']:
-                inp_key = store_lookup_map.get((row['Location'], row['Equipment'], row['Input_Product']))
-            out_key = None
-            candidates = loc_prod_map.get((row['Location'], row['Product_Class']), [])
-            if candidates: out_key = candidates[0]
-            return pd.Series([inp_key, out_key])
+                # First try exact match (Location, Equipment, Product)
+                exact_key = store_lookup_map.get((row['Location'], row['Equipment'], row['Input_Product']))
+                if exact_key:
+                    inp_keys.append(exact_key)
+                # Also add all other stores at this location for the same product
+                all_at_loc = loc_prod_map.get((row['Location'], row['Input_Product']), [])
+                for k in all_at_loc:
+                    if k not in inp_keys:
+                        inp_keys.append(k)
+            
+            # Find ALL output stores for this location and output product
+            out_keys = loc_prod_map.get((row['Location'], row['Product_Class']), [])
+            
+            # For backward compatibility, also set single keys
+            inp_key = inp_keys[0] if inp_keys else None
+            out_key = out_keys[0] if out_keys else None
+            
+            return pd.Series([inp_key, out_key, inp_keys, out_keys])
 
-        df_make[['Input_Store_Key', 'Output_Store_Key']] = df_make.apply(resolve_make_keys, axis=1)
+        df_make[['Input_Store_Key', 'Output_Store_Key', 'Input_Store_Keys', 'Output_Store_Keys']] = df_make.apply(resolve_make_keys, axis=1)
 
         for col in ['Rate_TPH', 'Consumption_Pct', 'Step_Hours']:
             if col in df_make.columns:
