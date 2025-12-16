@@ -1,4 +1,4 @@
-# sim_run_grok_report_codegen.py
+# sim_run_report_codegen.py
 from pathlib import Path
 from datetime import datetime
 from pprint import pformat
@@ -7,30 +7,22 @@ import math
 
 def generate_standalone(settings, stores, makes, moves, demands, out_dir: Path):
     """
-    Generates a standalone Python script ('sim_outputs_simpy_model.py')
-    that reproduces the current simulation state without requiring Excel inputs.
+    Generates a standalone Python script ('sim_outputs_simpy_model.py').
     """
     ts = datetime.now().strftime('%Y-%m-%d %H:%M')
-
-    def _is_nan(x):
-        try:
-            return isinstance(x, float) and (math.isnan(x) or math.isinf(x))
-        except Exception:
-            return False
-
-    # Deep sanitization of objects to ensure valid Python code generation
-    # (Simplified for brevity - assumes objects are largely clean from Phase 2)
 
     def fmt(obj):
         return pformat(obj, width=100, indent=2, sort_dicts=False)
 
     code_lines = [
         '"""',
-        'sim_outputs_simpy_model.py — Standalone Grok simulation model',
+        'sim_outputs_simpy_model.py — Standalone simulation model',
         f'Generated on {ts}',
         '"""',
         '',
-        'from sim_run_grok_core import SupplyChainSimulation, StoreConfig, ProductionCandidate, MakeUnit, TransportRoute, Demand',
+        'from sim_run_core import SupplyChainSimulation',
+        # NEW: Import types from the types file in the generated code
+        'from sim_run_types import StoreConfig, ProductionCandidate, MakeUnit, TransportRoute, Demand',
         '',
         f'SETTINGS = {fmt(settings)}',
         '',
