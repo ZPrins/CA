@@ -87,8 +87,11 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
         # Ship Out (Load at Store)
         aggregate_flow((df_log["event"].isin(["Load", "ShipLoad"])) & (df_log["equipment"] == "Ship"), "Ship", "out")
 
-        # Production (Make)
+        # Production Output (Make) - material added TO store
         aggregate_flow((df_log["event"] == "Produce"), "Production", "in")
+        
+        # Production Consumption (Make) - material consumed FROM store for production
+        aggregate_flow((df_log["event"] == "Produce"), "Consumption", "out")
 
     # 3. Transport Timeline
     transport_fig = None
@@ -159,10 +162,15 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
                 fig.add_trace(go.Scatter(x=data["day"], y=data["Ship_out"], name="Ship Out (t)", mode='markers',
                                          marker=dict(symbol='triangle-up', size=10, color='#17becf')), secondary_y=True)
 
-            # Production
+            # Production Output
             if "Production_in" in data.columns and data["Production_in"].sum() > 0:
                 fig.add_trace(go.Scatter(x=data["day"], y=data["Production_in"], name="Production (t)",
                                          line=dict(color="#ff7f0e", dash="dash", width=1)), secondary_y=True)
+            
+            # Consumption (material consumed from this store for production)
+            if "Consumption_out" in data.columns and data["Consumption_out"].sum() > 0:
+                fig.add_trace(go.Scatter(x=data["day"], y=data["Consumption_out"], name="Consumption (t)",
+                                         line=dict(color="#d62728", dash="dashdot", width=1.5)), secondary_y=True)
 
             cap = data["capacity"].iloc[0]
             suppliers = supplier_map.get(store_key, [])
