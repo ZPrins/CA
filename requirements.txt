@@ -1,11 +1,15 @@
-pandas>=2.2.3
+# Core data + simulation
+pandas>=2.1
+simpy>=4.0
+openpyxl>=3.1
+
+# Reporting / plotting
+plotly>=5.20
+
+# Optional visualization utilities
 networkx>=3.1
 pyvis>=0.3.2,<0.4
 jinja2>=3.1
-simpy>=4.0
-openpyxl>=3.1
-openpyxl
-pandas
-plotly
-simpy
-flask
+
+# Web UI (optional)
+Flask>=3.0

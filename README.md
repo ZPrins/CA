@@ -1,24 +1,14 @@
-# Cement Australia – Rail/Ship Logistics Simulation (SimPy)
+# Cement Australia – Supply Chain Simulation (SimPy)
 
-This project models clinker production, milling, rail transport, port operations, and coastal shipping using SimPy. It includes:
-
-- A headless analytic simulation that prints KPIs and optionally plots inventory profiles (`Main SimPy V2.py`).
-- A Tkinter-based visualizer that animates trains and ships over a simple network map (`Main Visualizer.py`).
-
-The code is intentionally compact so planners and engineers can tweak parameters in one place (`Config` classes inside each script).
+Config-driven, modular simulation of production, storage, rail moves, and shipping. The model reads a normalized Excel workbook (or CSVs), builds a SimPy model, and writes HTML/CSV reports. An optional Flask web UI lets you run the sim from your browser.
 
 ---
 
-## 1) Quick Start
+## Quick start
 
 ### Prerequisites
-- Python 3.10 or newer (3.11/3.12 also fine).
-- Packages listed in `requirements.txt`.
-- Tkinter for the visualizer:
-  - Windows/macOS: usually bundled with the official Python installer.
-  - Ubuntu/Debian: `sudo apt-get install python3-tk`
-
-### Setup (recommended: virtual environment)
+- Python 3.10+
+- `pip install -r requirements.txt`
 
 Windows (PowerShell):
 ```powershell
@@ -38,205 +28,118 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### Run
-Analytic simulation (prints stats; can plot):
+### Run the simulation (CLI)
+- Default input is `generated_model_inputs.xlsx` (in the project root).
 ```bash
-python "Main SimPy V2.py"
+python sim_run.py
+# or explicitly
+python sim_run.py generated_model_inputs.xlsx
 ```
+Environment overrides (optional):
+```powershell
+$env:SIM_HORIZON_DAYS=90
+$env:SIM_RANDOM_OPENING=true
+$env:SIM_RANDOM_SEED=42
+python sim_run.py
+```
+Outputs are written to `sim_outputs/`:
+- `sim_outputs_plots_all.html` (Plotly HTML)
+- `sim_outputs_sim_log.csv` (action log)
+- `sim_outputs_inventory_daily.csv`, `sim_outputs_store_levels.csv`, `sim_outputs_unmet_demand.csv`
+- `sim_outputs_simpy_model.py` (standalone model snapshot)
 
-Visualizer (GUI animation):
+### Run the web UI (optional)
+A lightweight Flask app to kick off runs and download outputs.
 ```bash
-python "Main Visualizer.py"
+python app.py
+# Open http://localhost:5000
 ```
-
-If you see `No module named 'simpy'`, ensure you activated the virtual environment and installed requirements.
-
----
-
-## 2) Project Layout
-- `Main SimPy V2.py` — core year-long simulation with:
-  - `Config`: rates, capacities, downtimes, routes, and demands
-  - `DowntimeScheduler`: creates planned and unplanned downtime events
-  - Process functions: kiln, mill, train, ship, and destination demand
-  - `DataCollector`: time-series capture of inventory levels
-  - `run_simulation()`: entry point (duration, optional plotting)
-  - `print_statistics()` and `plot_results()`
-
-- `Main Visualizer.py` — lightweight animation with:
-  - `Config`: same physical parameters (no downtime logic here)
-  - `Visualizer`: simple map, tanks, and moving vehicle dots
-  - `VehicleTracker`: animates trains/ships between nodes
-  - SimPy processes: kiln, mill, train, ship, and demand
-  - `run_visual_simulation()`: entry point that opens a Tkinter window
-
-- `requirements.txt` — Python dependencies (SimPy, NumPy, Matplotlib). Tkinter is stdlib.
+- Streams progress live.
+- Shows a link to the generated HTML report and CSVs in `sim_outputs/`.
 
 ---
 
-## 3) Configuration Guide
-Tuning is centralized in the `Config` class at the top of each file. Key sections:
-
-- Production
-  - `KILN_MEAN_RATE`, `KILN_STD_DEV`
-  - `MILL_MEAN_RATE`, `MILL_STD_DEV`, and (V2) `MILL_CONVERSION_RATE`
-  - Downtime percents and derived annual hours (V2 only)
-
-- Storage
-  - `CL_CAPACITY`, `CL_INITIAL` (Railton clinker)
-  - `GP_R_CAPACITY`, `GP_R_INITIAL` (Railton GP)
-  - `GP_D_CAPACITY`, `GP_D_INITIAL` (Davenport GP)
-
-- Rail
-  - `TRAIN_CAPACITY`, `TRAINS_PER_DAY`, `TRAIN_TRAVEL_TIME`, `TRAIN_LOAD_TIME`, `TRAIN_UNLOAD_TIME`
-
-- Shipping
-  - `SHIPS`: max capacity, loading/unloading rates, travel time, frequency
-
-- Demand and destination stores
-  - `DESTINATIONS`/`DESTINATION` maps include capacity, initial stock, and `daily_demand`
-
-Tips:
-- Change one parameter at a time; rerun to see impacts on inventories and service levels.
-- Use the headless sim (V2) to assess KPIs; use the visualizer to communicate flows and constraints.
-
----
-
-## 4) Running the Analytic Simulation (V2)
-- Open `Main SimPy V2.py` and review `run_simulation()` defaults:
-  - `duration=8760` (hours, 1 year)
-  - `show_plot=True` to render Matplotlib charts for inventories
-- Start the sim:
-```bash
-python "Main SimPy V2.py"
-```
-- Outputs:
-  - Console statistics (production totals, rail shipments, stockouts)
-  - Optional plots: time-series of `CL`, `GP_Railton`, `GP_Davenport`, and destination stores
+## Project structure (key files)
+- `sim_run.py` — Orchestrates a run end-to-end (ingest → clean → factory → core → reports).
+- `sim_run_config.py` — Default runtime settings (output folder, plotting toggles, etc.).
+- Layer 1: Ingestion/cleaning
+  - `sim_run_data_ingest.py` — Reads a single Excel or split CSVs into DataFrames (case-insensitive sheet names).
+  - `sim_run_data_clean.py` — Normalizes columns and derives keys/payloads/times; resolves Store/Move/Demand linkages.
+- Layer 2: Object factory
+  - `sim_run_data_factory.py` — Builds `StoreConfig`, `MakeUnit`, `TransportRoute`, `Demand` objects.
+- Layer 3: Core simulation
+  - `sim_run_core.py` — Simulation container: builds stores, starts make/move/deliver processes, logging and snapshots.
+  - `sim_run_core_store.py` — Store building helpers.
+  - `sim_run_core_make.py` — Production logic with selectable output choice rule.
+  - `sim_run_core_move_train.py` — Rail transport logic.
+  - `sim_run_core_move_ship.py` — Ship transport logic and berth handling.
+  - `sim_run_core_deliver.py` — Continuous demand draw from destination stores.
+  - `sim_run_types.py` — Dataclasses used across layers.
+- Reporting
+  - `sim_run_report_csv.py` — Writes CSV outputs.
+  - `sim_run_report_plot.py` — Generates Plotly HTML with inventory and flow markers.
+  - `sim_run_report_codegen.py` — Emits a standalone snapshot of the built model.
+- Web UI
+  - `app.py` — Simple Flask app that runs `sim_run.py` and serves the report/CSVs.
+  - `templates/index.html` — Minimal UI template.
+- Utilities / extras
+  - `supply_chain_viz.py` — Graph + input-prep utilities (uses NetworkX/PyVis) to help build the workbook.
+  - `lib/*` — Static JS/CSS assets used by the report or tools.
 
 ---
 
-## 5) Running the Visualizer
-- The visualizer simplifies some dynamics and focuses on animation:
-```bash
-python "Main Visualizer.py"
-```
-- Window shows:
-  - Nodes: Railton, Davenport, Osborne, Newcastle, MCF
-  - Lines: rail (solid), sea (dashed)
-  - Tanks: inventory bars that change color (low = red, normal = orange, high = green)
-  - Vehicles: red dot (train), blue dots (ships)
+## Inputs and data rules
+- Supported input: a single Excel workbook (recommended) or separate CSV files per sheet.
+- Recognized sheet names (case-insensitive): `Settings`, `Store`, `Make`, `Deliver`, `Move_TRAIN`, `Move_SHIP`, `SHIP_ROUTES`, `SHIP_BERTHS`, `SHIP_DISTANCES`, `Network`.
 
-If the window freezes, ensure you are not running it inside a non-GUI terminal environment. On Windows, prefer running from a standard terminal.
+### Store keys
+Each store is identified by `"{Product_Class}|{Location}|{Equipment}|{Product_Class}"` and is built from `Store` rows.
 
----
+### Train origin/destination selection
+- Move_TRAIN may specify `Origin Store` and `Destination Store`.
+  - When present, the cleaner resolves these to exact store keys and uses them as the sole candidates for that route.
+  - When absent or unresolvable, it falls back to all stores for `(Location, Product_Class)` and preserves the row order from the `Store` sheet.
+- Practical example: Railton → Devonport with `Origin Store = GP_STORE_ST` will source strictly from `GP_STORE_ST`.
 
-## 6) Interpreting Results
-- Watch for persistent low inventory (red) at destinations → increase ship frequency, capacity, or port stock; or boost rail throughput.
-- High, persistent levels near capacity indicate potential overproduction or insufficient transport.
-- Use downtime parameters (V2) to examine robustness to outages.
+### Rail full-load rule
+Train moves require full payloads by default (`require_full_payload=True`). A train will only start loading if both are true:
+- Origin store has at least one full payload available; and
+- Destination store has at least one full payload worth of free capacity.
+If either condition is not met, the process waits and retries. This avoids blocked unloads.
 
----
+### Timing and payloads
+- If `Distance` is provided (km) and `To_Min/Back_Min` are empty, speeds fill the travel times.
+- Payload is derived from `# Carraiges` × `# Carraige Capacity (ton)` (supports common column variants).
 
-## 7) Troubleshooting
-- `ModuleNotFoundError: No module named 'simpy'`
-  - Activate venv and run `pip install -r requirements.txt`.
-- `ImportError: No module named '_tkinter'` (Linux)
-  - `sudo apt-get install python3-tk` and reinstall Python if needed.
-- Matplotlib backend issues (servers/WSL)
-  - Use `matplotlib.use('Agg')` for headless plots or run on a GUI-capable machine.
-- Unicode/Path issues on Windows
-  - Keep the project path as provided or wrap it in quotes when running from the terminal.
+### Demand
+- `Deliver` sheet supports either `Annual Demand (Tons)` (converted to hourly) or `Demand per Location/Hour`.
 
 ---
 
-## 8) Reproducibility & Randomness
-Both scripts use Python's `random` (and NumPy in V2 for plotting). For reproducible runs, seed the RNG at the top of the script before creating the environment, e.g.:
-```python
-import random
-random.seed(42)
-```
+## Configuration tips
+- See `sim_run_config.py` for defaults. Common keys:
+  - `horizon_days` (int)
+  - `require_full_payload` (bool, default True for both Train/Ship in this build)
+  - `debug_full_payload` (bool)
+  - `demand_truck_load_tons`, `demand_step_hours`
+  - `write_plots`, `autoscale_default`, `out_dir`
+- Environment variables used by `sim_run.py` (take precedence if set):
+  - `SIM_HORIZON_DAYS`, `SIM_RANDOM_OPENING`, `SIM_RANDOM_SEED`
 
 ---
 
-## 9) Extending the Model (Ideas)
-- Add multiple berths at Davenport with a `simpy.Resource` capacity > 1.
-- Introduce weather delays or loading constraints by season.
-- Calibrate demand time-series rather than constant daily demand.
-- Model multiple trains or stochastic train departures.
-- Add cost/CO2 KPIs, service level penalties, and optimization loops.
+## Troubleshooting
+- `FileNotFoundError: generated_model_inputs.xlsx`
+  - Ensure the file exists in the project root or pass a path to `sim_run.py`.
+- `ImportError` for Excel engine when reading `.xlsx`
+  - `pip install openpyxl` (included via `requirements.txt`).
+- No trains appear to move
+  - Check that payload and load/unload rates are positive in `Move_TRAIN`.
+  - Ensure origin/destination store keys resolve (see selection rules above).
+- Report HTML is empty
+  - Ensure `write_plots` is enabled in `sim_run_config.py`.
 
 ---
 
-## 10) License and Attribution
-- Add a license file if the model will be shared externally (e.g., MIT/Apache-2.0).
-- Attribution: internal model for Cement Australia logistics; built with SimPy.
-
-
----
-
-## 11) New: Config‑driven Excel‑based simulation (no CLI needed)
-
-This repository now includes a SimPy model that builds itself from a normalized Excel workbook and a double‑clickable runner. Use this when you want to simulate directly from your `Model Inputs.xlsx` (via a generated workbook) without passing command‑line flags.
-
-### What’s included
-- `sim_from_generated.py` — builds a SimPy model from a generated workbook (sheets: `Network`, `Settings`, `Make`, `Store`, `Move`, `Deliver`/`Delivery`).
-- `sim_config.py` — a simple `Config` dataclass where you set your input file and options.
-- `sim_run.py` — a runner that reads `sim_config.Config` and executes the simulation; friendly to double‑click on Windows.
-- `supply_chain_viz.py` — utilities to normalize/prepare inputs and (optionally) generate `generated_model_inputs.xlsx` from `Model Inputs.xlsx`.
-
-### Typical workflow (no command line)
-1) Open `sim_config.py` and adjust settings:
-   - `in_xlsx`: path to your generated workbook (default: `generated_model_inputs.xlsx`).
-   - `product_class`: e.g., `"GP"` or `None` for all.
-   - `override_days`: force horizon if you don’t want to use the `Settings` sheet value.
-   - `write_csvs`, `open_folder_after`, `pause_on_finish`.
-   - `auto_generate=True`: if `in_xlsx` is missing, `sim_run.py` will generate it from `Model Inputs.xlsx`.
-2) Double‑click `sim_run.py` in Explorer.
-   - The runner loads the config, optionally generates `generated_model_inputs.xlsx`, builds the model, runs it, and prints a summary.
-   - If configured, it writes CSVs to `sim_outputs/` and opens that folder.
-
-### What the simulation reads
-- `Network` — topology of `Equipment@Location` nodes and process transitions (`Process`, `Input`, `Output`, `Next Location`, `Next Equipment`).
-- `Settings` — `Number of Simulation Runs`, `Modeling Horizon (#Days)`, `Time Buckets (Days, Half Days, Hours)`.
-- `Make` — per `(Location, Equipment Name, Input)` optional parameters such as `Mean Production Rate (Tons/hr)` and `Consumption %`.
-- `Store` — capacities and opening stocks (high/low averaged) per `(Location, Equipment Name, Input)`.
-- `Move` — fleet sizing and timing: `#Equipment (99-unlimited)`, `#Parcels`, `Capacity Per Parcel`, `Load Rate (Ton/hr)`, `Travel to Time (Min)`, `Unload Rate (Ton/Hr)`, `Travel back Time (Min)` for each `(Product Class, Location, Equipment Name, Next Location)`.
-- `Deliver` (or `Delivery`) — demand per location, e.g., `Demand per Location`.
-
-If some sheets/columns are missing, sensible defaults are applied (e.g., store capacity very large, opening stock 0, make rate 0, consumption 100%, zero move rates/times, demand 0).
-
-### Outputs you’ll see
-- Console report when the run finishes:
-  - Ending stock levels for each store (`PC | Location | Equipment | Input`).
-  - Unmet demand totals per `(PC, Location, Input)` if any.
-  - Route stats: trips completed and tons moved for each move lane.
-- Optional CSVs (if `write_csvs=True`) saved under `sim_outputs/`.
-
-### Advanced: run the builder directly (optional CLI)
-You can still run the builder head‑on if you prefer a terminal:
-```bash
-python sim_from_generated.py --xlsx "generated_model_inputs.xlsx" --product-class GP --days 60
-```
-If `--days` isn’t provided, the horizon comes from the `Settings` sheet. If `--product-class` is omitted, all product classes are included.
-
-### Generating the workbook
-If you only have `Model Inputs.xlsx`, you can create the normalized workbook using the runner with `auto_generate=True` (default) or manually via `supply_chain_viz`:
-```python
-from pathlib import Path
-from supply_chain_viz import prepare_inputs_generate
-prepare_inputs_generate(Path("Model Inputs.xlsx"), Path("generated_model_inputs.xlsx"))
-```
-This copies relevant sheets, unifies `Deliver`/`Delivery`, and ensures required rows/columns exist.
-
-### Requirements
-- See `requirements.txt` (typically includes `simpy`, `pandas`, `openpyxl`, and visualization extras for `supply_chain_viz.py`).
-- On Windows, double‑clicking `sim_run.py` works best when `.py` files are associated with your Python interpreter.
-
-### Troubleshooting (this flow)
-- `RuntimeError: simpy isn't installed` — activate your venv and `pip install -r requirements.txt`.
-- `FileNotFoundError: generated_model_inputs.xlsx` — leave `auto_generate=True` or run the generation step above.
-- Demand doesn’t draw — ensure `Deliver` has a `Demand per Location` column and the locations exist as `Store` nodes for the same product class/input.
-- Nothing moves — check `Move` sheet parameters (payload, load/unload rates, travel times). Zero rates/times result in no effective movement.
-
-### Roadmap
-Future enhancements may include maintenance calendars for `Make`, batching/queueing at loaders/unloaders, multi‑material transport, stochastic variability, and CSV metrics logging per time bucket.
+## License / attribution
+Internal model for Cement Australia logistics. Built with SimPy and Plotly. See `requirements.txt` for third‑party packages.
