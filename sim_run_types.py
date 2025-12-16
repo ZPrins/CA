@@ -17,6 +17,8 @@ class ProductionCandidate:
     in_store_key: Optional[str] = None
     rate_tph: float = 0.0
     consumption_pct: float = 1.0
+    in_store_keys: Optional[List[str]] = None
+    out_store_keys: Optional[List[str]] = None
 
 @dataclass
 class MakeUnit:
