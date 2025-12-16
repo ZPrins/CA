@@ -17,7 +17,7 @@ class Config:
     demand_step_hours: float = 1.0
 
     # Transport policy
-    require_full_payload: bool = False    # CHANGED: Allow partial loads so trains aren't stuck!
+    require_full_payload: bool = True     # Enforce full loads only - no partial movements
     debug_full_payload: bool = True       # Keep enabled to see decisions
 
     # Output settings
