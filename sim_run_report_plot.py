@@ -358,22 +358,35 @@ def _generate_ship_timeline_by_route_group(df_log: pd.DataFrame) -> List[go.Figu
     # Create Location|Product label for Y-axis
     moves['loc_product'] = moves['location'].fillna('') + '|' + moves['product'].fillna('')
 
-    # Map numeric route_ids (like 1.1, 2.1) to route groups
-    # Route 1.x = North, 2.x = South, 3.x = Import_CL, 4.x = Import_GBFS
+    # Map numeric route_ids to route groups based on integer prefix
+    # 1.x or 2 (integer) = North, 2.x = South, 3.x = Import_CL, 4.x = Import_GBFS
     def get_route_group(route_id):
         if pd.isna(route_id):
             return 'Unknown'
-        route_str = str(route_id)
-        if route_str.startswith('1.'):
-            return 'North'
-        elif route_str.startswith('2.'):
-            return 'South'
-        elif route_str.startswith('3.'):
-            return 'Import_CL'
-        elif route_str.startswith('4.'):
-            return 'Import_GBFS'
+        route_str = str(route_id).strip()
+        # Extract integer prefix (before decimal)
+        if '.' in route_str:
+            prefix = route_str.split('.')[0]
         else:
-            return route_str  # Fall back to original value (for legacy data)
+            prefix = route_str
+        try:
+            prefix_int = int(float(prefix))
+            if prefix_int == 1:
+                return 'North'
+            elif prefix_int == 2:
+                # Check if it's 2.x (South) or just 2 (North - Route 10)
+                if '.' in route_str:
+                    return 'South'
+                else:
+                    return 'North'  # Route ID "2" without decimal is North (Route 10)
+            elif prefix_int == 3:
+                return 'Import_CL'
+            elif prefix_int == 4:
+                return 'Import_GBFS'
+            else:
+                return f'Route_{prefix_int}'
+        except:
+            return 'Unknown'
     
     moves['route_group'] = moves['route_id'].apply(get_route_group)
     route_groups = moves['route_group'].dropna().unique()
