@@ -404,7 +404,7 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
                 if unit_key and unit_key not in added_mfg:
                     fig = manufacturing_figs.get(unit_key)
                     if fig:
-                        content.append({"type": "fig", "fig": fig, "title": f"Manufacturing: {unit_key}", "category": "manufacturing"})
+                        content.append({"type": "fig", "fig": fig, "title": f"Manufacturing: {unit_key}", "category": "manufacturing", "location": loc})
                         added_mfg.add(unit_key)
             
             elif proc == 'Store':
@@ -412,7 +412,7 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
                 if key in store_by_loc_name:
                     for (sk, product) in store_by_loc_name[key]:
                         if sk not in added_stores:
-                            content.append({"type": "fig", "fig": store_figs[sk], "category": "inventory", "product": product})
+                            content.append({"type": "fig", "fig": store_figs[sk], "category": "inventory", "product": product, "location": loc})
                             added_stores.add(sk)
     
     # Add any remaining manufacturing/store graphs not in the sequence
@@ -420,14 +420,15 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
     remaining_mfg = [uk for uk in manufacturing_figs.keys() if uk not in added_mfg]
     
     if remaining_stores or remaining_mfg:
+        location_order.append("Other")
         content.append({"type": "header", "location": "Other", "category": "inventory"})
         for unit_key in sorted(remaining_mfg):
             fig = manufacturing_figs[unit_key]
-            content.append({"type": "fig", "fig": fig, "title": f"Manufacturing: {unit_key}", "category": "manufacturing"})
+            content.append({"type": "fig", "fig": fig, "title": f"Manufacturing: {unit_key}", "category": "manufacturing", "location": "Other"})
         for (sk, product) in sorted(remaining_stores):
-            content.append({"type": "fig", "fig": store_figs[sk], "category": "inventory", "product": product})
+            content.append({"type": "fig", "fig": store_figs[sk], "category": "inventory", "product": product, "location": "Other"})
 
-    _generate_html_report(sim, out_dir, content, sorted(all_products))
+    _generate_html_report(sim, out_dir, content, sorted(all_products), location_order)
 
 
 def _generate_transport_plot(df_log: pd.DataFrame, equipment_type: str = None) -> go.Figure:
@@ -844,13 +845,15 @@ def _generate_vessel_state_chart(df_log: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def _generate_html_report(sim, out_dir: Path, content: list, products: list = None):
+def _generate_html_report(sim, out_dir: Path, content: list, products: list = None, locations: list = None):
     html_path = out_dir / "sim_outputs_plots_all.html"
     total_unmet = sum(sim.unmet.values())
     run_time = datetime.now().strftime("%Y-%m-%d %H:%M")
     products = products or []
+    locations = locations or []
 
     product_buttons = ''.join([f'<button class="filter-btn product-btn" data-product="{p}" onclick="toggleProduct(\'{p}\')">{p}</button>' for p in products])
+    location_buttons = ''.join([f'<button class="filter-btn location-btn" data-location="{loc}" onclick="toggleLocation(\'{loc}\')">{loc}</button>' for loc in locations])
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -902,6 +905,9 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
             <div class="filter-divider"></div>
             <span class="filter-label">Products:</span>
             {product_buttons}
+            <div class="filter-divider"></div>
+            <span class="filter-label">Locations:</span>
+            {location_buttons}
         </div>
     </div>
     <div class="content">
@@ -912,21 +918,29 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
     for item in content:
         category = item.get("category", "")
         product = item.get("product", "")
+        location = item.get("location", "")
         if item["type"] == "header":
-            html += f'<h2 class="section-header" data-category="{category}">Location: {item["location"]}</h2>'
+            html += f'<h2 class="section-header" data-category="{category}" data-location="{location}">Location: {location}</h2>'
         elif item["type"] == "fig" and item.get("fig"):
             title = item.get("title", "")
             if title:
-                html += f'<h3 class="plot-title" data-category="{category}" data-product="{product}">{title}</h3>'
-            html += f'<div id="plot-{div_id}" class="plot" data-category="{category}" data-product="{product}"></div><script>Plotly.newPlot("plot-{div_id}", {item["fig"].to_json()});</script>'
+                html += f'<h3 class="plot-title" data-category="{category}" data-product="{product}" data-location="{location}">{title}</h3>'
+            html += f'<div id="plot-{div_id}" class="plot" data-category="{category}" data-product="{product}" data-location="{location}"></div><script>Plotly.newPlot("plot-{div_id}", {item["fig"].to_json()});</script>'
             div_id += 1
 
     html += """</div><div class="footer"><p>Generated by sim_run_report_plot.py</p></div>
     <script>
     const categoryState = { inventory: true, manufacturing: true, shipping: true };
     const productState = {};
+    const locationState = {};
+    
     document.querySelectorAll('.product-btn').forEach(btn => {
         productState[btn.dataset.product] = true;
+        btn.classList.add('active');
+    });
+    
+    document.querySelectorAll('.location-btn').forEach(btn => {
+        locationState[btn.dataset.location] = true;
         btn.classList.add('active');
     });
 
@@ -941,14 +955,22 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         document.querySelector(`[data-product="${prod}"].filter-btn`).classList.toggle('active', productState[prod]);
         applyFilters();
     }
+    
+    function toggleLocation(loc) {
+        locationState[loc] = !locationState[loc];
+        document.querySelector(`[data-location="${loc}"].filter-btn`).classList.toggle('active', locationState[loc]);
+        applyFilters();
+    }
 
     function applyFilters() {
         document.querySelectorAll('.plot, .plot-title, .section-header').forEach(el => {
             const cat = el.dataset.category;
             const prod = el.dataset.product || '';
+            const loc = el.dataset.location || '';
             let show = true;
             if (cat && !categoryState[cat]) show = false;
             if (prod && !productState[prod]) show = false;
+            if (loc && !locationState[loc]) show = false;
             el.classList.toggle('hidden', !show);
         });
     }
