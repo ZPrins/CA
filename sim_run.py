@@ -274,11 +274,6 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
         data_elapsed = int(time.time() - data_start)
         log(f"Report data prepared ({data_elapsed}s)")
         
-        csv_start = time.time()
-        write_csv_outputs(sim, out_dir, report_data)
-        csv_elapsed = int(time.time() - csv_start)
-        log(f"CSV outputs written to {out_dir} ({csv_elapsed}s)")
-        
         # Get graph sequence from Network sheet for proper ordering
         network_df = raw_data.get('Network', pd.DataFrame())
         graph_sequence = []
@@ -298,6 +293,11 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
         plot_results(sim, out_dir, moves, makes, graph_sequence, report_data)
         html_elapsed = int(time.time() - html_start)
         log(f"Interactive HTML report generated ({html_elapsed}s)")
+        
+        csv_start = time.time()
+        write_csv_outputs(sim, out_dir, report_data)
+        csv_elapsed = int(time.time() - csv_start)
+        log(f"CSV outputs written to {out_dir} ({csv_elapsed}s)")
         
         model_start = time.time()
         generate_standalone(settings, stores_cfg, makes, moves, demands, out_dir)
