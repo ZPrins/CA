@@ -72,6 +72,21 @@ def get_model_params():
     return jsonify(load_model_params())
 
 
+TEMP_OVERRIDES_FILE = 'temp_model_overrides.json'
+
+
+@app.route('/api/save-params', methods=['POST'])
+def save_params():
+    """Save user-modified parameters to a temp file for simulation to use."""
+    try:
+        data = request.get_json() or {}
+        with open(TEMP_OVERRIDES_FILE, 'w') as f:
+            json.dump(data, f)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
 @app.route('/run-simulation', methods=['POST'])
 def run_simulation():
     try:

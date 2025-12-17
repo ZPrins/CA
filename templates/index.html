@@ -441,6 +441,17 @@
             const statusBadge = document.getElementById('statusBadge');
             const resultsCard = document.getElementById('resultsCard');
             
+            // Save modified parameters before running simulation
+            try {
+                await fetch('/api/save-params', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(modelParams)
+                });
+            } catch (err) {
+                console.error('Failed to save params:', err);
+            }
+            
             // Reset UI
             outputLog.textContent = '';
             outputCard.style.display = 'block';

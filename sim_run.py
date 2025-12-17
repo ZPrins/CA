@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 import pandas as pd
 
 # Data Loading Modules
@@ -15,6 +16,58 @@ from sim_run_core import SupplyChainSimulation
 from sim_run_report_csv import write_csv_outputs
 from sim_run_report_plot import plot_results
 from sim_run_report_codegen import generate_standalone
+
+TEMP_OVERRIDES_FILE = 'temp_model_overrides.json'
+
+
+def apply_ui_overrides(raw_data: dict) -> dict:
+    """Apply user overrides from the UI to the raw data before cleaning."""
+    if not os.path.exists(TEMP_OVERRIDES_FILE):
+        return raw_data
+    
+    try:
+        with open(TEMP_OVERRIDES_FILE, 'r') as f:
+            overrides = json.load(f)
+        
+        # Apply Store overrides
+        if 'store' in overrides and 'Store' in raw_data and not raw_data['Store'].empty:
+            df = raw_data['Store'].copy()
+            for i, override in enumerate(overrides['store']):
+                if i < len(df):
+                    # Map UI field names to DataFrame column names
+                    if 'Silo Max Capacity' in override:
+                        df.loc[df.index[i], 'Silo Max Capacity'] = override['Silo Max Capacity']
+                    if 'Silo Opening Stock (High)' in override:
+                        df.loc[df.index[i], 'Silo Opening Stock (High)'] = override['Silo Opening Stock (High)']
+                    if 'Silo Opening Stock (Low)' in override:
+                        df.loc[df.index[i], 'Silo Opening Stock (Low)'] = override['Silo Opening Stock (Low)']
+                    if 'Load Rate (ton/hr)' in override:
+                        df.loc[df.index[i], 'Load Rate (ton/hr)'] = override['Load Rate (ton/hr)']
+                    if 'Unload Rate (ton/hr)' in override:
+                        df.loc[df.index[i], 'Unload Rate (ton/hr)'] = override['Unload Rate (ton/hr)']
+            raw_data['Store'] = df
+            print(f"  [INFO] Applied UI overrides to Store data ({len(overrides['store'])} rows)")
+        
+        # Apply Move_SHIP overrides
+        if 'move_ship' in overrides and 'Move_SHIP' in raw_data and not raw_data['Move_SHIP'].empty:
+            df = raw_data['Move_SHIP'].copy()
+            for i, override in enumerate(overrides['move_ship']):
+                if i < len(df):
+                    if '# Vessels' in override:
+                        df.loc[df.index[i], '# Vessels'] = override['# Vessels']
+                    if 'Route avg Speed (knots)' in override:
+                        df.loc[df.index[i], 'Route avg Speed (knots)'] = override['Route avg Speed (knots)']
+                    if '#Hulls' in override:
+                        df.loc[df.index[i], '#Hulls'] = override['#Hulls']
+                    if 'Payload per Hull' in override:
+                        df.loc[df.index[i], 'Payload per Hull'] = override['Payload per Hull']
+            raw_data['Move_SHIP'] = df
+            print(f"  [INFO] Applied UI overrides to Move_SHIP data ({len(overrides['move_ship'])} rows)")
+        
+    except Exception as e:
+        print(f"  [WARNING] Failed to apply UI overrides: {e}")
+    
+    return raw_data
 
 
 def _check_supply_sources(stores_cfg, makes, moves, demands):
@@ -81,6 +134,10 @@ def main():
 
     # 1. Load & Clean
     raw_data = load_data_frames(INPUT_FILE)
+    
+    # Apply any UI overrides before cleaning
+    raw_data = apply_ui_overrides(raw_data)
+    
     settings = get_config_map(raw_data.get('Settings', pd.DataFrame()))
     clean_data = clean_all_data(raw_data)
 
