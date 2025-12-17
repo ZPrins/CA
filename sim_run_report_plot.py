@@ -823,7 +823,7 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
     <div class="sticky-header">
         <div class="header-top">
             <h1>Cement Australia Supply Chain Simulation</h1>
-            <div><button class="run-btn" id="runBtn" onclick="runSimulation()">Run New Simulation</button><span id="status"></span></div>
+            <div><button class="run-btn" id="runBtn" onclick="runSimulation()">Run Single Simulation</button><span id="status"></span></div>
         </div>
         <div class="filter-bar">
             <span class="filter-label">Categories:</span>
@@ -899,12 +899,12 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
             } else {
                 status.textContent = 'Error: ' + (result.output || 'Unknown error');
                 btn.disabled = false;
-                btn.textContent = 'Run New Simulation';
+                btn.textContent = 'Run Single Simulation';
             }
         } catch (err) {
             status.textContent = 'Error: ' + err.message;
             btn.disabled = false;
-            btn.textContent = 'Run New Simulation';
+            btn.textContent = 'Run Single Simulation';
         }
     }
     </script></body></html>"""
