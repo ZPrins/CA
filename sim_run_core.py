@@ -83,7 +83,9 @@ class SupplyChainSimulation:
                 require_full=self.settings.get("require_full_payload", True),
                 demand_rates=self.demand_rate_map,
                 vessel_id=vessel_id,
-                sole_supplier_stores=getattr(self, 'sole_supplier_stores', None)
+                sole_supplier_stores=getattr(self, 'sole_supplier_stores', None),
+                production_rates=getattr(self, 'production_rate_map', None),
+                store_capacities=getattr(self, 'store_capacity_map', None)
             )
         else:  # TRAIN
             yield from _transporter_train(
@@ -139,6 +141,23 @@ class SupplyChainSimulation:
             )
             res = simpy.Resource(self.env, capacity=1)
             self.env.process(self.producer(res, merged_unit))
+
+        self.production_rate_map = {}
+        for unit in makes:
+            if hasattr(unit, 'candidates') and unit.candidates:
+                for cand in unit.candidates:
+                    out_key = getattr(cand, 'out_store_key', None)
+                    rate = float(getattr(cand, 'rate_tph', 0.0) or 0.0)
+                    if out_key and rate > 0:
+                        current = self.production_rate_map.get(out_key, 0.0)
+                        self.production_rate_map[out_key] = current + rate
+
+        self.store_capacity_map = {}
+        for sc in stores_cfg:
+            key = getattr(sc, 'key', None)
+            cap = float(getattr(sc, 'capacity', 0.0) or 0.0)
+            if key and cap > 0:
+                self.store_capacity_map[key] = cap
 
         # Build sole_supplier_stores: stores that only have ONE ship route serving them
         # These get a bonus in route selection to ensure they're not starved

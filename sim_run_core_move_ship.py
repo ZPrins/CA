@@ -81,13 +81,16 @@ def _get_start_location(itinerary: List[Dict]) -> Optional[str]:
 def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Container],
                            payload_per_hull: float, n_hulls: int, demand_rates: Dict[str, float],
                            nm_distances: Dict, speed_knots: float, berth_info: Dict,
-                           sole_supplier_stores: Optional[set] = None) -> Tuple[float, float, float]:
+                           sole_supplier_stores: Optional[set] = None,
+                           production_rates: Optional[Dict[str, float]] = None,
+                           store_capacities: Optional[Dict[str, float]] = None) -> Tuple[float, float, float, float]:
     """
-    Score a route based on utilization, urgency, and travel time.
-    Returns (score, utilization_pct, urgency_score)
+    Score a route based on utilization, urgency, travel time, and origin overflow risk.
+    Returns (score, utilization_pct, urgency_score, overflow_bonus)
     
     sole_supplier_stores: Set of store keys that only have ONE route serving them.
-    Routes serving these stores get a bonus to ensure they get selected occasionally.
+    production_rates: Dict mapping store_key -> production rate (tons/hour) INTO that store.
+    store_capacities: Dict mapping store_key -> capacity.
     """
     load_steps = [s for s in itinerary if s.get('kind') == 'load']
     unload_steps = [s for s in itinerary if s.get('kind') == 'unload']
@@ -114,12 +117,27 @@ def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contai
                 step_urgency = max(0, 10 - days_of_stock)
                 urgency = max(urgency, step_urgency)
                 
-                # Bonus for sole supplier routes - stronger when stock is low
-                # Use 60-day threshold to ensure these routes get selected before running out
                 if sole_supplier_stores and sk in sole_supplier_stores:
                     if days_of_stock < 60:
-                        # Strong bonus that can compete with high-utilization routes
                         sole_supplier_bonus = max(sole_supplier_bonus, 100 * (1 - days_of_stock / 60))
+    
+    overflow_bonus = 0.0
+    prod_rates = production_rates or {}
+    capacities = store_capacities or {}
+    for step in load_steps:
+        sk = step.get('store_key')
+        if sk and sk in stores:
+            level = float(stores[sk].level)
+            prod_rate = prod_rates.get(sk, 0.0)
+            capacity = capacities.get(sk, float('inf'))
+            
+            if prod_rate > 0 and capacity < float('inf'):
+                space_left = capacity - level
+                hours_to_full = space_left / prod_rate if prod_rate > 0 else float('inf')
+                fill_pct = level / capacity
+                
+                if fill_pct > 0.50:
+                    overflow_bonus = max(overflow_bonus, 150 * (fill_pct - 0.50) / 0.50)
     
     travel_time = 0.0
     sail_steps = [s for s in itinerary if s.get('kind') == 'sail']
@@ -132,9 +150,9 @@ def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contai
             pilot_in = _get_pilot_hours(berth_info, to_loc, 'in')
             travel_time += (nm / max(speed_knots, 1.0)) + pilot_out + pilot_in
     
-    score = (utilization * 50) + (urgency * 30) + sole_supplier_bonus - (travel_time * 0.1)
+    score = (utilization * 50) + (urgency * 30) + sole_supplier_bonus + overflow_bonus - (travel_time * 0.1)
     
-    return (score, utilization, urgency)
+    return (score, utilization, urgency, overflow_bonus)
 
 
 def transporter(env: simpy.Environment, route: TransportRoute,
@@ -145,12 +163,16 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                 require_full: bool = True,
                 demand_rates: Optional[Dict[str, float]] = None,
                 vessel_id: int = 1,
-                sole_supplier_stores: Optional[set] = None):
+                sole_supplier_stores: Optional[set] = None,
+                production_rates: Optional[Dict[str, float]] = None,
+                store_capacities: Optional[Dict[str, float]] = None):
     """
     Main ship vessel process. This is called once per vessel by the simulation core.
     Follows the state machine: IDLE -> LOADING -> IN_TRANSIT -> WAITING_FOR_BERTH -> UNLOADING -> IDLE
     
     sole_supplier_stores: Set of store keys that only have ONE route serving them.
+    production_rates: Dict mapping store_key -> production rate (tons/hour) INTO that store.
+    store_capacities: Dict mapping store_key -> capacity.
     """
     if not getattr(route, 'itineraries', None):
         while True:
@@ -216,16 +238,21 @@ def transporter(env: simpy.Environment, route: TransportRoute,
             best_it = None
             best_score = -float('inf')
             
+            prod_rates = production_rates or {}
+            capacities = store_capacities or {}
+            
             for it in candidate_its:
-                score, util, _ = _calculate_route_score(
+                score, util, _, overflow_bonus = _calculate_route_score(
                     it, stores, payload_per_hull, n_hulls, 
                     demand_rates_map, nm_distances, speed_knots, berth_info,
-                    sole_supplier_stores
+                    sole_supplier_stores, prod_rates, capacities
                 )
                 
-                # Check if this route serves a sole-supplier store that's critically low
-                # If so, allow lower utilization (min 1 hull = 20% for 5-hull ship)
                 required_util = min_utilization
+                
+                if overflow_bonus > 60:
+                    required_util = 0.20
+                
                 if sole_supplier_stores:
                     for step in it:
                         if step.get('kind') == 'unload':
@@ -235,9 +262,8 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                 rate = demand_rates_map.get(sk, 0.0)
                                 if rate > 0:
                                     days_of_stock = level / (rate * 24)
-                                    # If less than 60 days stock at a sole-supplier dest, lower the bar
                                     if days_of_stock < 60:
-                                        required_util = 0.20  # Allow with just 1 hull
+                                        required_util = 0.20
                                         break
                 
                 if util >= required_util and score > best_score:
@@ -285,21 +311,35 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                         
                         already_loaded = sum(cargo.values())
                         remaining_cap = max(0, (n_hulls * payload_per_hull) - already_loaded)
-                        available = float(cont.level)
+                        hulls_remaining = int(remaining_cap // payload_per_hull)
                         
-                        # Round down to full hulls only (no partial hull loads)
-                        max_loadable = min(remaining_cap, available)
-                        full_hulls = int(max_loadable // payload_per_hull)
-                        qty_to_load = full_hulls * payload_per_hull
+                        total_loaded_this_stop = 0.0
+                        time_per_hull = payload_per_hull / max(load_rate, 1.0)
+                        max_wait_hours = 24.0
                         
-                        if qty_to_load >= payload_per_hull and cont.level >= qty_to_load:
-                            yield cont.get(qty_to_load)
-                            from_level = cont.level
-                            
-                            load_time = qty_to_load / max(load_rate, 1.0)
-                            yield env.timeout(load_time)
-                            
-                            cargo[product] = cargo.get(product, 0.0) + qty_to_load
+                        for hull_num in range(hulls_remaining):
+                            if cont.level >= payload_per_hull:
+                                yield cont.get(payload_per_hull)
+                                from_level = cont.level
+                                yield env.timeout(time_per_hull)
+                                total_loaded_this_stop += payload_per_hull
+                            elif total_loaded_this_stop > 0:
+                                waited = 0.0
+                                while cont.level < payload_per_hull and waited < max_wait_hours:
+                                    yield env.timeout(1.0)
+                                    waited += 1.0
+                                if cont.level >= payload_per_hull:
+                                    yield cont.get(payload_per_hull)
+                                    from_level = cont.level
+                                    yield env.timeout(time_per_hull)
+                                    total_loaded_this_stop += payload_per_hull
+                                else:
+                                    break
+                            else:
+                                break
+                        
+                        if total_loaded_this_stop > 0:
+                            cargo[product] = cargo.get(product, 0.0) + total_loaded_this_stop
                             
                             log_func(
                                 process="Move",
@@ -307,7 +347,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                 location=location,
                                 equipment="Ship",
                                 product=product,
-                                qty=qty_to_load,
+                                qty=total_loaded_this_stop,
                                 from_store=store_key,
                                 from_level=from_level,
                                 to_store=None,
