@@ -8,6 +8,23 @@ from datetime import datetime
 from sim_run_config import config
 
 
+def _merge_days_to_intervals(days: list) -> list:
+    """Merge consecutive days into (start, end) intervals to reduce vrect count."""
+    if not days:
+        return []
+    sorted_days = sorted(days)
+    intervals = []
+    start = end = sorted_days[0]
+    for d in sorted_days[1:]:
+        if d == end + 1:
+            end = d
+        else:
+            intervals.append((start, end))
+            start = end = d
+    intervals.append((start, end))
+    return intervals
+
+
 def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | None = None, graph_sequence: list | None = None, report_data: dict | None = None):
     if not config.write_plots: return
     
@@ -159,16 +176,16 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
                         store_downtime[day]["Breakdown"] += events.get("Breakdown", 0)
             
             if store_downtime:
-                # Maintenance days - add shaded regions behind all other traces
+                # Maintenance days - merge consecutive days into intervals
                 maint_days = [d for d in store_downtime if store_downtime[d].get("Maintenance", 0) > 0]
-                for maint_day in maint_days:
+                maint_intervals = _merge_days_to_intervals(maint_days)
+                for start, end in maint_intervals:
                     fig.add_vrect(
-                        x0=maint_day - 0.5, x1=maint_day + 0.5,
+                        x0=start - 0.5, x1=end + 0.5,
                         fillcolor="rgba(255, 152, 0, 0.15)",
                         layer="below",
                         line_width=0,
                     )
-                # Add invisible trace for legend
                 if maint_days:
                     fig.add_trace(go.Scatter(
                         x=[None], y=[None],
@@ -178,16 +195,16 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
                         showlegend=True
                     ), secondary_y=False)
                 
-                # Breakdown days (full day = 24 hours) - add red shaded regions
+                # Breakdown days - merge consecutive days into intervals
                 breakdown_days = [d for d in store_downtime if store_downtime[d].get("Breakdown", 0) >= 24]
-                for bd_day in breakdown_days:
+                breakdown_intervals = _merge_days_to_intervals(breakdown_days)
+                for start, end in breakdown_intervals:
                     fig.add_vrect(
-                        x0=bd_day - 0.5, x1=bd_day + 0.5,
+                        x0=start - 0.5, x1=end + 0.5,
                         fillcolor="rgba(244, 67, 54, 0.15)",
                         layer="below",
                         line_width=0,
                     )
-                # Add invisible trace for legend
                 if breakdown_days:
                     fig.add_trace(go.Scatter(
                         x=[None], y=[None],
@@ -524,15 +541,14 @@ def _generate_manufacturing_charts(df_log: pd.DataFrame) -> dict:
             max_prod = group['qty_t'].max() if not group.empty else 100
 
             maint_days = [d for d in unit_dt if unit_dt[d].get('Maintenance', 0) > 0]
-            # Add shaded regions for maintenance days behind all other traces
-            for maint_day in maint_days:
+            maint_intervals = _merge_days_to_intervals(maint_days)
+            for start, end in maint_intervals:
                 fig.add_vrect(
-                    x0=maint_day - 0.5, x1=maint_day + 0.5,
+                    x0=start - 0.5, x1=end + 0.5,
                     fillcolor="rgba(255, 152, 0, 0.2)",
                     layer="below",
                     line_width=0,
                 )
-            # Add invisible trace for legend
             if maint_days:
                 fig.add_trace(go.Scatter(
                     x=[None], y=[None],
@@ -542,16 +558,15 @@ def _generate_manufacturing_charts(df_log: pd.DataFrame) -> dict:
                     showlegend=True
                 ))
             
-            # Breakdown days (full day = 24 hours) - add red shaded regions
             breakdown_days = [d for d in unit_dt if unit_dt[d].get('Breakdown', 0) >= 24]
-            for bd_day in breakdown_days:
+            breakdown_intervals = _merge_days_to_intervals(breakdown_days)
+            for start, end in breakdown_intervals:
                 fig.add_vrect(
-                    x0=bd_day - 0.5, x1=bd_day + 0.5,
+                    x0=start - 0.5, x1=end + 0.5,
                     fillcolor="rgba(244, 67, 54, 0.2)",
                     layer="below",
                     line_width=0,
                 )
-            # Add invisible trace for legend
             if breakdown_days:
                 fig.add_trace(go.Scatter(
                     x=[None], y=[None],
