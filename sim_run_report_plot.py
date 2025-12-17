@@ -120,12 +120,14 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
     ship_route_group_figs = []
     vessel_state_fig = None
     fleet_util_fig = None
+    manufacturing_figs = {}
     if sim.action_log:
         df_log_all = pd.DataFrame(sim.action_log)
         train_transport_fig = _generate_transport_plot(df_log_all, equipment_type="Train")
         ship_route_group_figs = _generate_ship_timeline_by_route_group(df_log_all)
         vessel_state_fig = _generate_vessel_state_chart(df_log_all)
         fleet_util_fig = _generate_fleet_utilisation_chart(df_log_all)
+        manufacturing_figs = _generate_manufacturing_charts(df_log_all)
 
     # 4. Store Figures
     store_figs = {}
@@ -249,31 +251,46 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
 
             store_figs[store_key] = fig
 
-    # 5. HTML Generation
+    # 5. Collect all products from inventory data for filters
+    all_products = set()
+    if not df_inv.empty:
+        for sk in df_inv["store_key"].unique():
+            parts = str(sk).split("|")
+            if len(parts) >= 4:
+                all_products.add(parts[3])
+
+    # 6. HTML Generation
     content = []
+
     if train_transport_fig:
-        content.append({"type": "fig", "fig": train_transport_fig, "title": "Rail Transport Timeline"})
+        content.append({"type": "fig", "fig": train_transport_fig, "title": "Rail Transport Timeline", "category": "shipping"})
     
     if fleet_util_fig:
-        content.append({"type": "fig", "fig": fleet_util_fig, "title": "Ship Fleet Utilization"})
+        content.append({"type": "fig", "fig": fleet_util_fig, "title": "Ship Fleet Utilization", "category": "shipping"})
     
     if vessel_state_fig:
-        content.append({"type": "fig", "fig": vessel_state_fig, "title": "Fleet State Over Time"})
+        content.append({"type": "fig", "fig": vessel_state_fig, "title": "Fleet State Over Time", "category": "shipping"})
     
     for route_group, fig in ship_route_group_figs:
-        content.append({"type": "fig", "fig": fig, "title": f"Ship Route: {route_group}"})
+        content.append({"type": "fig", "fig": fig, "title": f"Ship Route: {route_group}", "category": "shipping"})
+
+    for unit_key in sorted(manufacturing_figs.keys()):
+        fig = manufacturing_figs[unit_key]
+        content.append({"type": "fig", "fig": fig, "title": f"Manufacturing: {unit_key}", "category": "manufacturing"})
 
     if not df_inv.empty:
         df_inv["location_only"] = df_inv["store_key"].apply(
             lambda sk: str(sk).split("|")[1] if "|" in str(sk) else "Other")
         for loc in sorted(df_inv["location_only"].unique()):
-            content.append({"type": "header", "location": loc})
+            content.append({"type": "header", "location": loc, "category": "inventory"})
             loc_stores = df_inv[df_inv["location_only"] == loc]["store_key"].unique()
             for sk in sorted(loc_stores):
                 if sk in store_figs:
-                    content.append({"type": "fig", "fig": store_figs[sk]})
+                    parts = str(sk).split("|")
+                    product = parts[3] if len(parts) >= 4 else "Other"
+                    content.append({"type": "fig", "fig": store_figs[sk], "category": "inventory", "product": product})
 
-    _generate_html_report(sim, out_dir, content)
+    _generate_html_report(sim, out_dir, content, sorted(all_products))
 
 
 def _generate_transport_plot(df_log: pd.DataFrame, equipment_type: str = None) -> go.Figure:
@@ -411,6 +428,88 @@ def _generate_ship_timeline_by_route_group(df_log: pd.DataFrame) -> List[go.Figu
     return figs
 
 
+def _generate_manufacturing_charts(df_log: pd.DataFrame) -> dict:
+    """Generate production charts for each manufacturing unit with downtime markers."""
+    if df_log.empty: return {}
+
+    df_log['day'] = (pd.to_numeric(df_log['time_h'], errors='coerce') / 24.0).astype(int) + 1
+
+    production = df_log[(df_log['process'] == 'Make') & (df_log['event'] == 'Produce')].copy()
+    downtime = df_log[df_log['process'] == 'Downtime'].copy()
+
+    if production.empty:
+        return {}
+
+    production['qty_t'] = pd.to_numeric(production['qty'], errors='coerce').fillna(0)
+
+    daily_prod = production.groupby(['location', 'equipment', 'product', 'day'])['qty_t'].sum().reset_index()
+
+    downtime_by_unit = {}
+    if not downtime.empty:
+        for _, row in downtime.iterrows():
+            loc = row.get('location', '')
+            equip = row.get('equipment', '')
+            d = int(row['day'])
+            event_type = row.get('event', 'Unknown')
+            key = f"{loc}|{equip}"
+            if key not in downtime_by_unit:
+                downtime_by_unit[key] = {}
+            if d not in downtime_by_unit[key]:
+                downtime_by_unit[key][d] = {'Maintenance': 0, 'Breakdown': 0}
+            if event_type in downtime_by_unit[key][d]:
+                downtime_by_unit[key][d][event_type] += 1
+
+    figs = {}
+    for (loc, equip), group in daily_prod.groupby(['location', 'equipment']):
+        fig = go.Figure()
+
+        for product in group['product'].unique():
+            prod_data = group[group['product'] == product]
+            fig.add_trace(go.Bar(
+                x=prod_data['day'],
+                y=prod_data['qty_t'],
+                name=f"{product}",
+                hovertemplate=f"{product}: %{{y:,.0f}}t on Day %{{x}}<extra></extra>"
+            ))
+
+        unit_key = f"{loc}|{equip}"
+        if unit_key in downtime_by_unit:
+            unit_dt = downtime_by_unit[unit_key]
+            max_prod = group['qty_t'].max() if not group.empty else 100
+
+            maint_days = [d for d in unit_dt if unit_dt[d].get('Maintenance', 0) > 0]
+            if maint_days:
+                fig.add_trace(go.Scatter(
+                    x=maint_days, y=[max_prod * 1.05] * len(maint_days),
+                    name="Maintenance", mode='markers',
+                    marker=dict(symbol='square', size=10, color='#ff9800'),
+                    hovertemplate="Day %{x}: Maintenance<extra></extra>"
+                ))
+
+            breakdown_days = [d for d in unit_dt if unit_dt[d].get('Breakdown', 0) > 0]
+            if breakdown_days:
+                fig.add_trace(go.Scatter(
+                    x=breakdown_days, y=[max_prod * 1.10] * len(breakdown_days),
+                    name="Breakdown", mode='markers',
+                    marker=dict(symbol='x', size=10, color='#f44336', line=dict(width=2)),
+                    hovertemplate="Day %{x}: Breakdown<extra></extra>"
+                ))
+
+        fig.update_layout(
+            title=f"Production: {equip} @ {loc}",
+            xaxis_title="Day",
+            yaxis_title="Production (Tons)",
+            template="plotly_white",
+            height=350,
+            barmode='stack',
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+
+        figs[f"{loc}|{equip}"] = fig
+
+    return figs
+
+
 def _generate_fleet_utilisation_chart(df_log: pd.DataFrame) -> go.Figure:
     """Generate daily fleet utilization chart - IDLE = not utilized, else utilized."""
     if df_log.empty: return None
@@ -542,10 +641,13 @@ def _generate_vessel_state_chart(df_log: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def _generate_html_report(sim, out_dir: Path, content: list):
+def _generate_html_report(sim, out_dir: Path, content: list, products: list = None):
     html_path = out_dir / "sim_outputs_plots_all.html"
     total_unmet = sum(sim.unmet.values())
     run_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+    products = products or []
+
+    product_buttons = ''.join([f'<button class="filter-btn product-btn" data-product="{p}" onclick="toggleProduct(\'{p}\')">{p}</button>' for p in products])
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -554,25 +656,46 @@ def _generate_html_report(sim, out_dir: Path, content: list):
     <title>Supply Chain Report</title>
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
     <style>
-        body {{ font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding-top: 70px; background: #f9f9f9; }}
-        .sticky-header {{ position: fixed; top: 0; left: 0; right: 0; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 12px 40px; z-index: 1000; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 10px rgba(0,0,0,0.3); }}
+        body {{ font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding-top: 120px; background: #f9f9f9; }}
+        .sticky-header {{ position: fixed; top: 0; left: 0; right: 0; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 12px 40px; z-index: 1000; box-shadow: 0 2px 10px rgba(0,0,0,0.3); }}
+        .header-top {{ display: flex; justify-content: space-between; align-items: center; }}
         .sticky-header h1 {{ color: #00d4ff; margin: 0; font-size: 1.4em; }}
-        .run-btn {{ background: linear-gradient(135deg, #00d4ff 0%, #0099cc 100%); color: #1a1a2e; border: none; padding: 12px 24px; font-size: 1em; font-weight: bold; border-radius: 8px; cursor: pointer; transition: all 0.3s ease; }}
+        .run-btn {{ background: linear-gradient(135deg, #00d4ff 0%, #0099cc 100%); color: #1a1a2e; border: none; padding: 10px 20px; font-size: 0.9em; font-weight: bold; border-radius: 8px; cursor: pointer; transition: all 0.3s ease; }}
         .run-btn:hover {{ transform: scale(1.05); box-shadow: 0 4px 15px rgba(0,212,255,0.4); }}
         .run-btn:disabled {{ background: #666; cursor: not-allowed; }}
         #status {{ color: #ccc; font-size: 0.9em; margin-left: 15px; }}
+        .filter-bar {{ display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }}
+        .filter-label {{ color: #aaa; font-size: 0.85em; margin-right: 5px; }}
+        .filter-btn {{ background: #2a2a4e; color: #ccc; border: 1px solid #444; padding: 6px 14px; font-size: 0.85em; border-radius: 20px; cursor: pointer; transition: all 0.2s ease; }}
+        .filter-btn:hover {{ background: #3a3a6e; }}
+        .filter-btn.active {{ background: #00d4ff; color: #1a1a2e; border-color: #00d4ff; }}
+        .filter-divider {{ border-left: 1px solid #444; height: 24px; margin: 0 10px; }}
         .content {{ padding: 20px 40px; }}
         .summary {{ background: white; padding: 20px; border-radius: 8px; margin-bottom: 30px; border-left: 5px solid #00d4ff; }}
         .plot {{ margin: 20px 0; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
+        .plot.hidden {{ display: none; }}
         h2 {{ color: #2c3e50; margin-top: 40px; border-bottom: 2px solid #ddd; padding-bottom: 10px; }}
+        h2.hidden {{ display: none; }}
         h3 {{ color: #34495e; margin-top: 30px; font-size: 1.1em; }}
+        h3.hidden {{ display: none; }}
         .footer {{ margin-top: 50px; color: #7f8c8d; font-size: 0.9em; text-align: center; padding-bottom: 20px; }}
     </style>
 </head>
 <body>
     <div class="sticky-header">
-        <h1>Cement Australia Supply Chain Simulation</h1>
-        <div><button class="run-btn" id="runBtn" onclick="runSimulation()">Run New Simulation</button><span id="status"></span></div>
+        <div class="header-top">
+            <h1>Cement Australia Supply Chain Simulation</h1>
+            <div><button class="run-btn" id="runBtn" onclick="runSimulation()">Run New Simulation</button><span id="status"></span></div>
+        </div>
+        <div class="filter-bar">
+            <span class="filter-label">Categories:</span>
+            <button class="filter-btn active" data-category="inventory" onclick="toggleCategory('inventory')">Inventory</button>
+            <button class="filter-btn active" data-category="manufacturing" onclick="toggleCategory('manufacturing')">Manufacturing</button>
+            <button class="filter-btn active" data-category="shipping" onclick="toggleCategory('shipping')">Shipping</button>
+            <div class="filter-divider"></div>
+            <span class="filter-label">Products:</span>
+            {product_buttons}
+        </div>
     </div>
     <div class="content">
         <div class="summary"><p><strong>Generated:</strong> {run_time}</p><p><strong>Total Unmet Demand:</strong> <span style="color: {'red' if total_unmet > 0 else 'green'}">{total_unmet:,.0f} tons</span></p><p><strong>Status:</strong> Complete</p></div>
@@ -580,16 +703,49 @@ def _generate_html_report(sim, out_dir: Path, content: list):
 
     div_id = 0
     for item in content:
+        category = item.get("category", "")
+        product = item.get("product", "")
         if item["type"] == "header":
-            html += f"<h2>Location: {item['location']}</h2>"
+            html += f'<h2 class="section-header" data-category="{category}">Location: {item["location"]}</h2>'
         elif item["type"] == "fig" and item.get("fig"):
             title = item.get("title", "")
-            if title: html += f"<h3>{title}</h3>"
-            html += f'<div id="plot-{div_id}" class="plot"></div><script>Plotly.newPlot("plot-{div_id}", {item["fig"].to_json()});</script>'
+            if title:
+                html += f'<h3 class="plot-title" data-category="{category}" data-product="{product}">{title}</h3>'
+            html += f'<div id="plot-{div_id}" class="plot" data-category="{category}" data-product="{product}"></div><script>Plotly.newPlot("plot-{div_id}", {item["fig"].to_json()});</script>'
             div_id += 1
 
-    html += """</div><div class=\"footer\"><p>Generated by sim_run_report_plot.py</p></div>
+    html += """</div><div class="footer"><p>Generated by sim_run_report_plot.py</p></div>
     <script>
+    const categoryState = { inventory: true, manufacturing: true, shipping: true };
+    const productState = {};
+    document.querySelectorAll('.product-btn').forEach(btn => {
+        productState[btn.dataset.product] = true;
+        btn.classList.add('active');
+    });
+
+    function toggleCategory(cat) {
+        categoryState[cat] = !categoryState[cat];
+        document.querySelector(`[data-category="${cat}"].filter-btn`).classList.toggle('active', categoryState[cat]);
+        applyFilters();
+    }
+
+    function toggleProduct(prod) {
+        productState[prod] = !productState[prod];
+        document.querySelector(`[data-product="${prod}"].filter-btn`).classList.toggle('active', productState[prod]);
+        applyFilters();
+    }
+
+    function applyFilters() {
+        document.querySelectorAll('.plot, .plot-title, .section-header').forEach(el => {
+            const cat = el.dataset.category;
+            const prod = el.dataset.product || '';
+            let show = true;
+            if (cat && !categoryState[cat]) show = false;
+            if (prod && !productState[prod]) show = false;
+            el.classList.toggle('hidden', !show);
+        });
+    }
+
     async function runSimulation() {
         const btn = document.getElementById('runBtn');
         const status = document.getElementById('status');
