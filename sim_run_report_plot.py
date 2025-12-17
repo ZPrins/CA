@@ -273,7 +273,7 @@ def _generate_transport_plot(df_log: pd.DataFrame, equipment_type: str = None) -
 
 
 def _generate_ship_timeline_by_route_group(df_log: pd.DataFrame) -> List[go.Figure]:
-    """Generate separate ship timeline charts for each route group, showing loads/unloads by location."""
+    """Generate separate ship timeline charts for each route group, showing loads/unloads by location|product."""
     if df_log.empty: return []
 
     moves = df_log[(df_log['process'] == 'Move') & (df_log['equipment'] == 'Ship')].copy()
@@ -282,6 +282,9 @@ def _generate_ship_timeline_by_route_group(df_log: pd.DataFrame) -> List[go.Figu
     moves['day'] = pd.to_numeric(moves['time_h'], errors='coerce') / 24.0
     if 'qty_t' not in moves.columns:
         moves['qty_t'] = pd.to_numeric(moves.get('qty', 0), errors='coerce').fillna(0)
+    
+    # Create Location|Product label for Y-axis
+    moves['loc_product'] = moves['location'].fillna('') + '|' + moves['product'].fillna('')
 
     route_groups = moves['route_id'].dropna().unique()
     figs = []
@@ -296,29 +299,37 @@ def _generate_ship_timeline_by_route_group(df_log: pd.DataFrame) -> List[go.Figu
         fig = go.Figure()
 
         if not loads.empty:
+            # Format payload in kT for tooltip
+            load_texts = loads.apply(
+                lambda r: f"Route: {rg}<br>Payload: {r['qty_t']/1000:.1f}kT", axis=1
+            )
             fig.add_trace(go.Scatter(
-                x=loads['day'], y=loads['location'], mode='markers',
+                x=loads['day'], y=loads['loc_product'], mode='markers',
                 marker=dict(symbol='triangle-right', size=10, color='green', opacity=0.7),
                 name='Load',
-                text=loads.apply(lambda r: f"{r['product']}: {r['qty_t']:,.0f} t", axis=1),
-                hovertemplate="<b>LOAD</b><br>Day: %{x:.1f}<br>Location: %{y}<br>%{text}<extra></extra>"
+                text=load_texts,
+                hovertemplate="<b>LOAD</b><br>Day: %{x:.1f}<br>%{y}<br>%{text}<extra></extra>"
             ))
 
         if not unloads.empty:
+            # Format payload in kT for tooltip
+            unload_texts = unloads.apply(
+                lambda r: f"Route: {rg}<br>Payload: {r['qty_t']/1000:.1f}kT", axis=1
+            )
             fig.add_trace(go.Scatter(
-                x=unloads['day'], y=unloads['location'], mode='markers',
+                x=unloads['day'], y=unloads['loc_product'], mode='markers',
                 marker=dict(symbol='triangle-left', size=10, color='red', opacity=0.7),
                 name='Unload',
-                text=unloads.apply(lambda r: f"{r['product']}: {r['qty_t']:,.0f} t", axis=1),
-                hovertemplate="<b>UNLOAD</b><br>Day: %{x:.1f}<br>Location: %{y}<br>%{text}<extra></extra>"
+                text=unload_texts,
+                hovertemplate="<b>UNLOAD</b><br>Day: %{x:.1f}<br>%{y}<br>%{text}<extra></extra>"
             ))
 
-        locations = rg_moves['location'].dropna().unique()
+        loc_products = rg_moves['loc_product'].dropna().unique()
         fig.update_layout(
             title=f"Ship Route: {rg}",
             xaxis_title="Day of Year",
-            yaxis_title="Location",
-            height=max(300, len(locations) * 40),
+            yaxis_title="Location|Product",
+            height=max(300, len(loc_products) * 40),
             template="plotly_white",
             yaxis=dict(autorange="reversed")
         )
