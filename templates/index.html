@@ -768,7 +768,15 @@
                     }
                 }
 
-                es.addEventListener('start', (ev) => appendLine(ev.data || 'Simulation started'));
+                es.addEventListener('start', (ev) => {
+                    appendLine(ev.data || 'Simulation started');
+                    // Reset report button to original state
+                    const viewReportBtn = document.getElementById('viewReportBtn');
+                    if (viewReportBtn) {
+                        viewReportBtn.classList.remove('btn-primary');
+                        viewReportBtn.classList.add('btn-outline-light');
+                    }
+                });
                 es.addEventListener('progress', (ev) => {
                     const msg = ev.data || '';
                     appendLine(msg);
