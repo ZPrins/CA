@@ -204,16 +204,19 @@
             font-size: 12px;
             transition: all 0.2s ease;
         }
-        .param-table input.editable {
+        .param-table input.editable.changed {
             background: rgba(255, 235, 59, 0.15);
             border: 1px solid rgba(255, 235, 59, 0.4);
             color: #ffeb3b;
         }
-        .param-table input.editable:focus {
+        .param-table input.editable.changed:focus {
             background: rgba(255, 235, 59, 0.25);
             border-color: #ffeb3b;
             outline: none;
             box-shadow: 0 0 0 3px rgba(255, 235, 59, 0.2);
+        }
+        .restore-btn.hidden {
+            visibility: hidden;
         }
         .param-table input:focus {
             background: rgba(255,255,255,0.1);
@@ -413,9 +416,24 @@
         function editableInput(field, idx, value, table, step='') {
             const stepAttr = step ? `step="${step}"` : '';
             return `<div class="input-wrapper">
-                <input type="number" class="editable" data-field="${field}" data-idx="${idx}" data-table="${table}" value="${value}" ${stepAttr}>
-                <button type="button" class="restore-btn" data-field="${field}" data-idx="${idx}" data-table="${table}" title="Restore original">&#8635;</button>
+                <input type="number" class="editable" data-field="${field}" data-idx="${idx}" data-table="${table}" data-original="${value}" value="${value}" ${stepAttr}>
+                <button type="button" class="restore-btn hidden" data-field="${field}" data-idx="${idx}" data-table="${table}" title="Restore original">&#8635;</button>
             </div>`;
+        }
+        
+        // Check if value differs from original and update styling
+        function updateChangedState(input) {
+            const originalValue = parseFloat(input.dataset.original) || 0;
+            const currentValue = parseFloat(input.value) || 0;
+            const restoreBtn = input.nextElementSibling;
+            
+            if (Math.abs(currentValue - originalValue) > 0.0001) {
+                input.classList.add('changed');
+                restoreBtn.classList.remove('hidden');
+            } else {
+                input.classList.remove('changed');
+                restoreBtn.classList.add('hidden');
+            }
         }
         
         // Populate Store table
@@ -457,7 +475,7 @@
         }
         
         // Update model params when inputs change
-        document.addEventListener('change', function(e) {
+        document.addEventListener('input', function(e) {
             if (e.target.matches('input.editable[data-field]')) {
                 const idx = parseInt(e.target.dataset.idx);
                 const field = e.target.dataset.field;
@@ -467,6 +485,7 @@
                 } else if (table === 'move_ship') {
                     modelParams.move_ship[idx][field] = parseFloat(e.target.value) || 0;
                 }
+                updateChangedState(e.target);
             }
         });
         
@@ -484,6 +503,9 @@
                 
                 // Update model params
                 modelParams[table][idx][field] = originalValue;
+                
+                // Update styling
+                updateChangedState(input);
             }
         });
         
