@@ -286,11 +286,29 @@ def _generate_ship_timeline_by_route_group(df_log: pd.DataFrame) -> List[go.Figu
     # Create Location|Product label for Y-axis
     moves['loc_product'] = moves['location'].fillna('') + '|' + moves['product'].fillna('')
 
-    route_groups = moves['route_id'].dropna().unique()
+    # Map numeric route_ids (like 1.1, 2.1) to route groups
+    # Route 1.x = North, 2.x = South, 3.x = Import_CL, 4.x = Import_GBFS
+    def get_route_group(route_id):
+        if pd.isna(route_id):
+            return 'Unknown'
+        route_str = str(route_id)
+        if route_str.startswith('1.'):
+            return 'North'
+        elif route_str.startswith('2.'):
+            return 'South'
+        elif route_str.startswith('3.'):
+            return 'Import_CL'
+        elif route_str.startswith('4.'):
+            return 'Import_GBFS'
+        else:
+            return route_str  # Fall back to original value (for legacy data)
+    
+    moves['route_group'] = moves['route_id'].apply(get_route_group)
+    route_groups = moves['route_group'].dropna().unique()
     figs = []
 
     for rg in sorted(route_groups):
-        rg_moves = moves[moves['route_id'] == rg].copy()
+        rg_moves = moves[moves['route_group'] == rg].copy()
         if rg_moves.empty: continue
 
         loads = rg_moves[rg_moves['event'].isin(['Load', 'ShipLoad'])]
@@ -299,9 +317,9 @@ def _generate_ship_timeline_by_route_group(df_log: pd.DataFrame) -> List[go.Figu
         fig = go.Figure()
 
         if not loads.empty:
-            # Format payload in kT for tooltip
+            # Format payload in kT and show specific route ID for tooltip
             load_texts = loads.apply(
-                lambda r: f"Route: {rg}<br>Payload: {r['qty_t']/1000:.1f}kT", axis=1
+                lambda r: f"Route ID: {r['route_id']}<br>Payload: {r['qty_t']/1000:.1f}kT", axis=1
             )
             fig.add_trace(go.Scatter(
                 x=loads['day'], y=loads['loc_product'], mode='markers',
@@ -312,9 +330,9 @@ def _generate_ship_timeline_by_route_group(df_log: pd.DataFrame) -> List[go.Figu
             ))
 
         if not unloads.empty:
-            # Format payload in kT for tooltip
+            # Format payload in kT and show specific route ID for tooltip
             unload_texts = unloads.apply(
-                lambda r: f"Route: {rg}<br>Payload: {r['qty_t']/1000:.1f}kT", axis=1
+                lambda r: f"Route ID: {r['route_id']}<br>Payload: {r['qty_t']/1000:.1f}kT", axis=1
             )
             fig.add_trace(go.Scatter(
                 x=unloads['day'], y=unloads['loc_product'], mode='markers',

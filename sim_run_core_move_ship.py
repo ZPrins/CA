@@ -160,6 +160,14 @@ def transporter(env: simpy.Environment, route: TransportRoute,
     demand_rates_map = demand_rates or {}
     active_berth = None
     active_berth_req = None
+    current_route_id = None  # Specific route ID (e.g., 1.1, 1.2)
+    
+    def _get_route_id_from_itinerary(itinerary: List[Dict]) -> Optional[str]:
+        """Extract specific route_id from itinerary start step."""
+        for step in itinerary:
+            if step.get('kind') == 'start' and 'route_id' in step:
+                return str(step['route_id'])
+        return None
     
     def log_state_change(new_state: ShipState, location: str = None):
         log_func(
@@ -173,7 +181,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
             from_level=None,
             to_store=None,
             to_level=None,
-            route_id=route_group,
+            route_id=current_route_id or route_group,
             vessel_id=vessel_id,
             ship_state=new_state.value
         )
@@ -207,6 +215,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                 continue
             
             chosen_itinerary = best_it
+            current_route_id = _get_route_id_from_itinerary(chosen_itinerary)
             state = ShipState.LOADING
             log_state_change(state)
             cargo = {}
@@ -264,7 +273,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                 from_level=from_level,
                                 to_store=None,
                                 to_level=None,
-                                route_id=route_group
+                                route_id=current_route_id or route_group
                             )
                 
                 itinerary_idx += 1
@@ -401,7 +410,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                             from_level=None,
                             to_store=store_key,
                             to_level=to_level,
-                            route_id=route_group
+                            route_id=current_route_id or route_group
                         )
                 
                 itinerary_idx += 1
