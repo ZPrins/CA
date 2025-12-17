@@ -846,18 +846,13 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         </script>
 """
 
-    # Pre-serialize all figures in parallel for speed
-    from concurrent.futures import ThreadPoolExecutor
+    # Pre-serialize all figures using orjson (5-8x faster than default)
+    import plotly.io as pio
     fig_items = [(i, item) for i, item in enumerate(content) if item["type"] == "fig" and item.get("fig")]
     fig_json_map = {}
     
-    def serialize_fig(args):
-        idx, item = args
-        return idx, item["fig"].to_json()
-    
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        for idx, json_str in executor.map(serialize_fig, fig_items):
-            fig_json_map[idx] = json_str
+    for idx, item in fig_items:
+        fig_json_map[idx] = pio.to_json(item["fig"], engine="orjson", validate=False)
     
     # Build HTML using list (faster than string concatenation)
     html_parts = [html]
