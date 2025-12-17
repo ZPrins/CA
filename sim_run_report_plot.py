@@ -945,6 +945,7 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
     
     route_ids = [r['route_id'] for r in route_summaries]
     trip_counts = [r['n_trips'] for r in route_summaries]
+    n_routes = len(route_ids)
 
     fig = go.Figure()
 
@@ -952,10 +953,10 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
     display_states = ['LOADING', 'IN_TRANSIT', 'WAITING_FOR_BERTH', 'UNLOADING']
     for state in display_states:
         values = [r[state] for r in route_summaries]
-        # Only show text if value is significant (> 5 hours to avoid clutter)
-        text_labels = [f"{v:.0f}h" if v >= 5 else "" for v in values]
+        # Only show text if value is significant (> 10 hours to avoid clutter)
+        text_labels = [f"{v:.0f}h" if v >= 10 else "" for v in values]
         fig.add_trace(go.Bar(
-            y=route_ids,
+            y=list(range(n_routes)),  # Use numeric indices
             x=values,
             name=state.replace('_', ' ').title(),
             orientation='h',
@@ -964,7 +965,8 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
             textposition='inside',
             insidetextanchor='middle',
             textfont=dict(size=10, color='white'),
-            hovertemplate=f"<b>{state.replace('_', ' ').title()}</b><br>Route: %{{y}}<br>Avg: %{{x:.1f}} hrs<extra></extra>"
+            hovertemplate=f"<b>{state.replace('_', ' ').title()}</b><br>Route: %{{customdata}}<br>Avg: %{{x:.1f}} hrs<extra></extra>",
+            customdata=route_ids
         ))
 
     # Calculate total time for annotations (position at end of bar)
@@ -973,10 +975,10 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
 
     # Add trip count annotations at end of each bar
     annotations = []
-    for route_id, total, count in zip(route_ids, totals, trip_counts):
+    for i, (route_id, total, count) in enumerate(zip(route_ids, totals, trip_counts)):
         annotations.append(dict(
-            x=total + max_total * 0.03,
-            y=route_id,
+            x=total + max_total * 0.02,
+            y=i,
             text=f"{count} trips",
             showarrow=False,
             font=dict(size=10, color='#555'),
@@ -989,12 +991,18 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
         xaxis_title="Average Hours per Trip",
         yaxis_title="Route ID",
         template="plotly_white",
-        height=max(350, len(route_ids) * 35 + 100),
+        height=max(350, n_routes * 35 + 100),
         barmode='stack',
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         annotations=annotations,
         margin=dict(r=100),
-        yaxis=dict(categoryorder='array', categoryarray=route_ids)  # Force order
+        yaxis=dict(
+            tickmode='array',
+            tickvals=list(range(n_routes)),
+            ticktext=route_ids,
+            autorange=False,
+            range=[-0.5, n_routes - 0.5]
+        )
     )
 
     return fig
