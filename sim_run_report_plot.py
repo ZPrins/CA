@@ -946,9 +946,10 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
     route_ids = [r['route_id'] for r in route_summaries]
     trip_counts = [r['n_trips'] for r in route_summaries]
     n_routes = len(route_ids)
+    y_indices = list(range(n_routes))
 
-    # Create y-axis labels with trip counts included
-    y_labels = [f"{rid}  ({cnt} trips)" for rid, cnt in zip(route_ids, trip_counts)]
+    # Trip count labels for right axis
+    trip_labels = [f"{cnt} trips" for cnt in trip_counts]
 
     fig = go.Figure()
 
@@ -959,7 +960,7 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
         # Only show text if value is significant (> 15 hours to avoid clutter)
         text_labels = [f"{v:.0f}h" if v >= 15 else "" for v in values]
         fig.add_trace(go.Bar(
-            y=y_labels,
+            y=y_indices,
             x=values,
             name=state.replace('_', ' ').title(),
             orientation='h',
@@ -968,7 +969,8 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
             textposition='inside',
             insidetextanchor='middle',
             textfont=dict(size=10, color='white'),
-            hovertemplate=f"<b>{state.replace('_', ' ').title()}</b><br>Route: %{{y}}<br>Avg: %{{x:.1f}} hrs<extra></extra>"
+            hovertemplate=f"<b>{state.replace('_', ' ').title()}</b><br>Route: %{{customdata}}<br>Avg: %{{x:.1f}} hrs<extra></extra>",
+            customdata=route_ids
         ))
 
     fig.update_layout(
@@ -979,12 +981,34 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
         height=max(400, n_routes * 40 + 100),
         barmode='stack',
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=150),  # Extra margin for labels
+        margin=dict(l=80, r=80),
         yaxis=dict(
-            categoryorder='array',
-            categoryarray=y_labels
+            tickmode='array',
+            tickvals=y_indices,
+            ticktext=route_ids,
+            range=[-0.5, n_routes - 0.5]
+        ),
+        yaxis2=dict(
+            tickmode='array',
+            tickvals=y_indices,
+            ticktext=trip_labels,
+            overlaying='y',
+            side='right',
+            range=[-0.5, n_routes - 0.5],
+            showgrid=False
         )
     )
+
+    # Add invisible trace to activate yaxis2
+    fig.add_trace(go.Scatter(
+        x=[0] * n_routes,
+        y=y_indices,
+        yaxis='y2',
+        mode='markers',
+        marker=dict(opacity=0),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
 
     return fig
 
