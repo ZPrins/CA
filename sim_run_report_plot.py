@@ -507,11 +507,11 @@ def _generate_manufacturing_charts(df_log: pd.DataFrame) -> dict:
         if unit_key in downtime_hours_by_unit:
             unit_hours = downtime_hours_by_unit[unit_key]
             if unit_hours:
-                all_days = sorted(group['day'].unique())
+                max_day = max(max(group['day']), max(unit_hours.keys()))
                 cumulative = 0
                 cum_days = []
                 cum_hours = []
-                for d in all_days:
+                for d in range(1, max_day + 1):
                     cumulative += unit_hours.get(d, 0)
                     cum_days.append(d)
                     cum_hours.append(cumulative)
