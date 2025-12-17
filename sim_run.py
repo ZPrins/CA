@@ -156,7 +156,7 @@ def extract_kpis_from_sim(sim):
                 kpis['total_production'] = prod['qty'].astype(float).sum()
             
             # Ship trips (unloads = completed trips)
-            ship_moves = df_log[(df_log['process'] == 'Move') & (df_log['equipment'] == 'Ship') & (df_log['event'] == 'ShipUnload')]
+            ship_moves = df_log[(df_log['process'] == 'Move') & (df_log['equipment'] == 'Ship') & (df_log['event'] == 'Unload')]
             kpis['ship_trips'] = len(ship_moves)
             
             # Train trips (unloads = completed trips)
