@@ -266,7 +266,11 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
     # 4. Generate reports only if artifacts='full'
     if artifacts == 'full':
         out_dir = settings.get('out_dir', config.out_dir)
+        
+        csv_start = time.time()
         write_csv_outputs(sim, out_dir)
+        csv_elapsed = int(time.time() - csv_start)
+        log(f"CSV outputs written to {out_dir} ({csv_elapsed}s)")
         
         # Get graph sequence from Network sheet for proper ordering
         # Extract (Location, Equipment Name, Process) tuples in order of appearance
@@ -284,8 +288,15 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
                         seen.add(key)
                         graph_sequence.append(key)
         
+        html_start = time.time()
         plot_results(sim, out_dir, moves, makes, graph_sequence)
+        html_elapsed = int(time.time() - html_start)
+        log(f"Interactive HTML report generated ({html_elapsed}s)")
+        
+        model_start = time.time()
         generate_standalone(settings, stores_cfg, makes, moves, demands, out_dir)
+        model_elapsed = int(time.time() - model_start)
+        log(f"Standalone model generated ({model_elapsed}s)")
 
     # --- MOVEMENT SUMMARY ---
     df_log = pd.DataFrame(sim.action_log) if sim.action_log else pd.DataFrame()
@@ -313,10 +324,8 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
     total_elapsed = int(time.time() - total_start)
     
     if artifacts == 'full':
-        report_elapsed = int(time.time() - step_start)
         out_dir = settings.get('out_dir', config.out_dir)
-        log(f"\nReports generated in {report_elapsed}s")
-        log(f"Total runtime: {total_elapsed}s")
+        log(f"\nTotal runtime: {total_elapsed}s")
         log(f"All complete! Check '{out_dir}' for results.")
     
     return {'success': True, 'kpis': kpis}
