@@ -935,7 +935,7 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
     if not route_summaries:
         return None
 
-    # Sort by route_id numerically
+    # Sort by route_id numerically (ascending: 1.01, 1.02, 1.03...)
     def sort_key(x):
         try:
             return float(x['route_id'])
@@ -952,8 +952,8 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
     display_states = ['LOADING', 'IN_TRANSIT', 'WAITING_FOR_BERTH', 'UNLOADING']
     for state in display_states:
         values = [r[state] for r in route_summaries]
-        # Only show text if value is significant (> 1 hour)
-        text_labels = [f"{v:.0f}h" if v >= 1 else "" for v in values]
+        # Only show text if value is significant (> 5 hours to avoid clutter)
+        text_labels = [f"{v:.0f}h" if v >= 5 else "" for v in values]
         fig.add_trace(go.Bar(
             y=route_ids,
             x=values,
@@ -962,6 +962,7 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
             marker_color=state_colors.get(state, '#999'),
             text=text_labels,
             textposition='inside',
+            insidetextanchor='middle',
             textfont=dict(size=10, color='white'),
             hovertemplate=f"<b>{state.replace('_', ' ').title()}</b><br>Route: %{{y}}<br>Avg: %{{x:.1f}} hrs<extra></extra>"
         ))
@@ -974,11 +975,11 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
     annotations = []
     for route_id, total, count in zip(route_ids, totals, trip_counts):
         annotations.append(dict(
-            x=total + max_total * 0.02,
-            y=route_id,  # Use route_id to match categorical y-axis
-            text=f"<b>{count}</b> trips",
+            x=total + max_total * 0.03,
+            y=route_id,
+            text=f"{count} trips",
             showarrow=False,
-            font=dict(size=11, color='#2d3748'),
+            font=dict(size=10, color='#555'),
             xanchor='left',
             yanchor='middle'
         ))
@@ -992,7 +993,8 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
         barmode='stack',
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         annotations=annotations,
-        margin=dict(r=100)  # Extra margin for annotations
+        margin=dict(r=100),
+        yaxis=dict(categoryorder='array', categoryarray=route_ids)  # Force order
     )
 
     return fig
