@@ -870,6 +870,10 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         .run-btn:hover {{ background: linear-gradient(135deg, #00b4d8 0%, #0096c7 50%, #0077b6 100%); transform: translateY(-2px); box-shadow: 0 6px 30px rgba(79,195,247,0.4); }}
         .run-btn:disabled {{ background: #444; cursor: not-allowed; transform: none; box-shadow: none; }}
         #status {{ color: #a0aec0; font-size: 0.9em; margin-left: 15px; }}
+        .countdown-badge {{ display: inline-block; padding: 8px 18px; border-radius: 20px; font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; background: linear-gradient(135deg, #f57c00, #e65100); color: #fff; box-shadow: 0 2px 12px rgba(245,124,0,0.4); animation: pulse 1s infinite; }}
+        .countdown-finishing {{ background: linear-gradient(135deg, #7c4dff, #651fff); box-shadow: 0 2px 12px rgba(124,77,255,0.4); }}
+        .countdown-complete {{ background: linear-gradient(135deg, #2e7d32, #1b5e20); color: #a5d6a7; box-shadow: 0 2px 12px rgba(46,125,50,0.4); animation: none; }}
+        @keyframes pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.8; }} }}
         .filter-bar {{ display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }}
         .filter-label {{ color: #a0aec0; font-size: 0.85em; margin-right: 5px; font-weight: 500; }}
         .filter-btn {{ background: rgba(255,255,255,0.1); color: #b0bec5; border: 1px solid rgba(255,255,255,0.15); padding: 6px 14px; font-size: 0.85em; border-radius: 20px; cursor: pointer; transition: all 0.2s ease; }}
@@ -1092,17 +1096,15 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         let countdown = prevRuntime;
         
         btn.disabled = true;
-        btn.textContent = countdown + 's';
-        btn.style.minWidth = '120px';
-        status.innerHTML = '<span style="color:#81d4fa;margin-left:12px;">Running simulation...</span>';
+        btn.textContent = 'Running...';
+        status.innerHTML = '<span class="countdown-badge">' + countdown + 's</span>';
         
         countdownInterval = setInterval(() => {
             countdown--;
             if (countdown > 0) {
-                btn.textContent = countdown + 's';
+                status.innerHTML = '<span class="countdown-badge">' + countdown + 's</span>';
             } else {
-                btn.textContent = '...';
-                status.innerHTML = '<span style="color:#ffd54f;margin-left:12px;">Finishing up...</span>';
+                status.innerHTML = '<span class="countdown-badge countdown-finishing">...</span>';
             }
         }, 1000);
         
@@ -1111,8 +1113,8 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
             clearInterval(countdownInterval);
             const result = await response.json();
             if (result.success && result.report_ready) {
-                status.innerHTML = '<span style="color:#4caf50;margin-left:10px;">Complete! Reloading...</span>';
-                btn.textContent = 'Complete!';
+                status.innerHTML = '<span class="countdown-badge countdown-complete">Complete</span>';
+                btn.textContent = 'Done!';
                 setTimeout(() => window.location.reload(), 500);
             } else {
                 status.textContent = 'Error: ' + (result.output || 'Unknown error');
