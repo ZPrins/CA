@@ -853,7 +853,7 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
     locations = locations or []
 
     product_buttons = ''.join([f'<button class="filter-btn product-btn" data-product="{p}" onclick="toggleProduct(\'{p}\')">{p}</button>' for p in products])
-    location_buttons = ''.join([f'<button class="filter-btn location-btn" data-location="{loc}" onclick="toggleLocation(\'{loc}\')">{loc}</button>' for loc in locations])
+    location_checkboxes = ''.join([f'<label class="loc-checkbox"><input type="checkbox" checked data-location="{loc}" onchange="toggleLocation(\'{loc}\')"><span>{loc}</span></label>' for loc in locations])
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -878,6 +878,19 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         .filter-btn:hover {{ background: rgba(79,195,247,0.2); border-color: #4fc3f7; color: #4fc3f7; }}
         .filter-btn.active {{ background: #4fc3f7; color: #1a1a2e; border-color: #4fc3f7; font-weight: 600; }}
         .filter-divider {{ border-left: 1px solid rgba(255,255,255,0.15); height: 24px; margin: 0 10px; }}
+        .dropdown {{ position: relative; display: inline-block; }}
+        .dropdown-btn {{ background: rgba(255,255,255,0.1); color: #b0bec5; border: 1px solid rgba(255,255,255,0.15); padding: 6px 14px; font-size: 0.85em; border-radius: 20px; cursor: pointer; transition: all 0.2s ease; }}
+        .dropdown-btn:hover {{ background: rgba(79,195,247,0.2); border-color: #4fc3f7; color: #4fc3f7; }}
+        .dropdown-content {{ display: none; position: absolute; top: 100%; left: 0; background: rgba(30, 35, 50, 0.98); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; min-width: 180px; max-height: 300px; overflow-y: auto; z-index: 1001; margin-top: 4px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }}
+        .dropdown-content.show {{ display: block; }}
+        .loc-checkbox {{ display: flex; align-items: center; padding: 8px 12px; cursor: pointer; color: #b0bec5; font-size: 0.85em; transition: background 0.2s; }}
+        .loc-checkbox:hover {{ background: rgba(79,195,247,0.15); }}
+        .loc-checkbox input {{ margin-right: 8px; accent-color: #4fc3f7; }}
+        .loc-checkbox span {{ white-space: nowrap; }}
+        .dropdown-actions {{ display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid rgba(255,255,255,0.1); }}
+        .dropdown-actions button {{ flex: 1; padding: 4px 8px; font-size: 0.75em; border-radius: 4px; border: none; cursor: pointer; }}
+        .dropdown-actions .select-all {{ background: #4fc3f7; color: #1a1a2e; }}
+        .dropdown-actions .clear-all {{ background: rgba(255,255,255,0.1); color: #b0bec5; }}
         .content {{ padding: 20px 40px; max-width: 1400px; margin: 0 auto; }}
         .summary {{ background: #fff; padding: 20px 24px; border-radius: 12px; margin-bottom: 30px; border-left: 4px solid #4fc3f7; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }}
         .summary p {{ margin: 8px 0; color: #4a5568; }}
@@ -907,7 +920,16 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
             {product_buttons}
             <div class="filter-divider"></div>
             <span class="filter-label">Locations:</span>
-            {location_buttons}
+            <div class="dropdown">
+                <button class="dropdown-btn" onclick="toggleDropdown()">Select Locations ▾</button>
+                <div class="dropdown-content" id="locationDropdown">
+                    <div class="dropdown-actions">
+                        <button class="select-all" onclick="selectAllLocations()">All</button>
+                        <button class="clear-all" onclick="clearAllLocations()">None</button>
+                    </div>
+                    {location_checkboxes}
+                </div>
+            </div>
         </div>
     </div>
     <div class="content">
@@ -939,9 +961,8 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         btn.classList.add('active');
     });
     
-    document.querySelectorAll('.location-btn').forEach(btn => {
-        locationState[btn.dataset.location] = true;
-        btn.classList.add('active');
+    document.querySelectorAll('.loc-checkbox input').forEach(cb => {
+        locationState[cb.dataset.location] = cb.checked;
     });
 
     function toggleCategory(cat) {
@@ -957,10 +978,37 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
     }
     
     function toggleLocation(loc) {
-        locationState[loc] = !locationState[loc];
-        document.querySelector(`[data-location="${loc}"].filter-btn`).classList.toggle('active', locationState[loc]);
+        const cb = document.querySelector(`.loc-checkbox input[data-location="${loc}"]`);
+        locationState[loc] = cb.checked;
         applyFilters();
     }
+    
+    function toggleDropdown() {
+        document.getElementById('locationDropdown').classList.toggle('show');
+    }
+    
+    function selectAllLocations() {
+        document.querySelectorAll('.loc-checkbox input').forEach(cb => {
+            cb.checked = true;
+            locationState[cb.dataset.location] = true;
+        });
+        applyFilters();
+    }
+    
+    function clearAllLocations() {
+        document.querySelectorAll('.loc-checkbox input').forEach(cb => {
+            cb.checked = false;
+            locationState[cb.dataset.location] = false;
+        });
+        applyFilters();
+    }
+    
+    // Close dropdown when clicking outside
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest('.dropdown')) {
+            document.getElementById('locationDropdown').classList.remove('show');
+        }
+    });
 
     function applyFilters() {
         document.querySelectorAll('.plot, .plot-title, .section-header').forEach(el => {
