@@ -649,30 +649,35 @@ def _generate_fleet_utilisation_chart(df_log: pd.DataFrame) -> go.Figure:
 
     state_changes['time_h'] = pd.to_numeric(state_changes['time_h'], errors='coerce')
     state_changes = state_changes.sort_values('time_h')
-
+    state_changes['day'] = (state_changes['time_h'] / 24).astype(int) + 1
+    
+    max_day = state_changes['day'].max()
+    
+    # Process events once, tracking state at end of each day
     vessel_states = {}
-    max_day = int(state_changes['time_h'].max() / 24) + 1
-
+    daily_snapshots = {}  # day -> snapshot of vessel_states at end of day
+    
+    for _, row in state_changes.iterrows():
+        vid = row.get('vessel_id')
+        new_state = row.get('ship_state')
+        day = row['day']
+        if vid is not None and new_state is not None:
+            vessel_states[vid] = new_state
+            daily_snapshots[day] = dict(vessel_states)  # snapshot current state
+    
+    # Build daily utilization from snapshots (forward-fill gaps)
     daily_util = []
+    last_snapshot = {}
     for day in range(1, max_day + 1):
-        day_start = (day - 1) * 24
-        day_end = day * 24
-
-        day_events = state_changes[state_changes['time_h'] < day_end]
-        for _, row in day_events.iterrows():
-            vid = row.get('vessel_id')
-            new_state = row.get('ship_state')
-            if vid is not None and new_state is not None:
-                vessel_states[vid] = new_state
-
-        total_vessels = len(vessel_states)
+        if day in daily_snapshots:
+            last_snapshot = daily_snapshots[day]
+        
+        total_vessels = len(last_snapshot)
         if total_vessels > 0:
-            idle_count = sum(1 for v, st in vessel_states.items() if st == 'IDLE')
-            utilized_count = total_vessels - idle_count
-            util_pct = (utilized_count / total_vessels) * 100
+            idle_count = sum(1 for st in last_snapshot.values() if st == 'IDLE')
+            util_pct = ((total_vessels - idle_count) / total_vessels) * 100
         else:
             util_pct = 0
-
         daily_util.append({'day': day, 'utilization': util_pct})
 
     if not daily_util:
