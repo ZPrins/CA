@@ -227,6 +227,25 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
                         showlegend=True
                     ), secondary_y=False)
                 
+                # Breakdown days (full day = 24 hours) - add red shaded regions
+                breakdown_days = [d for d in loc_downtime if loc_downtime[d].get("Breakdown", 0) >= 24]
+                for bd_day in breakdown_days:
+                    fig.add_vrect(
+                        x0=bd_day - 0.5, x1=bd_day + 0.5,
+                        fillcolor="rgba(244, 67, 54, 0.15)",
+                        layer="below",
+                        line_width=0,
+                    )
+                # Add invisible trace for legend
+                if breakdown_days:
+                    fig.add_trace(go.Scatter(
+                        x=[None], y=[None],
+                        name="Breakdown (Full Day)",
+                        mode='markers',
+                        marker=dict(symbol='square', size=12, color='rgba(244, 67, 54, 0.4)'),
+                        showlegend=True
+                    ), secondary_y=False)
+                
 
             cap = data["capacity"].iloc[0]
             suppliers = supplier_map.get(store_key, [])
@@ -506,6 +525,25 @@ def _generate_manufacturing_charts(df_log: pd.DataFrame) -> dict:
                     name="Maintenance",
                     mode='markers',
                     marker=dict(symbol='square', size=12, color='rgba(255, 152, 0, 0.5)'),
+                    showlegend=True
+                ))
+            
+            # Breakdown days (full day = 24 hours) - add red shaded regions
+            breakdown_days = [d for d in unit_dt if unit_dt[d].get('Breakdown', 0) >= 24]
+            for bd_day in breakdown_days:
+                fig.add_vrect(
+                    x0=bd_day - 0.5, x1=bd_day + 0.5,
+                    fillcolor="rgba(244, 67, 54, 0.2)",
+                    layer="below",
+                    line_width=0,
+                )
+            # Add invisible trace for legend
+            if breakdown_days:
+                fig.add_trace(go.Scatter(
+                    x=[None], y=[None],
+                    name="Breakdown (Full Day)",
+                    mode='markers',
+                    marker=dict(symbol='square', size=12, color='rgba(244, 67, 54, 0.5)'),
                     showlegend=True
                 ))
 
