@@ -503,14 +503,6 @@ def _generate_manufacturing_charts(df_log: pd.DataFrame) -> dict:
                     hovertemplate="Day %{x}: Maintenance<extra></extra>"
                 ))
 
-            breakdown_days = [d for d in unit_dt if unit_dt[d].get('Breakdown', 0) > 0]
-            if breakdown_days:
-                fig.add_trace(go.Scatter(
-                    x=breakdown_days, y=[max_prod * 1.10] * len(breakdown_days),
-                    name="Breakdown", mode='markers',
-                    marker=dict(symbol='x', size=10, color='#f44336', line=dict(width=2)),
-                    hovertemplate="Day %{x}: Breakdown<extra></extra>"
-                ))
 
         if unit_key in downtime_hours_by_unit:
             unit_hours = downtime_hours_by_unit[unit_key]
