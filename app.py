@@ -176,8 +176,8 @@ def stream_simulation():
                                     yield f'event: progress\ndata: {msg}\n\n'
                                 else:
                                     yield f'data: {msg}\n\n'
-                                # Check if report is ready after HTML generation message
-                                if not report_notified and check_report_exists():
+                                # Only notify report ready when we see the HTML generation message
+                                if not report_notified and 'Interactive HTML report generated' in msg:
                                     report_notified = True
                                     yield 'event: report_ready\ndata: true\n\n'
                             last_heartbeat = time.time()
