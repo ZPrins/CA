@@ -211,22 +211,23 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
 
             fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-            # Production Output (bars behind everything else - add first)
+            # === BACKGROUND TRACES (added first, drawn behind) ===
+            
+            # Production Output (bars behind everything else)
             if "Production_in" in data.columns and data["Production_in"].sum() > 0:
                 fig.add_trace(go.Bar(x=data["day"], y=data["Production_in"], name="Production (t)",
                                      marker=dict(color="rgba(255, 127, 14, 0.4)"), width=0.8), secondary_y=True)
-
-            # Level
-            fig.add_trace(
-                go.Scatter(x=data["day"], y=data["level"], name="Level (t)", line=dict(color="blue", width=2)),
-                secondary_y=False)
 
             # Demand
             if data["demand_per_day"].sum() > 0:
                 fig.add_trace(go.Scatter(x=data["day"], y=data["demand_per_day"], name="Demand (t/d)",
                                          line=dict(color="green", dash="dot", width=1)), secondary_y=True)
 
-            # --- FLOW TRACES (The missing piece!) ---
+            # Consumption (material consumed from this store for production)
+            if "Consumption_out" in data.columns and data["Consumption_out"].sum() > 0:
+                fig.add_trace(go.Scatter(x=data["day"], y=data["Consumption_out"], name="Consumption (t)",
+                                         line=dict(color="#d62728", dash="dashdot", width=1.5)), secondary_y=True)
+
             # Train In
             if "Train_in" in data.columns and data["Train_in"].sum() > 0:
                 fig.add_trace(go.Scatter(x=data["day"], y=data["Train_in"], name="Rail In (t)", mode='markers',
@@ -244,15 +245,17 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
                 fig.add_trace(go.Scatter(x=data["day"], y=data["Train_out"], name="Rail Out (t)", mode='markers',
                                          marker=dict(symbol='triangle-up', size=8, color='#e377c2')), secondary_y=True)
 
-            # Ship Out
+            # === FOREGROUND TRACES (added last, drawn on top) ===
+            
+            # Level (on top so it's always visible)
+            fig.add_trace(
+                go.Scatter(x=data["day"], y=data["level"], name="Level (t)", line=dict(color="blue", width=2)),
+                secondary_y=False)
+
+            # Ship Out (on top so markers are visible)
             if "Ship_out" in data.columns and data["Ship_out"].sum() > 0:
                 fig.add_trace(go.Scatter(x=data["day"], y=data["Ship_out"], name="Ship Out (t)", mode='markers',
                                          marker=dict(symbol='triangle-up', size=10, color='#17becf')), secondary_y=False)
-
-            # Consumption (material consumed from this store for production)
-            if "Consumption_out" in data.columns and data["Consumption_out"].sum() > 0:
-                fig.add_trace(go.Scatter(x=data["day"], y=data["Consumption_out"], name="Consumption (t)",
-                                         line=dict(color="#d62728", dash="dashdot", width=1.5)), secondary_y=True)
 
             # Downtime Markers - only show downtime from equipment that produces TO this store
             supplier_equipment = store_to_equipment.get(store_key, set())
