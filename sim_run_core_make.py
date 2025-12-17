@@ -3,8 +3,17 @@ from __future__ import annotations
 from typing import List, Callable, Dict, Optional, Tuple, Set
 import simpy
 import random
+import math
 
 from sim_run_types import MakeUnit, ProductionCandidate
+
+
+def _sample_breakdown_duration(mean_hours: float = 3.0) -> int:
+    """Sample breakdown duration from lognormal distribution, minimum 1 hour."""
+    sigma = 0.8
+    mu = math.log(mean_hours) - (sigma ** 2) / 2
+    duration = random.lognormvariate(mu, sigma)
+    return max(1, round(duration))
 
 
 def _select_best_input_store(stores: Dict[str, simpy.Container], 
@@ -77,6 +86,11 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
     maintenance_days: Set[int] = set(unit.maintenance_days) if unit.maintenance_days else set()
     downtime_pct: float = unit.unplanned_downtime_pct or 0.0
     
+    available_hours_seen: float = 0.0
+    downtime_consumed: float = 0.0
+    breakdown_remaining: int = 0
+    mean_breakdown_duration: float = 3.0
+    
     while True:
         current_day = int(env.now / 24) % 365 + 1
         
@@ -94,10 +108,14 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                 to_level=None,
                 route_id=None
             )
+            if breakdown_remaining > 0:
+                pass
             yield env.timeout(unit.step_hours)
             continue
         
-        if downtime_pct > 0 and random.random() < downtime_pct:
+        available_hours_seen += unit.step_hours
+        
+        if breakdown_remaining > 0:
             log_func(
                 process="Downtime",
                 event="Breakdown",
@@ -111,8 +129,41 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                 to_level=None,
                 route_id=None
             )
+            downtime_consumed += unit.step_hours
+            breakdown_remaining -= 1
             yield env.timeout(unit.step_hours)
             continue
+        
+        if downtime_pct > 0:
+            target_downtime = available_hours_seen * downtime_pct
+            backlog = target_downtime - downtime_consumed
+            
+            if backlog > 0:
+                expected_duration = mean_breakdown_duration
+                start_prob = min(backlog / expected_duration, 1.0) * 0.15
+                
+                if random.random() < start_prob:
+                    duration = _sample_breakdown_duration(mean_breakdown_duration)
+                    max_allowed = max(1, int(backlog + expected_duration))
+                    breakdown_remaining = min(duration, max_allowed)
+                    
+                    log_func(
+                        process="Downtime",
+                        event="Breakdown",
+                        location=unit.location,
+                        equipment=unit.equipment,
+                        product=None,
+                        qty=None,
+                        from_store=None,
+                        from_level=None,
+                        to_store=None,
+                        to_level=None,
+                        route_id=None
+                    )
+                    downtime_consumed += unit.step_hours
+                    breakdown_remaining -= 1
+                    yield env.timeout(unit.step_hours)
+                    continue
         
         with resource.request() as req:
             yield req
