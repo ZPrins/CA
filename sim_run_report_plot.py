@@ -935,40 +935,52 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
     if not route_summaries:
         return None
 
-    # Sort by route_id
-    route_summaries.sort(key=lambda x: (float(x['route_id']) if x['route_id'].replace('.', '').isdigit() else float('inf'), x['route_id']))
+    # Sort by route_id numerically
+    def sort_key(x):
+        try:
+            return float(x['route_id'])
+        except:
+            return float('inf')
+    route_summaries.sort(key=sort_key)
     
     route_ids = [r['route_id'] for r in route_summaries]
     trip_counts = [r['n_trips'] for r in route_summaries]
 
     fig = go.Figure()
 
-    # Add stacked bars for each state (excluding IDLE from display but keep for calculation)
+    # Add stacked bars for each state with text labels showing hours
     display_states = ['LOADING', 'IN_TRANSIT', 'WAITING_FOR_BERTH', 'UNLOADING']
     for state in display_states:
         values = [r[state] for r in route_summaries]
+        # Only show text if value is significant (> 1 hour)
+        text_labels = [f"{v:.0f}h" if v >= 1 else "" for v in values]
         fig.add_trace(go.Bar(
             y=route_ids,
             x=values,
             name=state.replace('_', ' ').title(),
             orientation='h',
             marker_color=state_colors.get(state, '#999'),
+            text=text_labels,
+            textposition='inside',
+            textfont=dict(size=10, color='white'),
             hovertemplate=f"<b>{state.replace('_', ' ').title()}</b><br>Route: %{{y}}<br>Avg: %{{x:.1f}} hrs<extra></extra>"
         ))
 
     # Calculate total time for annotations (position at end of bar)
     totals = [sum(r[s] for s in display_states) for r in route_summaries]
+    max_total = max(totals) if totals else 1
 
     # Add trip count annotations at end of each bar
     annotations = []
-    for i, (route_id, total, count) in enumerate(zip(route_ids, totals, trip_counts)):
+    for route_id, total, count in zip(route_ids, totals, trip_counts):
         annotations.append(dict(
-            x=total + max(totals) * 0.02,  # Slight offset from bar end
-            y=route_id,
+            x=total + max_total * 0.02,
+            y=route_id,  # Use route_id to match categorical y-axis
             text=f"<b>{count}</b> trips",
             showarrow=False,
             font=dict(size=11, color='#2d3748'),
-            xanchor='left'
+            xanchor='left',
+            yanchor='middle'
         ))
 
     fig.update_layout(
@@ -980,7 +992,7 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
         barmode='stack',
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         annotations=annotations,
-        margin=dict(r=80)  # Extra margin for annotations
+        margin=dict(r=100)  # Extra margin for annotations
     )
 
     return fig
