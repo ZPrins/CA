@@ -213,10 +213,11 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
 
             # === BACKGROUND TRACES (added first, drawn behind) ===
             
-            # Production Output (bars behind everything else)
+            # Production Output (bars behind everything else - very transparent)
             if "Production_in" in data.columns and data["Production_in"].sum() > 0:
                 fig.add_trace(go.Bar(x=data["day"], y=data["Production_in"], name="Production (t)",
-                                     marker=dict(color="rgba(255, 127, 14, 0.4)"), width=0.8), secondary_y=True)
+                                     marker=dict(color="rgba(255, 127, 14, 0.2)", line=dict(width=0)), 
+                                     width=0.8, opacity=0.5), secondary_y=True)
 
             # Demand
             if data["demand_per_day"].sum() > 0:
@@ -247,9 +248,9 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
 
             # === FOREGROUND TRACES (added last, drawn on top) ===
             
-            # Level (on top so it's always visible)
+            # Level (on top so it's always visible - thicker line)
             fig.add_trace(
-                go.Scatter(x=data["day"], y=data["level"], name="Level (t)", line=dict(color="blue", width=2)),
+                go.Scatter(x=data["day"], y=data["level"], name="Level (t)", line=dict(color="blue", width=2.5)),
                 secondary_y=False)
 
             # Ship Out (on top so markers are visible)
