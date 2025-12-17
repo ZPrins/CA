@@ -316,7 +316,7 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
                 xaxis_title="Day",
                 yaxis_title="Inventory (Tons)",
                 yaxis2_title="Flow / Demand (Tons)",
-                template="plotly_dark",
+                template="plotly_white",
                 height=450,
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
@@ -458,7 +458,7 @@ def _generate_transport_plot(df_log: pd.DataFrame, equipment_type: str = None) -
         title = "Ship Transport Timeline"
 
     fig.update_layout(title=title, xaxis_title="Day of Year", yaxis_title="Route",
-                      height=max(400, len(moves['Route'].unique()) * 30), template="plotly_dark",
+                      height=max(400, len(moves['Route'].unique()) * 30), template="plotly_white",
                       yaxis=dict(autorange="reversed"))
     return fig
 
@@ -552,7 +552,7 @@ def _generate_ship_timeline_by_route_group(df_log: pd.DataFrame) -> List[go.Figu
             xaxis_title="Day of Year",
             yaxis_title="Location|Product",
             height=max(300, len(loc_products) * 40),
-            template="plotly_dark",
+            template="plotly_white",
             yaxis=dict(autorange="reversed")
         )
         figs.append((rg, fig))
@@ -684,7 +684,7 @@ def _generate_manufacturing_charts(df_log: pd.DataFrame) -> dict:
                 side='right',
                 showgrid=False
             ),
-            template="plotly_dark",
+            template="plotly_white",
             height=350,
             barmode='stack',
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
@@ -750,7 +750,7 @@ def _generate_fleet_utilisation_chart(df_log: pd.DataFrame) -> go.Figure:
         title="Ship Fleet Utilization by Day",
         xaxis_title="Day of Year",
         yaxis_title="Utilization (%)",
-        template="plotly_dark",
+        template="plotly_white",
         height=350,
         yaxis=dict(range=[0, 105])
     )
@@ -817,7 +817,7 @@ def _generate_vessel_state_chart(df_log: pd.DataFrame) -> go.Figure:
         title="Fleet State Over Time",
         xaxis_title="Day of Year",
         yaxis_title="Number of Vessels",
-        template="plotly_dark",
+        template="plotly_white",
         height=400,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
@@ -843,8 +843,8 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * {{ font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }}
-        body {{ margin: 0; padding-top: 120px; background: linear-gradient(145deg, #0f0f1a 0%, #1a1a2e 50%, #0d1b2a 100%); min-height: 100vh; color: #e8eaed; }}
-        .sticky-header {{ position: fixed; top: 0; left: 0; right: 0; background: rgba(30, 35, 50, 0.95); backdrop-filter: blur(20px); padding: 12px 40px; z-index: 1000; box-shadow: 0 8px 32px rgba(0,0,0,0.3); border-bottom: 1px solid rgba(255,255,255,0.08); }}
+        body {{ margin: 0; padding-top: 120px; background: #f0f4f8; min-height: 100vh; color: #2d3748; }}
+        .sticky-header {{ position: fixed; top: 0; left: 0; right: 0; background: rgba(30, 35, 50, 0.98); backdrop-filter: blur(20px); padding: 12px 40px; z-index: 1000; box-shadow: 0 4px 20px rgba(0,0,0,0.15); border-bottom: 1px solid rgba(255,255,255,0.08); }}
         .header-top {{ display: flex; justify-content: space-between; align-items: center; }}
         .sticky-header h1 {{ color: #4fc3f7; margin: 0; font-size: 1.4em; font-weight: 600; text-shadow: 0 0 40px rgba(79,195,247,0.3); }}
         .run-btn {{ background: linear-gradient(135deg, #4fc3f7 0%, #00b4d8 50%, #0096c7 100%); color: #1a1a2e; border: none; padding: 12px 24px; font-size: 0.85em; font-weight: 600; border-radius: 12px; cursor: pointer; transition: all 0.3s ease; text-transform: uppercase; letter-spacing: 0.5px; box-shadow: 0 4px 20px rgba(79,195,247,0.3); }}
@@ -853,21 +853,21 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         #status {{ color: #a0aec0; font-size: 0.9em; margin-left: 15px; }}
         .filter-bar {{ display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }}
         .filter-label {{ color: #a0aec0; font-size: 0.85em; margin-right: 5px; font-weight: 500; }}
-        .filter-btn {{ background: rgba(255,255,255,0.06); color: #b0bec5; border: 1px solid rgba(255,255,255,0.1); padding: 6px 14px; font-size: 0.85em; border-radius: 20px; cursor: pointer; transition: all 0.2s ease; }}
-        .filter-btn:hover {{ background: rgba(79,195,247,0.1); border-color: #4fc3f7; color: #4fc3f7; }}
+        .filter-btn {{ background: rgba(255,255,255,0.1); color: #b0bec5; border: 1px solid rgba(255,255,255,0.15); padding: 6px 14px; font-size: 0.85em; border-radius: 20px; cursor: pointer; transition: all 0.2s ease; }}
+        .filter-btn:hover {{ background: rgba(79,195,247,0.2); border-color: #4fc3f7; color: #4fc3f7; }}
         .filter-btn.active {{ background: #4fc3f7; color: #1a1a2e; border-color: #4fc3f7; font-weight: 600; }}
-        .filter-divider {{ border-left: 1px solid rgba(255,255,255,0.1); height: 24px; margin: 0 10px; }}
+        .filter-divider {{ border-left: 1px solid rgba(255,255,255,0.15); height: 24px; margin: 0 10px; }}
         .content {{ padding: 20px 40px; max-width: 1400px; margin: 0 auto; }}
-        .summary {{ background: rgba(30, 35, 50, 0.7); padding: 20px 24px; border-radius: 16px; margin-bottom: 30px; border-left: 4px solid #4fc3f7; border: 1px solid rgba(255,255,255,0.08); backdrop-filter: blur(20px); box-shadow: 0 8px 32px rgba(0,0,0,0.2); }}
-        .summary p {{ margin: 8px 0; color: #e8eaed; }}
-        .summary strong {{ color: #81d4fa; }}
-        .plot {{ margin: 20px 0; background: rgba(30, 35, 50, 0.7); padding: 20px; border-radius: 16px; box-shadow: 0 8px 32px rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.08); backdrop-filter: blur(20px); }}
+        .summary {{ background: #fff; padding: 20px 24px; border-radius: 12px; margin-bottom: 30px; border-left: 4px solid #4fc3f7; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }}
+        .summary p {{ margin: 8px 0; color: #4a5568; }}
+        .summary strong {{ color: #2b6cb0; }}
+        .plot {{ margin: 20px 0; background: #fff; padding: 20px; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }}
         .plot.hidden {{ display: none; }}
-        h2 {{ color: #4fc3f7; margin-top: 40px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px; font-weight: 600; }}
+        h2 {{ color: #2b6cb0; margin-top: 40px; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; font-weight: 600; }}
         h2.hidden {{ display: none; }}
-        h3 {{ color: #81d4fa; margin-top: 30px; font-size: 1.1em; font-weight: 500; }}
+        h3 {{ color: #4a5568; margin-top: 30px; font-size: 1.1em; font-weight: 500; }}
         h3.hidden {{ display: none; }}
-        .footer {{ margin-top: 50px; color: #666; font-size: 0.9em; text-align: center; padding-bottom: 20px; }}
+        .footer {{ margin-top: 50px; color: #a0aec0; font-size: 0.9em; text-align: center; padding-bottom: 20px; }}
     </style>
 </head>
 <body>
