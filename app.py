@@ -3,6 +3,7 @@ import time
 import subprocess
 import os
 import json
+import signal
 import tempfile
 from pathlib import Path
 import pandas as pd
@@ -14,6 +15,10 @@ from sim_run_config import config
 
 app = Flask(__name__)
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+
+# Track running processes for stop functionality
+running_processes = []
+stop_requested = False
 
 # Ensure output directory exists reference
 OUT_DIR = Path(config.out_dir)
@@ -136,8 +141,34 @@ def run_simulation():
         return jsonify({'success': False, 'output': str(e)})
 
 
+@app.route('/stop-simulation', methods=['POST'])
+def stop_simulation():
+    """Stop all running simulation processes."""
+    global running_processes, stop_requested
+    stop_requested = True
+    terminated = 0
+    
+    for proc in running_processes[:]:
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                terminated += 1
+        except Exception:
+            pass
+        running_processes.remove(proc)
+    
+    return jsonify({'success': True, 'terminated': terminated})
+
+
 @app.route('/stream-simulation')
 def stream_simulation():
+    global running_processes, stop_requested
+    stop_requested = False
+    
     # SSE endpoint that streams live logs from the sim process
     try:
         # Query params
@@ -164,6 +195,7 @@ def stream_simulation():
             encoding='utf-8',
             errors='replace'
         )
+        running_processes.append(proc)
 
         def sse_lines():
             try:
@@ -172,6 +204,11 @@ def stream_simulation():
 
                 if proc.stdout is not None:
                     while True:
+                        # Check if stop was requested
+                        if stop_requested:
+                            yield 'data: Simulation stopped by user\n\n'
+                            break
+                            
                         line = proc.stdout.readline()
                         if line:
                             msg = line.rstrip('\r\n')
@@ -196,10 +233,12 @@ def stream_simulation():
                 proc.wait()
 
                 report_html = OUT_DIR / 'sim_outputs_plots_all.html'
+                was_stopped = stop_requested
                 payload = {
-                    'success': proc.returncode == 0,
+                    'success': proc.returncode == 0 and not was_stopped,
                     'report_ready': report_html.exists(),
                     'exit_code': proc.returncode,
+                    'stopped': was_stopped
                 }
                 import json as _json
                 yield 'event: done\ndata: ' + _json.dumps(payload) + '\n\n'
@@ -207,6 +246,8 @@ def stream_simulation():
                 try:
                     if proc.poll() is None:
                         proc.terminate()
+                    if proc in running_processes:
+                        running_processes.remove(proc)
                 except Exception:
                     pass
 

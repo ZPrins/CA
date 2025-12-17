@@ -99,6 +99,26 @@
             color: #fff;
         }
         .btn-secondary:disabled { opacity: 0.5; transform: none; }
+        .btn-danger {
+            background: linear-gradient(135deg, #f44336 0%, #d32f2f 50%, #c62828 100%);
+            border: none;
+            font-weight: 600;
+            padding: 14px 36px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(244,67,54,0.3), 0 0 0 1px rgba(255,255,255,0.1) inset;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 14px;
+            color: #fff;
+        }
+        .btn-danger:hover { 
+            background: linear-gradient(135deg, #d32f2f 0%, #c62828 50%, #b71c1c 100%);
+            box-shadow: 0 6px 30px rgba(244,67,54,0.4), 0 0 0 1px rgba(255,255,255,0.15) inset;
+            transform: translateY(-2px);
+            color: #fff;
+        }
+        .btn-danger:disabled { opacity: 0.5; transform: none; }
         .btn-outline-light {
             border: 1px solid rgba(255,255,255,0.2);
             color: #b0bec5;
@@ -398,19 +418,25 @@
             </div>
             <div class="card-body">
                 <div class="row g-3">
-                    <div class="col-md-6">
+                    <div class="col-md-5">
                         <button type="button" class="btn btn-primary w-100" id="runSingleBtn">
                             <span id="runSingleBtnText">Run Single Simulation</span>
                             <span id="runSingleSpinner" class="spinner-border spinner-border-sm ms-2 d-none"></span>
                         </button>
                         <small class="text-muted d-block mt-2">Run one simulation with full detailed logging and interactive report</small>
                     </div>
-                    <div class="col-md-6">
+                    <div class="col-md-5">
                         <button type="button" class="btn btn-secondary w-100" id="runFullBtn">
                             <span id="runFullBtnText">Run Full Simulation</span>
                             <span id="runFullSpinner" class="spinner-border spinner-border-sm ms-2 d-none"></span>
                         </button>
                         <small class="text-muted d-block mt-2">Run multiple simulations (# Runs) in parallel with KPI summary</small>
+                    </div>
+                    <div class="col-md-2">
+                        <button type="button" class="btn btn-danger w-100 d-none" id="stopBtn">
+                            <span id="stopBtnText">Stop</span>
+                        </button>
+                        <small class="text-muted d-block mt-2">&nbsp;</small>
                     </div>
                 </div>
             </div>
@@ -631,6 +657,55 @@
             }
         }
 
+        // Track running state
+        let isRunning = false;
+        let abortController = null;
+
+        function showStopButton() {
+            document.getElementById('stopBtn').classList.remove('d-none');
+        }
+        function hideStopButton() {
+            document.getElementById('stopBtn').classList.add('d-none');
+        }
+
+        // Stop button handler
+        document.getElementById('stopBtn').addEventListener('click', async function() {
+            if (window.__simStream) {
+                try { window.__simStream.close(); } catch (e) {}
+                window.__simStream = null;
+            }
+            if (abortController) {
+                abortController.abort();
+                abortController = null;
+            }
+            
+            // Call stop endpoint
+            try {
+                await fetch('/stop-simulation', { method: 'POST' });
+            } catch (e) {}
+            
+            // Reset UI
+            isRunning = false;
+            hideStopButton();
+            document.getElementById('runSingleBtn').disabled = false;
+            document.getElementById('runFullBtn').disabled = false;
+            document.getElementById('runSingleBtnText').textContent = 'Run Single Simulation';
+            document.getElementById('runFullBtnText').textContent = 'Run Full Simulation';
+            document.getElementById('runSingleSpinner').classList.add('d-none');
+            document.getElementById('runFullSpinner').classList.add('d-none');
+            
+            const statusBadge = document.getElementById('statusBadge');
+            if (statusBadge) {
+                statusBadge.textContent = 'Stopped';
+                statusBadge.className = 'status-badge status-pending';
+            }
+            const kpiStatusBadge = document.getElementById('kpiStatusBadge');
+            if (kpiStatusBadge && document.getElementById('kpiCard').style.display !== 'none') {
+                kpiStatusBadge.textContent = 'Stopped';
+                kpiStatusBadge.className = 'status-badge status-pending';
+            }
+        });
+
         // Run Single Simulation (with detailed logging and report)
         document.getElementById('runSingleBtn').addEventListener('click', async function() {
             const btn = this;
@@ -644,6 +719,8 @@
             await saveModelParams();
             
             // Reset UI
+            isRunning = true;
+            showStopButton();
             outputLog.textContent = '';
             outputCard.style.display = 'block';
             document.getElementById('kpiCard').style.display = 'none';
@@ -695,6 +772,8 @@
                 es.addEventListener('done', async (ev) => {
                     try { es.close(); } catch (e) {}
                     window.__simStream = null;
+                    isRunning = false;
+                    hideStopButton();
                     let payload = {};
                     try { payload = JSON.parse(ev.data || '{}'); } catch (e) {}
                     const ok = !!payload.success;
@@ -729,6 +808,8 @@
                 outputLog.textContent += 'Failed to start stream: ' + err.message + '\n';
                 statusBadge.textContent = 'Error';
                 statusBadge.className = 'status-badge status-pending';
+                isRunning = false;
+                hideStopButton();
                 btn.disabled = false;
                 document.getElementById('runFullBtn').disabled = false;
                 btnText.textContent = 'Run Single Simulation';
@@ -756,6 +837,8 @@
             const numRuns = settings.num_runs;
 
             // Reset UI
+            isRunning = true;
+            showStopButton();
             document.getElementById('outputCard').style.display = 'none';
             kpiCard.style.display = 'block';
             kpiProgress.style.display = 'block';
@@ -772,6 +855,8 @@
             btnText.textContent = 'Running...';
             spinner.classList.remove('d-none');
 
+            abortController = new AbortController();
+            
             try {
                 const response = await fetch('/run-multi-simulation', {
                     method: 'POST',
@@ -780,7 +865,8 @@
                         horizon_days: settings.horizon_days,
                         random_opening: settings.random_opening,
                         num_runs: numRuns
-                    })
+                    }),
+                    signal: abortController.signal
                 });
 
                 const result = await response.json();
@@ -821,11 +907,16 @@
 
                 kpiProgress.style.display = 'none';
             } catch (err) {
-                kpiStatusBadge.textContent = 'Error';
-                kpiStatusBadge.className = 'status-badge status-pending';
-                kpiProgressText.textContent = 'Error: ' + err.message;
+                if (err.name !== 'AbortError') {
+                    kpiStatusBadge.textContent = 'Error';
+                    kpiStatusBadge.className = 'status-badge status-pending';
+                    kpiProgressText.textContent = 'Error: ' + err.message;
+                }
             }
 
+            isRunning = false;
+            hideStopButton();
+            abortController = null;
             btn.disabled = false;
             document.getElementById('runSingleBtn').disabled = false;
             btnText.textContent = 'Run Full Simulation';
