@@ -1,0 +1,75 @@
+# Shipping Model Specification
+
+Inputs
+- Move_SHIP: Origin location, RouteGroup assignment, number of vessels, average speed, ship capacity (#hulls, payload per hull).
+- SHIP_BERTHS: Berths per location, probability of berth occupied, PilotOutHours, PilotInHours (constants).
+- SHIP_DISTANCES: Distances between ports (nautical miles).
+- SHIP_ROUTES: Route sequences per RouteGroup (Origin → Dest1 → Dest2 → …).
+- Store Sheet: LoadRate and UnloadRate per product/location.
+- Deliver Sheet: Consumption rate at destinations.
+
+Planning Logic
+1. For each RouteGroup, check all vessels.
+2. If a vessel is IDLE, evaluate candidate routes from SHIP_ROUTES.
+3. For each route:
+   - Check product availability at origin.
+   - Forecast demand at destinations using Deliver sheet (consumption rate).
+   - Calculate planned travel time = distance ÷ avg speed + PilotOutHours + PilotInHours.
+   - Allocate hulls:
+     - Each hull holds one product type.
+     - At least 60% of hulls must be filled before departure (unless route allows empty transit to next loading location).
+   - Score route based on utilisation (hull fill %), urgency (destination depletion risk), and planned travel time.
+4. Assign vessel to the best‑scoring route.
+5. Vessel state transitions to LOADING.
+
+Execution Logic (SimPy orchestrates global time)
+Ships move through explicit states:
+
+Ship.State ∈ {IDLE, LOADING, IN_TRANSIT, WAITING_FOR_BERTH, UNLOADING, ERROR}
+
+LOADING
+- For each hull:
+  - RequiredQty = PayloadPerHull.
+  - If inventory at origin ≥ RequiredQty:
+    - LoadTime = RequiredQty ÷ LoadRate[Origin, Product].
+    - Deplete origin inventory.
+    - Advance clock by LoadTime.
+  - Else: wait until inventory available, then load.
+- If ≥60% hulls filled OR route allows empty transit → state = IN_TRANSIT.
+
+IN_TRANSIT
+- TravelTime = Distance ÷ AvgSpeed + PilotOutHours + PilotInHours.
+- Advance clock by TravelTime.
+- State = WAITING_FOR_BERTH.
+
+WAITING_FOR_BERTH
+- Ships join FIFO berth queue at destination.
+- If berth available → state = UNLOADING.
+- Else → wait until berth free.
+
+UNLOADING
+- For each hull:
+  - UnloadTime = PayloadPerHull ÷ UnloadRate[Destination, Product].
+  - Increase destination inventory gradually.
+  - Advance clock by UnloadTime.
+- After unloading all hulls → state = IDLE.
+- Vessel returns to RouteGroup pool at origin.
+
+ERROR
+- If inventory never becomes available, or destination cannot accept cargo:
+  - Log error.
+  - Vessel remains IDLE (no reroute).
+
+Clarification Rules
+- Global time: SimPy orchestrates events (continuous time).
+- Hull utilisation: ≥60% before departure, empty hulls allowed if route permits.
+- Route scoring: maximise utilisation + urgency; no costs yet.
+- Consumption forecasting: use Deliver sheet rates (deterministic).
+- Berth handling: FIFO queue system.
+- Pilot hours: constants from SHIP_BERTHS sheet, applied per trip leg.
+- Route continuity: once assigned, ships complete full route sequence.
+- Reassignment: after unloading, ships return to origin pool before reassignment.
+- Error handling: log errors, ships remain idle until a new route score is available.
+
+Summary
+This specification defines a SimPy‑driven shipping model where ships move through explicit states, respect load/unload rates, berth queues, pilot delays, and inventory constraints. Planning ensures ≥60% utilisation and proactive delivery to prevent destination depletion. Execution introduces stochastic berth delays and enforces time‑based throughput limits. Ships always complete assigned routes, return to origin, and await reassignment. Errors are logged, with ships remaining idle until new routes are scored.
