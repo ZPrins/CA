@@ -919,8 +919,8 @@
                             const tr = document.createElement('tr');
                             tr.innerHTML = `
                                 <td>${idx + 1}</td>
-                                <td>${(kpi.total_unmet_demand || 0).toLocaleString()}</td>
-                                <td>${(kpi.total_production || 0).toLocaleString()}</td>
+                                <td>${Math.round(kpi.total_unmet_demand || 0).toLocaleString()}</td>
+                                <td>${Math.round(kpi.total_production || 0).toLocaleString()}</td>
                                 <td>${(kpi.avg_inventory_pct || 0).toFixed(1)}%</td>
                                 <td>${kpi.ship_trips || 0}</td>
                                 <td>${kpi.train_trips || 0}</td>
@@ -933,8 +933,8 @@
                         const avgProd = result.kpis.reduce((a,k) => a + (k.total_production || 0), 0) / result.kpis.length;
                         const avgInv = result.kpis.reduce((a,k) => a + (k.avg_inventory_pct || 0), 0) / result.kpis.length;
 
-                        document.getElementById('avgUnmetDemand').textContent = avgUnmet.toLocaleString() + ' t';
-                        document.getElementById('avgProduction').textContent = avgProd.toLocaleString() + ' t';
+                        document.getElementById('avgUnmetDemand').textContent = Math.round(avgUnmet).toLocaleString() + ' t';
+                        document.getElementById('avgProduction').textContent = Math.round(avgProd).toLocaleString() + ' t';
                         document.getElementById('avgInventory').textContent = avgInv.toFixed(1) + '%';
 
                         kpiTableContainer.style.display = 'block';
