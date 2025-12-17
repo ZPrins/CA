@@ -76,13 +76,12 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
     vessel_state_fig = None
     fleet_util_fig = None
     manufacturing_figs = {}
-    if sim.action_log:
-        df_log_all = pd.DataFrame(sim.action_log)
-        train_transport_fig = _generate_transport_plot(df_log_all, equipment_type="Train")
-        ship_route_group_figs = _generate_ship_timeline_by_route_group(df_log_all)
-        vessel_state_fig = _generate_vessel_state_chart(df_log_all)
-        fleet_util_fig = _generate_fleet_utilisation_chart(df_log_all)
-        manufacturing_figs = _generate_manufacturing_charts(df_log_all)
+    if not df_log.empty:
+        train_transport_fig = _generate_transport_plot(df_log, equipment_type="Train")
+        ship_route_group_figs = _generate_ship_timeline_by_route_group(df_log)
+        vessel_state_fig = _generate_vessel_state_chart(df_log)
+        fleet_util_fig = _generate_fleet_utilisation_chart(df_log)
+        manufacturing_figs = _generate_manufacturing_charts(df_log)
 
     # 4. Store Figures
     store_figs = {}
