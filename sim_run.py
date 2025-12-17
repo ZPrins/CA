@@ -79,12 +79,18 @@ def main():
 
     # --- MOVEMENT SUMMARY ---
     df_log = pd.DataFrame(sim.action_log)
-    n_ship_loads = len(df_log[df_log['event'] == 'ShipLoad']) if not df_log.empty else 0
-    n_train_loads = len(df_log[df_log['event'] == 'Loaded']) if not df_log.empty else 0
+    if not df_log.empty:
+        n_ship_loads = len(df_log[(df_log['event'] == 'Load') & (df_log['equipment'] == 'Ship')])
+        n_train_loads = len(df_log[(df_log['event'] == 'Load') & (df_log['equipment'] == 'Train')])
+        ship_tons = df_log[(df_log['event'] == 'Load') & (df_log['equipment'] == 'Ship')]['qty'].sum()
+        train_tons = df_log[(df_log['event'] == 'Load') & (df_log['equipment'] == 'Train')]['qty'].sum()
+    else:
+        n_ship_loads = n_train_loads = 0
+        ship_tons = train_tons = 0
 
     print(f"\n=== Transport Summary ===")
-    print(f"  Ship Loads:  {n_ship_loads}")
-    print(f"  Train Loads: {n_train_loads}")
+    print(f"  Ship Loads:  {n_ship_loads} ({ship_tons:,.0f} tons)")
+    print(f"  Train Loads: {n_train_loads} ({train_tons:,.0f} tons)")
     print(f"  Total Unmet: {sum(sim.unmet.values()):,.0f} tons")
     print(f"\nAll complete! Check '{out_dir}' for results.")
 

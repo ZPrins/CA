@@ -80,7 +80,8 @@ class SupplyChainSimulation:
                 self.port_berths,
                 self.log,
                 store_rates=self.settings.get('store_rates', {}),
-                require_full=self.settings.get("require_full_payload", True)
+                require_full=self.settings.get("require_full_payload", True),
+                demand_rates=self.demand_rate_map
             )
         else:  # TRAIN
             yield from _transporter_train(
