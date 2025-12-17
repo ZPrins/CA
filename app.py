@@ -32,7 +32,9 @@ def load_model_params():
                 if sheet_name.lower() == 'store':
                     df = xls[sheet_name].dropna(how='all')
                     df.columns = [str(c).strip() for c in df.columns]
-                    store_data = df.to_dict('records')
+                    # Filter out unnamed columns and convert NaN to empty string
+                    df = df[[c for c in df.columns if not c.startswith('Unnamed')]]
+                    store_data = df.fillna('').to_dict('records')
                     break
             
             # Load Move_Ship sheet
@@ -40,7 +42,9 @@ def load_model_params():
                 if sheet_name.lower() == 'move_ship':
                     df = xls[sheet_name].dropna(how='all')
                     df.columns = [str(c).strip() for c in df.columns]
-                    move_ship_data = df.to_dict('records')
+                    # Filter out unnamed columns and convert NaN to empty string
+                    df = df[[c for c in df.columns if not c.startswith('Unnamed')]]
+                    move_ship_data = df.fillna('').to_dict('records')
                     break
                     
         except Exception as e:
