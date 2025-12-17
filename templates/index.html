@@ -87,6 +87,84 @@
         .file-list a:hover { text-decoration: underline; }
         .text-muted { color: #9e9e9e !important; }
         .form-check-label { color: #e0e0e0; }
+        .accordion-button {
+            background: rgba(255,255,255,0.08);
+            color: #81d4fa;
+            border: none;
+        }
+        .accordion-button:not(.collapsed) {
+            background: rgba(79,195,247,0.15);
+            color: #4fc3f7;
+        }
+        .accordion-button:focus { box-shadow: none; }
+        .accordion-button::after {
+            filter: invert(1);
+        }
+        .accordion-item {
+            background: transparent;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        .accordion-body {
+            background: rgba(255,255,255,0.03);
+            padding: 1rem;
+        }
+        .nav-tabs {
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .nav-tabs .nav-link {
+            color: #9e9e9e;
+            border: none;
+            padding: 8px 16px;
+        }
+        .nav-tabs .nav-link:hover {
+            color: #4fc3f7;
+            border: none;
+        }
+        .nav-tabs .nav-link.active {
+            background: rgba(79,195,247,0.15);
+            color: #4fc3f7;
+            border: none;
+            border-radius: 6px 6px 0 0;
+        }
+        .param-table {
+            font-size: 13px;
+            width: 100%;
+        }
+        .param-table th {
+            background: rgba(255,255,255,0.08);
+            color: #81d4fa;
+            padding: 8px;
+            font-weight: 500;
+            position: sticky;
+            top: 0;
+        }
+        .param-table td {
+            padding: 6px 8px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .param-table input {
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: #fff;
+            padding: 4px 8px;
+            border-radius: 4px;
+            width: 100%;
+            font-size: 12px;
+        }
+        .param-table input:focus {
+            background: rgba(255,255,255,0.15);
+            border-color: #4fc3f7;
+            outline: none;
+        }
+        .param-table input[readonly] {
+            background: rgba(255,255,255,0.05);
+            color: #9e9e9e;
+        }
+        .table-container {
+            max-height: 300px;
+            overflow-y: auto;
+            border-radius: 8px;
+        }
     </style>
 </head>
 <body>
@@ -133,6 +211,68 @@
             </div>
         </div>
 
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Model Parameters</h5>
+                <small class="text-muted">Edit values below before running simulation</small>
+            </div>
+            <div class="card-body p-0">
+                <div class="accordion" id="paramAccordion">
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseStore">
+                                Storage Locations
+                            </button>
+                        </h2>
+                        <div id="collapseStore" class="accordion-collapse collapse" data-bs-parent="#paramAccordion">
+                            <div class="accordion-body">
+                                <div class="table-container">
+                                    <table class="param-table" id="storeTable">
+                                        <thead>
+                                            <tr>
+                                                <th>Location</th>
+                                                <th>Product</th>
+                                                <th>Equipment</th>
+                                                <th>Capacity</th>
+                                                <th>Opening</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="storeTableBody"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseShip">
+                                Ship Routes
+                            </button>
+                        </h2>
+                        <div id="collapseShip" class="accordion-collapse collapse" data-bs-parent="#paramAccordion">
+                            <div class="accordion-body">
+                                <div class="table-container">
+                                    <table class="param-table" id="shipTable">
+                                        <thead>
+                                            <tr>
+                                                <th>Route</th>
+                                                <th>From</th>
+                                                <th>To</th>
+                                                <th>Product</th>
+                                                <th>Payload</th>
+                                                <th>Rate (tph)</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="shipTableBody"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="card mb-4" id="outputCard" style="display: none;">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="mb-0">Simulation Output</h5>
@@ -165,7 +305,70 @@
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        // Model parameters from server
+        const modelParams = {{ model_params | tojson | safe }};
+        
+        // Populate Store table
+        function populateStoreTable() {
+            const tbody = document.getElementById('storeTableBody');
+            tbody.innerHTML = '';
+            (modelParams.store || []).forEach((row, idx) => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><input type="text" value="${row.Location || ''}" readonly></td>
+                    <td><input type="text" value="${row.Product_Class || row.product_class || ''}" readonly></td>
+                    <td><input type="text" value="${row.Equipment || ''}" readonly></td>
+                    <td><input type="number" data-field="Capacity" data-idx="${idx}" value="${row.Capacity || 0}"></td>
+                    <td><input type="number" data-field="Opening" data-idx="${idx}" value="${row.Opening || 0}"></td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+        
+        // Populate Ship table
+        function populateShipTable() {
+            const tbody = document.getElementById('shipTableBody');
+            tbody.innerHTML = '';
+            (modelParams.move_ship || []).forEach((row, idx) => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><input type="text" value="${row.Route || row.route_id || ''}" readonly></td>
+                    <td><input type="text" value="${row.From || row.from_location || ''}" readonly></td>
+                    <td><input type="text" value="${row.To || row.to_location || ''}" readonly></td>
+                    <td><input type="text" value="${row.Product_Class || row.product_class || ''}" readonly></td>
+                    <td><input type="number" data-field="Payload" data-idx="${idx}" value="${row.Payload || row.payload_t || 0}"></td>
+                    <td><input type="number" data-field="Rate" data-idx="${idx}" value="${row.Rate_tph || row.rate_tph || 0}" step="0.1"></td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+        
+        // Update model params when inputs change
+        document.addEventListener('change', function(e) {
+            if (e.target.matches('#storeTableBody input[data-field]')) {
+                const idx = parseInt(e.target.dataset.idx);
+                const field = e.target.dataset.field;
+                modelParams.store[idx][field] = parseFloat(e.target.value) || 0;
+            }
+            if (e.target.matches('#shipTableBody input[data-field]')) {
+                const idx = parseInt(e.target.dataset.idx);
+                const field = e.target.dataset.field;
+                if (field === 'Payload') {
+                    modelParams.move_ship[idx].Payload = parseFloat(e.target.value) || 0;
+                    modelParams.move_ship[idx].payload_t = parseFloat(e.target.value) || 0;
+                } else if (field === 'Rate') {
+                    modelParams.move_ship[idx].Rate_tph = parseFloat(e.target.value) || 0;
+                    modelParams.move_ship[idx].rate_tph = parseFloat(e.target.value) || 0;
+                }
+            }
+        });
+        
+        // Initialize tables
+        populateStoreTable();
+        populateShipTable();
+
         document.getElementById('simForm').addEventListener('submit', async function(e) {
             e.preventDefault();
             

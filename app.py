@@ -2,7 +2,10 @@ from flask import Flask, render_template, request, jsonify, send_from_directory,
 import time
 import subprocess
 import os
+import json
+import tempfile
 from pathlib import Path
+import pandas as pd
 
 # Move config import to top level (assumes config doesn't import app)
 from sim_run_config import config
@@ -12,17 +15,57 @@ app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
 # Ensure output directory exists reference
 OUT_DIR = Path(config.out_dir)
+INPUT_FILE = 'generated_model_inputs.xlsx'
+
+
+def load_model_params():
+    """Load Store and Move_Ship parameters from Excel for UI editing."""
+    store_data = []
+    move_ship_data = []
+    
+    if os.path.exists(INPUT_FILE):
+        try:
+            xls = pd.read_excel(INPUT_FILE, sheet_name=None)
+            
+            # Load Store sheet
+            for sheet_name in xls.keys():
+                if sheet_name.lower() == 'store':
+                    df = xls[sheet_name].dropna(how='all')
+                    df.columns = [str(c).strip() for c in df.columns]
+                    store_data = df.to_dict('records')
+                    break
+            
+            # Load Move_Ship sheet
+            for sheet_name in xls.keys():
+                if sheet_name.lower() == 'move_ship':
+                    df = xls[sheet_name].dropna(how='all')
+                    df.columns = [str(c).strip() for c in df.columns]
+                    move_ship_data = df.to_dict('records')
+                    break
+                    
+        except Exception as e:
+            print(f"Error loading model params: {e}")
+    
+    return {'store': store_data, 'move_ship': move_ship_data}
 
 
 @app.route('/')
 def index():
     outputs_exist = (OUT_DIR / 'sim_outputs_plots_all.html').exists()
     csv_files = list(OUT_DIR.glob('*.csv')) if OUT_DIR.exists() else []
+    model_params = load_model_params()
 
     return render_template('index.html',
                            config=config,
                            outputs_exist=outputs_exist,
-                           csv_files=[f.name for f in csv_files])
+                           csv_files=[f.name for f in csv_files],
+                           model_params=model_params)
+
+
+@app.route('/api/model-params')
+def get_model_params():
+    """API endpoint to get model parameters."""
+    return jsonify(load_model_params())
 
 
 @app.route('/run-simulation', methods=['POST'])
