@@ -80,10 +80,14 @@ def _get_start_location(itinerary: List[Dict]) -> Optional[str]:
 
 def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Container],
                            payload_per_hull: float, n_hulls: int, demand_rates: Dict[str, float],
-                           nm_distances: Dict, speed_knots: float, berth_info: Dict) -> Tuple[float, float, float]:
+                           nm_distances: Dict, speed_knots: float, berth_info: Dict,
+                           sole_supplier_stores: Optional[set] = None) -> Tuple[float, float, float]:
     """
     Score a route based on utilization, urgency, and travel time.
     Returns (score, utilization_pct, urgency_score)
+    
+    sole_supplier_stores: Set of store keys that only have ONE route serving them.
+    Routes serving these stores get a bonus to ensure they get selected occasionally.
     """
     load_steps = [s for s in itinerary if s.get('kind') == 'load']
     unload_steps = [s for s in itinerary if s.get('kind') == 'unload']
@@ -99,6 +103,7 @@ def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contai
     utilization = min(1.0, total_available / max(total_capacity, 1.0))
     
     urgency = 0.0
+    sole_supplier_bonus = 0.0
     for step in unload_steps:
         sk = step.get('store_key')
         if sk and sk in stores:
@@ -108,6 +113,13 @@ def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contai
                 days_of_stock = level / (rate * 24)
                 step_urgency = max(0, 10 - days_of_stock)
                 urgency = max(urgency, step_urgency)
+                
+                # Bonus for sole supplier routes - stronger when stock is low
+                # Use 60-day threshold to ensure these routes get selected before running out
+                if sole_supplier_stores and sk in sole_supplier_stores:
+                    if days_of_stock < 60:
+                        # Strong bonus that can compete with high-utilization routes
+                        sole_supplier_bonus = max(sole_supplier_bonus, 100 * (1 - days_of_stock / 60))
     
     travel_time = 0.0
     sail_steps = [s for s in itinerary if s.get('kind') == 'sail']
@@ -120,7 +132,7 @@ def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contai
             pilot_in = _get_pilot_hours(berth_info, to_loc, 'in')
             travel_time += (nm / max(speed_knots, 1.0)) + pilot_out + pilot_in
     
-    score = (utilization * 50) + (urgency * 30) - (travel_time * 0.1)
+    score = (utilization * 50) + (urgency * 30) + sole_supplier_bonus - (travel_time * 0.1)
     
     return (score, utilization, urgency)
 
@@ -132,10 +144,13 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                 store_rates: Dict[str, Tuple[float, float]],
                 require_full: bool = True,
                 demand_rates: Optional[Dict[str, float]] = None,
-                vessel_id: int = 1):
+                vessel_id: int = 1,
+                sole_supplier_stores: Optional[set] = None):
     """
     Main ship vessel process. This is called once per vessel by the simulation core.
     Follows the state machine: IDLE -> LOADING -> IN_TRANSIT -> WAITING_FOR_BERTH -> UNLOADING -> IDLE
+    
+    sole_supplier_stores: Set of store keys that only have ONE route serving them.
     """
     if not getattr(route, 'itineraries', None):
         while True:
@@ -204,9 +219,28 @@ def transporter(env: simpy.Environment, route: TransportRoute,
             for it in candidate_its:
                 score, util, _ = _calculate_route_score(
                     it, stores, payload_per_hull, n_hulls, 
-                    demand_rates_map, nm_distances, speed_knots, berth_info
+                    demand_rates_map, nm_distances, speed_knots, berth_info,
+                    sole_supplier_stores
                 )
-                if util >= min_utilization and score > best_score:
+                
+                # Check if this route serves a sole-supplier store that's critically low
+                # If so, allow lower utilization (min 1 hull = 20% for 5-hull ship)
+                required_util = min_utilization
+                if sole_supplier_stores:
+                    for step in it:
+                        if step.get('kind') == 'unload':
+                            sk = step.get('store_key')
+                            if sk and sk in sole_supplier_stores and sk in stores:
+                                level = float(stores[sk].level)
+                                rate = demand_rates_map.get(sk, 0.0)
+                                if rate > 0:
+                                    days_of_stock = level / (rate * 24)
+                                    # If less than 60 days stock at a sole-supplier dest, lower the bar
+                                    if days_of_stock < 60:
+                                        required_util = 0.20  # Allow with just 1 hull
+                                        break
+                
+                if util >= required_util and score > best_score:
                     best_score = score
                     best_it = it
             
