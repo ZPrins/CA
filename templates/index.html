@@ -204,6 +204,17 @@
             font-size: 12px;
             transition: all 0.2s ease;
         }
+        .param-table input.editable {
+            background: rgba(255, 235, 59, 0.15);
+            border: 1px solid rgba(255, 235, 59, 0.4);
+            color: #ffeb3b;
+        }
+        .param-table input.editable:focus {
+            background: rgba(255, 235, 59, 0.25);
+            border-color: #ffeb3b;
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(255, 235, 59, 0.2);
+        }
         .param-table input:focus {
             background: rgba(255,255,255,0.1);
             border-color: #4fc3f7;
@@ -214,6 +225,28 @@
             background: transparent;
             border-color: transparent;
             color: #a0aec0;
+        }
+        .input-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .input-wrapper input { flex: 1; }
+        .restore-btn {
+            background: none;
+            border: none;
+            color: #9e9e9e;
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 4px;
+            font-size: 14px;
+            transition: all 0.2s ease;
+            opacity: 0.6;
+        }
+        .restore-btn:hover {
+            color: #4fc3f7;
+            background: rgba(79, 195, 247, 0.1);
+            opacity: 1;
         }
         .table-container {
             max-height: 350px;
@@ -373,6 +406,17 @@
     <script>
         // Model parameters from server
         const modelParams = {{ model_params | tojson | safe }};
+        // Store original values for restore functionality
+        const originalParams = JSON.parse(JSON.stringify(modelParams));
+        
+        // Helper to create editable input with restore button
+        function editableInput(field, idx, value, table, step='') {
+            const stepAttr = step ? `step="${step}"` : '';
+            return `<div class="input-wrapper">
+                <input type="number" class="editable" data-field="${field}" data-idx="${idx}" data-table="${table}" value="${value}" ${stepAttr}>
+                <button type="button" class="restore-btn" data-field="${field}" data-idx="${idx}" data-table="${table}" title="Restore original">&#8635;</button>
+            </div>`;
+        }
         
         // Populate Store table
         function populateStoreTable() {
@@ -384,11 +428,11 @@
                     <td><input type="text" value="${row.Location || ''}" readonly></td>
                     <td><input type="text" value="${row['Equipment Name'] || ''}" readonly></td>
                     <td><input type="text" value="${row.Input || ''}" readonly></td>
-                    <td><input type="number" data-field="Silo Max Capacity" data-idx="${idx}" value="${row['Silo Max Capacity'] || 0}"></td>
-                    <td><input type="number" data-field="Silo Opening Stock (High)" data-idx="${idx}" value="${row['Silo Opening Stock (High)'] || 0}"></td>
-                    <td><input type="number" data-field="Silo Opening Stock (Low)" data-idx="${idx}" value="${row['Silo Opening Stock (Low)'] || 0}"></td>
-                    <td><input type="number" data-field="Load Rate (ton/hr)" data-idx="${idx}" value="${row['Load Rate (ton/hr)'] || 0}"></td>
-                    <td><input type="number" data-field="Unload Rate (ton/hr)" data-idx="${idx}" value="${row['Unload Rate (ton/hr)'] || 0}"></td>
+                    <td>${editableInput('Silo Max Capacity', idx, row['Silo Max Capacity'] || 0, 'store')}</td>
+                    <td>${editableInput('Silo Opening Stock (High)', idx, row['Silo Opening Stock (High)'] || 0, 'store')}</td>
+                    <td>${editableInput('Silo Opening Stock (Low)', idx, row['Silo Opening Stock (Low)'] || 0, 'store')}</td>
+                    <td>${editableInput('Load Rate (ton/hr)', idx, row['Load Rate (ton/hr)'] || 0, 'store')}</td>
+                    <td>${editableInput('Unload Rate (ton/hr)', idx, row['Unload Rate (ton/hr)'] || 0, 'store')}</td>
                 `;
                 tbody.appendChild(tr);
             });
@@ -403,10 +447,10 @@
                 tr.innerHTML = `
                     <td><input type="text" value="${row['Origin Location'] || ''}" readonly></td>
                     <td><input type="text" value="${row['Route Group'] || ''}" readonly></td>
-                    <td><input type="number" data-field="# Vessels" data-idx="${idx}" value="${row['# Vessels'] || 0}"></td>
-                    <td><input type="number" data-field="Route avg Speed (knots)" data-idx="${idx}" value="${row['Route avg Speed (knots)'] || 0}" step="0.1"></td>
-                    <td><input type="number" data-field="#Hulls" data-idx="${idx}" value="${row['#Hulls'] || 0}"></td>
-                    <td><input type="number" data-field="Payload per Hull" data-idx="${idx}" value="${row['Payload per Hull'] || 0}"></td>
+                    <td>${editableInput('# Vessels', idx, row['# Vessels'] || 0, 'move_ship')}</td>
+                    <td>${editableInput('Route avg Speed (knots)', idx, row['Route avg Speed (knots)'] || 0, 'move_ship', '0.1')}</td>
+                    <td>${editableInput('#Hulls', idx, row['#Hulls'] || 0, 'move_ship')}</td>
+                    <td>${editableInput('Payload per Hull', idx, row['Payload per Hull'] || 0, 'move_ship')}</td>
                 `;
                 tbody.appendChild(tr);
             });
@@ -414,15 +458,32 @@
         
         // Update model params when inputs change
         document.addEventListener('change', function(e) {
-            if (e.target.matches('#storeTableBody input[data-field]')) {
+            if (e.target.matches('input.editable[data-field]')) {
                 const idx = parseInt(e.target.dataset.idx);
                 const field = e.target.dataset.field;
-                modelParams.store[idx][field] = parseFloat(e.target.value) || 0;
+                const table = e.target.dataset.table;
+                if (table === 'store') {
+                    modelParams.store[idx][field] = parseFloat(e.target.value) || 0;
+                } else if (table === 'move_ship') {
+                    modelParams.move_ship[idx][field] = parseFloat(e.target.value) || 0;
+                }
             }
-            if (e.target.matches('#shipTableBody input[data-field]')) {
+        });
+        
+        // Restore button click handler
+        document.addEventListener('click', function(e) {
+            if (e.target.matches('.restore-btn')) {
                 const idx = parseInt(e.target.dataset.idx);
                 const field = e.target.dataset.field;
-                modelParams.move_ship[idx][field] = parseFloat(e.target.value) || 0;
+                const table = e.target.dataset.table;
+                const originalValue = originalParams[table][idx][field] || 0;
+                
+                // Update the input value
+                const input = e.target.previousElementSibling;
+                input.value = originalValue;
+                
+                // Update model params
+                modelParams[table][idx][field] = originalValue;
             }
         });
         
