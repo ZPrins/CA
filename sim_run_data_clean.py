@@ -21,7 +21,13 @@ def _normalize_ship_routes_wide_to_long(df: pd.DataFrame,
     if not is_wide: return df
 
     print("  [INFO] Normalizing Wide 'SHIP_ROUTES' format...")
-    route_cols = [c for c in df.columns if c != first_col and not str(c).startswith("Unnamed")]
+    all_cols = [c for c in df.columns if c != first_col]
+    route_cols = []
+    for c in all_cols:
+        route_map = dict(zip(df[first_col].astype(str).str.strip(), df[c].astype(str).str.strip()))
+        rg = route_map.get('Route Group')
+        if rg and rg.lower() not in ('nan', 'none', ''):
+            route_cols.append(c)
     long_rows = []
 
     for r_col in route_cols:
