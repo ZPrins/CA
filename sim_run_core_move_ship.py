@@ -251,9 +251,14 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                         
                         already_loaded = sum(cargo.values())
                         remaining_cap = max(0, (n_hulls * payload_per_hull) - already_loaded)
-                        qty_to_load = min(remaining_cap, float(cont.level))
+                        available = float(cont.level)
                         
-                        if qty_to_load > 1e-6 and cont.level >= qty_to_load:
+                        # Round down to full hulls only (no partial hull loads)
+                        max_loadable = min(remaining_cap, available)
+                        full_hulls = int(max_loadable // payload_per_hull)
+                        qty_to_load = full_hulls * payload_per_hull
+                        
+                        if qty_to_load >= payload_per_hull and cont.level >= qty_to_load:
                             yield cont.get(qty_to_load)
                             from_level = cont.level
                             
