@@ -71,6 +71,20 @@ The codebase follows a layered architecture:
 - `supply_chain_viz.py`: NetworkX/PyVis visualization of supply chain topology
 - Configurable via `supply_chain_viz_config.py`
 
+### HTML Report Features
+The generated HTML report (`sim_outputs_plots_all.html`) includes:
+- **Run Single Simulation button** with countdown timer based on previous run time
+- **Styled progress badges**: Orange (running), purple (finishing), green (complete)
+- **Previous inventory comparison**: Grey dotted "Prev Level" line on inventory charts
+- **Filtering**: By product and location
+- **Interactive charts**:
+  - Inventory levels with capacity, demand, and flow data
+  - Production output with downtime markers
+  - Rail transport timeline
+  - Ship route timelines by route group
+  - Fleet utilization and state over time
+  - **Route Summary**: Stacked bar chart showing average time by status (Loading, In Transit, Waiting for Berth, Unloading) with trip counts on right axis
+
 ## External Dependencies
 
 ### Python Packages
@@ -81,7 +95,8 @@ The codebase follows a layered architecture:
 - **networkx** (>=3.1): Graph data structures
 - **pyvis** (>=0.3.2): Network visualization
 - **jinja2** (>=3.1): Template rendering
-- **Flask** (>=3.0): Optional web UI
+- **Flask** (>=3.0): Web UI
+- **orjson**: Fast JSON serialization
 
 ### Data Inputs
 - Primary: `generated_model_inputs.xlsx` (Excel workbook in project root)
@@ -90,3 +105,11 @@ The codebase follows a layered architecture:
 ### Output Directory
 - All outputs written to `sim_outputs/`
 - Key files: `sim_outputs_plots_all.html`, `sim_outputs_sim_log.csv`, `sim_outputs_inventory_daily.csv`
+
+## Recent Changes
+
+- Added Route Summary chart with stacked bars showing average time per status and trip counts
+- Implemented countdown timer on Run Simulation button based on previous run time
+- Added styled progress badges (orange/purple/green) for simulation status
+- Added previous inventory comparison feature (grey dotted line)
+- Optimized fleet utilization chart generation (reduced from 6s to <1s)
