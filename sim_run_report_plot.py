@@ -211,6 +211,11 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
 
             fig = make_subplots(specs=[[{"secondary_y": True}]])
 
+            # Production Output (bars behind everything else - add first)
+            if "Production_in" in data.columns and data["Production_in"].sum() > 0:
+                fig.add_trace(go.Bar(x=data["day"], y=data["Production_in"], name="Production (t)",
+                                     marker=dict(color="rgba(255, 127, 14, 0.4)"), width=0.8), secondary_y=True)
+
             # Level
             fig.add_trace(
                 go.Scatter(x=data["day"], y=data["level"], name="Level (t)", line=dict(color="blue", width=2)),
@@ -244,11 +249,6 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
                 fig.add_trace(go.Scatter(x=data["day"], y=data["Ship_out"], name="Ship Out (t)", mode='markers',
                                          marker=dict(symbol='triangle-up', size=10, color='#17becf')), secondary_y=True)
 
-            # Production Output
-            if "Production_in" in data.columns and data["Production_in"].sum() > 0:
-                fig.add_trace(go.Scatter(x=data["day"], y=data["Production_in"], name="Production (t)",
-                                         line=dict(color="#ff7f0e", dash="dash", width=1)), secondary_y=True)
-            
             # Consumption (material consumed from this store for production)
             if "Consumption_out" in data.columns and data["Consumption_out"].sum() > 0:
                 fig.add_trace(go.Scatter(x=data["day"], y=data["Consumption_out"], name="Consumption (t)",
