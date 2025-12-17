@@ -868,12 +868,12 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         .sticky-header h1 {{ color: #4fc3f7; margin: 0; font-size: 1.4em; font-weight: 600; text-shadow: 0 0 40px rgba(79,195,247,0.3); }}
         .run-btn {{ background: linear-gradient(135deg, #4fc3f7 0%, #00b4d8 50%, #0096c7 100%); color: #1a1a2e; border: none; padding: 12px 24px; font-size: 0.85em; font-weight: 600; border-radius: 12px; cursor: pointer; transition: all 0.3s ease; text-transform: uppercase; letter-spacing: 0.5px; box-shadow: 0 4px 20px rgba(79,195,247,0.3); }}
         .run-btn:hover {{ background: linear-gradient(135deg, #00b4d8 0%, #0096c7 50%, #0077b6 100%); transform: translateY(-2px); box-shadow: 0 6px 30px rgba(79,195,247,0.4); }}
-        .run-btn:disabled {{ background: #444; cursor: not-allowed; transform: none; box-shadow: none; }}
+        .run-btn:disabled {{ cursor: not-allowed; transform: none; }}
+        .run-btn.running-badge {{ background: linear-gradient(135deg, #f57c00, #e65100); color: #fff; box-shadow: 0 2px 12px rgba(245,124,0,0.4); animation: pulse 1s infinite; }}
+        .run-btn.finishing-badge {{ background: linear-gradient(135deg, #7c4dff, #651fff); color: #fff; box-shadow: 0 2px 12px rgba(124,77,255,0.4); animation: pulse 1s infinite; }}
+        .run-btn.complete-badge {{ background: linear-gradient(135deg, #2e7d32, #1b5e20); color: #a5d6a7; box-shadow: 0 2px 12px rgba(46,125,50,0.4); animation: none; }}
+        @keyframes pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.85; }} }}
         #status {{ color: #a0aec0; font-size: 0.9em; margin-left: 15px; }}
-        .countdown-badge {{ display: inline-block; padding: 8px 18px; border-radius: 20px; font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; background: linear-gradient(135deg, #f57c00, #e65100); color: #fff; box-shadow: 0 2px 12px rgba(245,124,0,0.4); animation: pulse 1s infinite; }}
-        .countdown-finishing {{ background: linear-gradient(135deg, #7c4dff, #651fff); box-shadow: 0 2px 12px rgba(124,77,255,0.4); }}
-        .countdown-complete {{ background: linear-gradient(135deg, #2e7d32, #1b5e20); color: #a5d6a7; box-shadow: 0 2px 12px rgba(46,125,50,0.4); animation: none; }}
-        @keyframes pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.8; }} }}
         .filter-bar {{ display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }}
         .filter-label {{ color: #a0aec0; font-size: 0.85em; margin-right: 5px; font-weight: 500; }}
         .filter-btn {{ background: rgba(255,255,255,0.1); color: #b0bec5; border: 1px solid rgba(255,255,255,0.15); padding: 6px 14px; font-size: 0.85em; border-radius: 20px; cursor: pointer; transition: all 0.2s ease; }}
@@ -1096,15 +1096,17 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         let countdown = prevRuntime;
         
         btn.disabled = true;
-        btn.textContent = 'Running...';
-        status.innerHTML = '<span class="countdown-badge">' + countdown + 's</span>';
+        btn.className = 'run-btn running-badge';
+        btn.textContent = countdown + 's';
+        status.textContent = '';
         
         countdownInterval = setInterval(() => {
             countdown--;
             if (countdown > 0) {
-                status.innerHTML = '<span class="countdown-badge">' + countdown + 's</span>';
+                btn.textContent = countdown + 's';
             } else {
-                status.innerHTML = '<span class="countdown-badge countdown-finishing">...</span>';
+                btn.textContent = '...';
+                btn.className = 'run-btn finishing-badge';
             }
         }, 1000);
         
@@ -1113,18 +1115,20 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
             clearInterval(countdownInterval);
             const result = await response.json();
             if (result.success && result.report_ready) {
-                status.innerHTML = '<span class="countdown-badge countdown-complete">Complete</span>';
-                btn.textContent = 'Done!';
+                btn.textContent = 'Complete';
+                btn.className = 'run-btn complete-badge';
                 setTimeout(() => window.location.reload(), 500);
             } else {
                 status.textContent = 'Error: ' + (result.output || 'Unknown error');
                 btn.disabled = false;
+                btn.className = 'run-btn';
                 btn.textContent = 'Run Single Simulation';
             }
         } catch (err) {
             clearInterval(countdownInterval);
             status.textContent = 'Error: ' + err.message;
             btn.disabled = false;
+            btn.className = 'run-btn';
             btn.textContent = 'Run Single Simulation';
         }
     }
