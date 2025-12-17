@@ -94,26 +94,54 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
         # Production Consumption (Make) - material consumed FROM store for production
         aggregate_flow((df_log["event"] == "Produce"), "Consumption", "out")
 
-    # 2b. Downtime Events by Location and Day
-    downtime_by_location = {}  # location -> {day -> {'Maintenance': count, 'Breakdown': count}}
+    # 2b. Downtime Events by Equipment (unit_key) and Day
+    downtime_by_equipment = {}  # unit_key -> {day -> {'Maintenance': hours, 'Breakdown': hours}}
+    # Also track which equipment outputs to which stores
+    equipment_to_stores = {}  # unit_key -> set of store_keys
+    
     if sim.action_log:
         df_log = pd.DataFrame(sim.action_log)
         df_log["day"] = (pd.to_numeric(df_log["time_h"], errors="coerce") / 24.0).astype(int) + 1
         
+        # Build equipment -> stores mapping from production events
+        production_events = df_log[(df_log["process"] == "Make") & (df_log["event"] == "Produce")]
+        if not production_events.empty:
+            for _, row in production_events.iterrows():
+                loc = row.get("location", "")
+                equip = row.get("equipment", "")
+                to_store = row.get("to_store", "")
+                if loc and equip and to_store:
+                    unit_key = f"{loc}|{equip}"
+                    if unit_key not in equipment_to_stores:
+                        equipment_to_stores[unit_key] = set()
+                    equipment_to_stores[unit_key].add(to_store)
+        
+        # Track downtime by equipment
         downtime_events = df_log[df_log["process"] == "Downtime"]
         if not downtime_events.empty:
             for _, row in downtime_events.iterrows():
                 loc = row.get("location", "Unknown")
+                equip = row.get("equipment", "Unknown")
                 d = int(row["day"])
                 event_type = row.get("event", "Unknown")
+                hours = float(row.get("qty", 0) or 0)
                 
-                if loc not in downtime_by_location:
-                    downtime_by_location[loc] = {}
-                if d not in downtime_by_location[loc]:
-                    downtime_by_location[loc][d] = {"Maintenance": 0, "Breakdown": 0}
+                unit_key = f"{loc}|{equip}"
+                if unit_key not in downtime_by_equipment:
+                    downtime_by_equipment[unit_key] = {}
+                if d not in downtime_by_equipment[unit_key]:
+                    downtime_by_equipment[unit_key][d] = {"Maintenance": 0, "Breakdown": 0}
                 
-                if event_type in downtime_by_location[loc][d]:
-                    downtime_by_location[loc][d][event_type] += 1
+                if event_type in downtime_by_equipment[unit_key][d]:
+                    downtime_by_equipment[unit_key][d][event_type] += hours
+    
+    # Build reverse mapping: store_key -> set of equipment unit_keys that supply it
+    store_to_equipment = {}
+    for unit_key, stores in equipment_to_stores.items():
+        for store_key in stores:
+            if store_key not in store_to_equipment:
+                store_to_equipment[store_key] = set()
+            store_to_equipment[store_key].add(unit_key)
 
     # 3. Transport Timelines (separate for Train and Ship)
     train_transport_fig = None
@@ -203,13 +231,22 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
                 fig.add_trace(go.Scatter(x=data["day"], y=data["Consumption_out"], name="Consumption (t)",
                                          line=dict(color="#d62728", dash="dashdot", width=1.5)), secondary_y=True)
 
-            # Downtime Markers - extract location from store_key
-            store_location = store_key.split("|")[1] if "|" in store_key else None
-            if store_location and store_location in downtime_by_location:
-                loc_downtime = downtime_by_location[store_location]
-                
+            # Downtime Markers - only show downtime from equipment that produces TO this store
+            supplier_equipment = store_to_equipment.get(store_key, set())
+            
+            # Aggregate downtime from all supplier equipment for this store
+            store_downtime = {}  # day -> {'Maintenance': hours, 'Breakdown': hours}
+            for equip_key in supplier_equipment:
+                if equip_key in downtime_by_equipment:
+                    for day, events in downtime_by_equipment[equip_key].items():
+                        if day not in store_downtime:
+                            store_downtime[day] = {"Maintenance": 0, "Breakdown": 0}
+                        store_downtime[day]["Maintenance"] += events.get("Maintenance", 0)
+                        store_downtime[day]["Breakdown"] += events.get("Breakdown", 0)
+            
+            if store_downtime:
                 # Maintenance days - add shaded regions behind all other traces
-                maint_days = [d for d in loc_downtime if loc_downtime[d].get("Maintenance", 0) > 0]
+                maint_days = [d for d in store_downtime if store_downtime[d].get("Maintenance", 0) > 0]
                 for maint_day in maint_days:
                     fig.add_vrect(
                         x0=maint_day - 0.5, x1=maint_day + 0.5,
@@ -228,7 +265,7 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
                     ), secondary_y=False)
                 
                 # Breakdown days (full day = 24 hours) - add red shaded regions
-                breakdown_days = [d for d in loc_downtime if loc_downtime[d].get("Breakdown", 0) >= 24]
+                breakdown_days = [d for d in store_downtime if store_downtime[d].get("Breakdown", 0) >= 24]
                 for bd_day in breakdown_days:
                     fig.add_vrect(
                         x0=bd_day - 0.5, x1=bd_day + 0.5,
