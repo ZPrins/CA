@@ -255,13 +255,23 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
         out_dir = settings.get('out_dir', config.out_dir)
         write_csv_outputs(sim, out_dir)
         
-        # Get location sequence from Network sheet for proper sorting
+        # Get graph sequence from Network sheet for proper ordering
+        # Extract (Location, Equipment Name, Process) tuples in order of appearance
         network_df = raw_data.get('Network', pd.DataFrame())
-        location_sequence = []
-        if not network_df.empty and 'Location' in network_df.columns:
-            location_sequence = network_df['Location'].dropna().unique().tolist()
+        graph_sequence = []
+        if not network_df.empty:
+            seen = set()
+            for _, row in network_df.iterrows():
+                loc = row.get('Location')
+                equip = row.get('Equipment Name')
+                proc = row.get('Process')
+                if pd.notna(loc) and pd.notna(equip) and proc in ['Make', 'Store']:
+                    key = (str(loc), str(equip), str(proc))
+                    if key not in seen:
+                        seen.add(key)
+                        graph_sequence.append(key)
         
-        plot_results(sim, out_dir, moves, makes, location_sequence)
+        plot_results(sim, out_dir, moves, makes, graph_sequence)
         generate_standalone(settings, stores_cfg, makes, moves, demands, out_dir)
 
     # --- MOVEMENT SUMMARY ---

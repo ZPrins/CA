@@ -8,11 +8,11 @@ from datetime import datetime
 from sim_run_config import config
 
 
-def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | None = None, location_sequence: list | None = None):
+def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | None = None, graph_sequence: list | None = None):
     if not config.write_plots: return
     
     makes = makes or []
-    location_sequence = location_sequence or []
+    graph_sequence = graph_sequence or []  # List of (Location, Equipment, Process) tuples
 
     # 1. Inventory Data (Daily)
     if sim.inventory_snapshots:
@@ -357,57 +357,70 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
             mfg_by_location[loc] = []
         mfg_by_location[loc].append(unit_key)
 
+    # Build a lookup to find store_figs by (location, store_name)
+    store_by_loc_name = {}  # (location, store_name) -> [(store_key, product), ...]
     if not df_inv.empty:
-        df_inv["location_only"] = df_inv["store_key"].apply(
-            lambda sk: str(sk).split("|")[1] if "|" in str(sk) else "Other")
-        
-        # Sort locations by Network sheet sequence (or alphabetically if not in sequence)
-        all_locations = list(df_inv["location_only"].unique())
-        if location_sequence:
-            # Create sort key based on position in location_sequence
-            def loc_sort_key(loc):
-                try:
-                    return location_sequence.index(loc)
-                except ValueError:
-                    return len(location_sequence) + 1000  # Put unknown locations at end
-            all_locations.sort(key=loc_sort_key)
-        else:
-            all_locations.sort()
-        
-        for loc in all_locations:
-            content.append({"type": "header", "location": loc, "category": "inventory"})
-            
-            # Add manufacturing graphs for this location first
-            for unit_key in sorted(mfg_by_location.get(loc, [])):
-                fig = manufacturing_figs[unit_key]
-                content.append({"type": "fig", "fig": fig, "title": f"Manufacturing: {unit_key}", "category": "manufacturing"})
-            
-            # Then add inventory store graphs
-            loc_stores = df_inv[df_inv["location_only"] == loc]["store_key"].unique()
-            for sk in sorted(loc_stores):
+        for sk in df_inv["store_key"].unique():
+            parts = str(sk).split("|")
+            if len(parts) >= 3:
+                loc = parts[1]
+                store_name = parts[2]
+                product = parts[3] if len(parts) >= 4 else "Other"
+                key = (loc, store_name)
+                if key not in store_by_loc_name:
+                    store_by_loc_name[key] = []
                 if sk in store_figs:
-                    parts = str(sk).split("|")
-                    product = parts[3] if len(parts) >= 4 else "Other"
-                    content.append({"type": "fig", "fig": store_figs[sk], "category": "inventory", "product": product})
+                    store_by_loc_name[key].append((sk, product))
     
-    # Add any manufacturing graphs for locations not in inventory (edge case)
-    inv_locations = set(df_inv["location_only"].unique()) if not df_inv.empty else set()
-    remaining_mfg_locs = [loc for loc in mfg_by_location.keys() if loc not in inv_locations]
-    if location_sequence:
-        def loc_sort_key(loc):
-            try:
-                return location_sequence.index(loc)
-            except ValueError:
-                return len(location_sequence) + 1000
-        remaining_mfg_locs.sort(key=loc_sort_key)
-    else:
-        remaining_mfg_locs.sort()
+    # Build lookup for manufacturing figs by (location, equipment)
+    mfg_by_loc_equip = {}  # (location, equipment) -> unit_key
+    for unit_key in manufacturing_figs.keys():
+        parts = unit_key.split("|")
+        if len(parts) >= 2:
+            loc, equip = parts[0], parts[1]
+            mfg_by_loc_equip[(loc, equip)] = unit_key
     
-    for loc in remaining_mfg_locs:
-        content.append({"type": "header", "location": loc, "category": "manufacturing"})
-        for unit_key in sorted(mfg_by_location[loc]):
+    # Track what we've added
+    added_stores = set()
+    added_mfg = set()
+    current_location = None
+    
+    # Add graphs in the exact order from graph_sequence
+    for (loc, equip, proc) in graph_sequence:
+        # Add location header if we've changed locations
+        if loc != current_location:
+            content.append({"type": "header", "location": loc, "category": "inventory"})
+            current_location = loc
+        
+        if proc == 'Make':
+            # Add manufacturing graph
+            unit_key = mfg_by_loc_equip.get((loc, equip))
+            if unit_key and unit_key not in added_mfg:
+                fig = manufacturing_figs.get(unit_key)
+                if fig:
+                    content.append({"type": "fig", "fig": fig, "title": f"Manufacturing: {unit_key}", "category": "manufacturing"})
+                    added_mfg.add(unit_key)
+        
+        elif proc == 'Store':
+            # Add store inventory graph(s)
+            key = (loc, equip)
+            if key in store_by_loc_name:
+                for (sk, product) in store_by_loc_name[key]:
+                    if sk not in added_stores:
+                        content.append({"type": "fig", "fig": store_figs[sk], "category": "inventory", "product": product})
+                        added_stores.add(sk)
+    
+    # Add any remaining manufacturing/store graphs not in the sequence
+    remaining_stores = [(sk, prod) for items in store_by_loc_name.values() for (sk, prod) in items if sk not in added_stores]
+    remaining_mfg = [uk for uk in manufacturing_figs.keys() if uk not in added_mfg]
+    
+    if remaining_stores or remaining_mfg:
+        content.append({"type": "header", "location": "Other", "category": "inventory"})
+        for unit_key in sorted(remaining_mfg):
             fig = manufacturing_figs[unit_key]
             content.append({"type": "fig", "fig": fig, "title": f"Manufacturing: {unit_key}", "category": "manufacturing"})
+        for (sk, product) in sorted(remaining_stores):
+            content.append({"type": "fig", "fig": store_figs[sk], "category": "inventory", "product": product})
 
     _generate_html_report(sim, out_dir, content, sorted(all_products))
 
