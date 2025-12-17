@@ -1,7 +1,8 @@
 # sim_run_core_make.py
 from __future__ import annotations
-from typing import List, Callable, Dict, Optional, Tuple
+from typing import List, Callable, Dict, Optional, Tuple, Set
 import simpy
+import random
 
 from sim_run_types import MakeUnit, ProductionCandidate
 
@@ -72,7 +73,21 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
              stores: Dict[str, simpy.Container],
              log_func: Callable,
              choose_output_func: Callable[[str, List[ProductionCandidate]], int]):
+    
+    maintenance_days: Set[int] = set(unit.maintenance_days) if unit.maintenance_days else set()
+    downtime_pct: float = unit.unplanned_downtime_pct or 0.0
+    
     while True:
+        current_day = int(env.now / 24) % 365 + 1
+        
+        if current_day in maintenance_days:
+            yield env.timeout(unit.step_hours)
+            continue
+        
+        if downtime_pct > 0 and random.random() < downtime_pct:
+            yield env.timeout(unit.step_hours)
+            continue
+        
         with resource.request() as req:
             yield req
             

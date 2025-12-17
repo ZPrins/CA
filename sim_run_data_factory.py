@@ -22,6 +22,15 @@ def build_store_configs(df_store: pd.DataFrame) -> List[StoreConfig]:
     return stores
 
 
+def _parse_maintenance_days(val) -> List[int]:
+    """Parse maintenance days from comma-separated string like '2, 3, 4, 5'"""
+    if pd.isna(val) or val is None or str(val).strip() == '':
+        return []
+    try:
+        return [int(d.strip()) for d in str(val).split(',') if d.strip().isdigit()]
+    except:
+        return []
+
 def build_make_units(df_make: pd.DataFrame) -> List[MakeUnit]:
     make_groups: Dict[Tuple[str, str], List[ProductionCandidate]] = defaultdict(list)
     unit_params: Dict[Tuple[str, str], Dict[str, Any]] = defaultdict(dict)
@@ -32,6 +41,14 @@ def build_make_units(df_make: pd.DataFrame) -> List[MakeUnit]:
         unit_key = (location, equipment)
         unit_params[unit_key]['choice_rule'] = row.get('Choice_Rule', 'min_fill_pct')
         unit_params[unit_key]['step_hours'] = float(row.get('Step_Hours', 1.0))
+        
+        maint_days = _parse_maintenance_days(row.get('Maintenance_Days', ''))
+        if maint_days:
+            unit_params[unit_key]['maintenance_days'] = maint_days
+        
+        downtime_pct = row.get('Unplanned_Downtime_Pct', 0.0)
+        if pd.notna(downtime_pct):
+            unit_params[unit_key]['unplanned_downtime_pct'] = float(downtime_pct)
         
         # Get lists of input/output stores if available
         in_store_keys = row.get('Input_Store_Keys') if 'Input_Store_Keys' in row.index else None
@@ -62,7 +79,9 @@ def build_make_units(df_make: pd.DataFrame) -> List[MakeUnit]:
             equipment=eq,
             candidates=candidates,
             choice_rule=params.get('choice_rule', 'min_fill_pct'),
-            step_hours=params.get('step_hours', 1.0)
+            step_hours=params.get('step_hours', 1.0),
+            maintenance_days=params.get('maintenance_days'),
+            unplanned_downtime_pct=params.get('unplanned_downtime_pct', 0.0)
         ))
     return make_units
 

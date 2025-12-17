@@ -125,9 +125,13 @@ class SupplyChainSimulation:
                 choice_rule = units[0].choice_rule or self.settings.get("make_output_choice", "min_fill_pct")
                 step_hours = units[0].step_hours if getattr(units[0], 'step_hours', None) else float(
                     self.settings.get("step_hours", 1.0))
+                maintenance_days = getattr(units[0], 'maintenance_days', None)
+                unplanned_downtime_pct = getattr(units[0], 'unplanned_downtime_pct', 0.0) or 0.0
             else:
                 choice_rule = self.settings.get("make_output_choice", "min_fill_pct")
                 step_hours = float(self.settings.get("step_hours", 1.0))
+                maintenance_days = None
+                unplanned_downtime_pct = 0.0
             for u in units:
                 if isinstance(u.candidates, list):
                     merged_candidates.extend(list(u.candidates))
@@ -138,6 +142,8 @@ class SupplyChainSimulation:
                 candidates=merged_candidates,
                 choice_rule=choice_rule,
                 step_hours=step_hours,
+                maintenance_days=maintenance_days,
+                unplanned_downtime_pct=unplanned_downtime_pct,
             )
             res = simpy.Resource(self.env, capacity=1)
             self.env.process(self.producer(res, merged_unit))

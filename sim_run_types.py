@@ -27,6 +27,8 @@ class MakeUnit:
     candidates: List[ProductionCandidate]
     choice_rule: str = "min_fill_pct"
     step_hours: float = 1.0
+    maintenance_days: Optional[List[int]] = None
+    unplanned_downtime_pct: float = 0.0
 
 @dataclass
 class TransportRoute:

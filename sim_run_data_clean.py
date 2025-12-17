@@ -145,7 +145,9 @@ def clean_all_data(raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]
             "Input": "Input_Product",
             "Output": "Product_Class",
             "Mean Production Rate (Tons/hr)": "Rate_TPH",
-            "Consumption %": "Consumption_Pct"
+            "Consumption %": "Consumption_Pct",
+            "Planned Maintenance Dates (Days of year)": "Maintenance_Days",
+            "Unplanned downtime %": "Unplanned_Downtime_Pct"
         })
         if 'Choice_Rule' not in df_make.columns: df_make['Choice_Rule'] = 'min_fill_pct'
 
