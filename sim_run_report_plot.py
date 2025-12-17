@@ -127,6 +127,7 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
     ship_route_group_figs = []
     vessel_state_fig = None
     fleet_util_fig = None
+    route_summary_fig = None
     manufacturing_figs = {}
     if not df_log.empty:
         t1 = time.time()
@@ -141,6 +142,9 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
         t1 = time.time()
         fleet_util_fig = _generate_fleet_utilisation_chart(df_log)
         print(f"  [timing] Fleet util: {time.time()-t1:.1f}s")
+        t1 = time.time()
+        route_summary_fig = _generate_route_summary_chart(df_log)
+        print(f"  [timing] Route summary: {time.time()-t1:.1f}s")
         t1 = time.time()
         manufacturing_figs = _generate_manufacturing_charts(df_log)
         print(f"  [timing] Manufacturing: {time.time()-t1:.1f}s")
@@ -332,6 +336,9 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
     
     if vessel_state_fig:
         content.append({"type": "fig", "fig": vessel_state_fig, "title": "Fleet State Over Time", "category": "shipping"})
+    
+    if route_summary_fig:
+        content.append({"type": "fig", "fig": route_summary_fig, "title": "Route Summary", "category": "shipping"})
     
     for route_group, fig in ship_route_group_figs:
         content.append({"type": "fig", "fig": fig, "title": f"Ship Route: {route_group}", "category": "shipping"})
@@ -835,6 +842,146 @@ def _generate_vessel_state_chart(df_log: pd.DataFrame) -> go.Figure:
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     fig.update_yaxes(tickformat='d')
+
+    return fig
+
+
+def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
+    """Generate stacked bar chart showing avg time per status for each route, with trip count labels."""
+    if df_log.empty:
+        return None
+
+    state_changes = df_log[df_log['process'] == 'ShipState'].copy()
+    if state_changes.empty:
+        return None
+
+    state_changes['time_h'] = pd.to_numeric(state_changes['time_h'], errors='coerce')
+    state_changes = state_changes.sort_values(['vessel_id', 'time_h'])
+
+    states = ['LOADING', 'IN_TRANSIT', 'WAITING_FOR_BERTH', 'UNLOADING', 'IDLE']
+    state_colors = {
+        'IDLE': '#2ca02c',
+        'LOADING': '#1f77b4',
+        'IN_TRANSIT': '#ff7f0e',
+        'WAITING_FOR_BERTH': '#d62728',
+        'UNLOADING': '#9467bd'
+    }
+
+    # Track time spent in each state per route trip
+    route_trips = {}  # route_id -> list of {state: hours}
+    
+    # Process by vessel to track state durations
+    for vessel_id in state_changes['vessel_id'].dropna().unique():
+        vessel_data = state_changes[state_changes['vessel_id'] == vessel_id].copy()
+        vessel_data = vessel_data.sort_values('time_h')
+        
+        current_route = None
+        current_trip = {s: 0.0 for s in states}
+        prev_time = None
+        prev_state = None
+        
+        for _, row in vessel_data.iterrows():
+            route_id = row.get('route_id')
+            new_state = row.get('ship_state')
+            time_h = row['time_h']
+            
+            # Calculate duration for previous state
+            if prev_time is not None and prev_state is not None:
+                duration = time_h - prev_time
+                if prev_state in current_trip:
+                    current_trip[prev_state] += duration
+            
+            # Detect route change (new trip starts when transitioning to LOADING with a route)
+            if new_state == 'LOADING' and route_id and str(route_id) != 'nan':
+                # Save previous trip if it had activity
+                if current_route and sum(current_trip.values()) > 0:
+                    if current_route not in route_trips:
+                        route_trips[current_route] = []
+                    route_trips[current_route].append(current_trip.copy())
+                
+                # Start new trip
+                current_route = str(route_id)
+                current_trip = {s: 0.0 for s in states}
+            
+            # If route changed mid-trip, update current route
+            if route_id and str(route_id) != 'nan':
+                current_route = str(route_id)
+            
+            prev_time = time_h
+            prev_state = new_state
+        
+        # Save final trip
+        if current_route and sum(current_trip.values()) > 0:
+            if current_route not in route_trips:
+                route_trips[current_route] = []
+            route_trips[current_route].append(current_trip.copy())
+
+    if not route_trips:
+        return None
+
+    # Calculate averages per route
+    route_summaries = []
+    for route_id, trips in route_trips.items():
+        n_trips = len(trips)
+        if n_trips == 0:
+            continue
+        avg_times = {s: sum(t[s] for t in trips) / n_trips for s in states}
+        route_summaries.append({
+            'route_id': route_id,
+            'n_trips': n_trips,
+            **avg_times
+        })
+
+    if not route_summaries:
+        return None
+
+    # Sort by route_id
+    route_summaries.sort(key=lambda x: (float(x['route_id']) if x['route_id'].replace('.', '').isdigit() else float('inf'), x['route_id']))
+    
+    route_ids = [r['route_id'] for r in route_summaries]
+    trip_counts = [r['n_trips'] for r in route_summaries]
+
+    fig = go.Figure()
+
+    # Add stacked bars for each state (excluding IDLE from display but keep for calculation)
+    display_states = ['LOADING', 'IN_TRANSIT', 'WAITING_FOR_BERTH', 'UNLOADING']
+    for state in display_states:
+        values = [r[state] for r in route_summaries]
+        fig.add_trace(go.Bar(
+            y=route_ids,
+            x=values,
+            name=state.replace('_', ' ').title(),
+            orientation='h',
+            marker_color=state_colors.get(state, '#999'),
+            hovertemplate=f"<b>{state.replace('_', ' ').title()}</b><br>Route: %{{y}}<br>Avg: %{{x:.1f}} hrs<extra></extra>"
+        ))
+
+    # Calculate total time for annotations (position at end of bar)
+    totals = [sum(r[s] for s in display_states) for r in route_summaries]
+
+    # Add trip count annotations at end of each bar
+    annotations = []
+    for i, (route_id, total, count) in enumerate(zip(route_ids, totals, trip_counts)):
+        annotations.append(dict(
+            x=total + max(totals) * 0.02,  # Slight offset from bar end
+            y=route_id,
+            text=f"<b>{count}</b> trips",
+            showarrow=False,
+            font=dict(size=11, color='#2d3748'),
+            xanchor='left'
+        ))
+
+    fig.update_layout(
+        title="Route Summary: Avg Time by Status",
+        xaxis_title="Average Hours per Trip",
+        yaxis_title="Route ID",
+        template="plotly_white",
+        height=max(350, len(route_ids) * 35 + 100),
+        barmode='stack',
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        annotations=annotations,
+        margin=dict(r=80)  # Extra margin for annotations
+    )
 
     return fig
 
