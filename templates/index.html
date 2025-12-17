@@ -775,6 +775,14 @@
                     const m = msg.match(/Progress:\s*(\d+)%/);
                     if (m) statusBadge.textContent = m[1] + '%';
                 });
+                es.addEventListener('report_ready', (ev) => {
+                    resultsCard.style.display = '';
+                    const viewReportBtn = document.getElementById('viewReportBtn');
+                    if (viewReportBtn) {
+                        viewReportBtn.classList.remove('btn-outline-light');
+                        viewReportBtn.classList.add('btn-primary');
+                    }
+                });
                 es.onmessage = (ev) => { if (ev.data) appendLine(ev.data); };
 
                 es.addEventListener('done', async (ev) => {
