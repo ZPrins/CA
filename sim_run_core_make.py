@@ -224,6 +224,9 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
             cand, from_store_key, to_store_key = eligible[best_idx]
             qty = cand.rate_tph * unit.step_hours
 
+            # Capture start day for logging (before processing time elapses)
+            production_start_day = int(env.now / 24) % 365 + 1
+            
             # 1. Consume (Input Side) - from SINGLE selected store
             from_store_bal = None
             if from_store_key:
@@ -245,7 +248,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
             yield stores[to_store_key].put(qty)
             to_store_bal = stores[to_store_key].level
 
-            # 4. Log Unified Event
+            # 4. Log Unified Event (use start day, not completion time)
             log_func(
                 process="Make",
                 event="Produce",
@@ -257,5 +260,6 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                 from_level=from_store_bal,
                 to_store=to_store_key,
                 to_level=to_store_bal,
-                route_id=None
+                route_id=None,
+                override_day=production_start_day
             )

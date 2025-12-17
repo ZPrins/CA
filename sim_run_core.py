@@ -26,7 +26,14 @@ class SupplyChainSimulation:
         self.port_berths: Dict[str, simpy.Resource] = {}
 
     def log(self, event: str, **details):
-        self.action_log.append({"event": event, "time_h": self.env.now, **details})
+        # If override_day is provided, use it to set time_h to start of that day
+        override_day = details.pop('override_day', None)
+        if override_day is not None:
+            # Convert day to hour at start of that day for consistent day calculation
+            time_h = (override_day - 1) * 24
+        else:
+            time_h = self.env.now
+        self.action_log.append({"event": event, "time_h": time_h, **details})
 
     def snapshot(self):
         for key, cont in self.stores.items():
