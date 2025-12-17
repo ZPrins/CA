@@ -93,10 +93,13 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
         # Production Consumption (Make) - material consumed FROM store for production
         aggregate_flow((df_log["event"] == "Produce"), "Consumption", "out")
 
-    # 3. Transport Timeline
-    transport_fig = None
+    # 3. Transport Timelines (separate for Train and Ship)
+    train_transport_fig = None
+    ship_transport_fig = None
     if sim.action_log:
-        transport_fig = _generate_transport_plot(pd.DataFrame(sim.action_log))
+        df_log_all = pd.DataFrame(sim.action_log)
+        train_transport_fig = _generate_transport_plot(df_log_all, equipment_type="Train")
+        ship_transport_fig = _generate_transport_plot(df_log_all, equipment_type="Ship")
 
     # 4. Store Figures
     store_figs = {}
@@ -193,8 +196,10 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
 
     # 5. HTML Generation
     content = []
-    if transport_fig:
-        content.append({"type": "fig", "fig": transport_fig, "title": "Transport Activity Timeline"})
+    if train_transport_fig:
+        content.append({"type": "fig", "fig": train_transport_fig, "title": "Rail Transport Timeline"})
+    if ship_transport_fig:
+        content.append({"type": "fig", "fig": ship_transport_fig, "title": "Ship Transport Timeline"})
 
     if not df_inv.empty:
         df_inv["location_only"] = df_inv["store_key"].apply(
@@ -209,11 +214,15 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
     _generate_html_report(sim, out_dir, content)
 
 
-def _generate_transport_plot(df_log: pd.DataFrame) -> go.Figure:
+def _generate_transport_plot(df_log: pd.DataFrame, equipment_type: str = None) -> go.Figure:
     if df_log.empty: return None
 
     moves = df_log[df_log['process'] == 'Move'].copy()
     if moves.empty: return None
+
+    if equipment_type:
+        moves = moves[moves['equipment'] == equipment_type]
+        if moves.empty: return None
 
     moves['day'] = pd.to_numeric(moves['time_h'], errors='coerce') / 24.0
     if 'qty_t' not in moves.columns:
@@ -224,7 +233,7 @@ def _generate_transport_plot(df_log: pd.DataFrame) -> go.Figure:
             if row.get('route_id') and str(row['route_id']) != 'nan':
                 return f"{row['route_id']} ({row.get('product', '')})"
             if row.get('route_group'):
-                return f"SHIP: {row['route_group']}"
+                return f"{row['route_group']}"
             return "Unknown Route"
         except:
             return "Unknown"
@@ -244,7 +253,13 @@ def _generate_transport_plot(df_log: pd.DataFrame) -> go.Figure:
                              text=unloads['qty_t'].apply(lambda x: f"{x:,.0f} t"),
                              hovertemplate="<b>UNLOAD</b><br>Day: %{x:.1f}<br>Route: %{y}<br>Qty: %{text}<extra></extra>"))
 
-    fig.update_layout(title="Transport Activity Timeline", xaxis_title="Day of Year", yaxis_title="Route",
+    title = "Transport Activity Timeline"
+    if equipment_type == "Train":
+        title = "Rail Transport Timeline"
+    elif equipment_type == "Ship":
+        title = "Ship Transport Timeline"
+
+    fig.update_layout(title=title, xaxis_title="Day of Year", yaxis_title="Route",
                       height=max(400, len(moves['Route'].unique()) * 30), template="plotly_white",
                       yaxis=dict(autorange="reversed"))
     return fig

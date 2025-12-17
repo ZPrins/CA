@@ -1927,11 +1927,26 @@ def ensure_move_ship_sheet(xlsx_path: Path) -> dict:
     if "Origin Location" in current.columns:
         current = current.drop_duplicates(subset=["Origin Location"], keep="first")
         current = current.sort_values(["Origin Location"]).reset_index(drop=True)
+
+    # NEW: Remove duplicate non-blank Route Group rows (case-insensitive), keeping first
+    rows_removed = 0
+    if "Route Group" in current.columns:
+        rg = current["Route Group"].astype(str).fillna("").str.strip()
+        nonblank_idx = rg != ""
+        # compute duplicates within nonblank subset, case-insensitive
+        dup_mask = pd.Series(False, index=current.index)
+        if nonblank_idx.any():
+            dups_sub = rg[nonblank_idx].str.upper().duplicated(keep="first")
+            dup_mask.loc[nonblank_idx] = dups_sub
+        if dup_mask.any():
+            rows_removed = int(dup_mask.sum())
+            current = current.loc[~dup_mask].reset_index(drop=True)
+
     current = current.reindex(columns=desired)
 
     _write_sheet_df(xlsx_path, "Move_SHIP", current)
-    _log_action("ensure_move_ship_sheet", f"rows_added={added_count}")
-    return {"rows_added": added_count}
+    _log_action("ensure_move_ship_sheet", f"rows_added={added_count}, rows_removed_duplicate_route_groups={rows_removed}")
+    return {"rows_added": added_count, "rows_removed_duplicate_route_groups": rows_removed}
 
 
 def ensure_delivery_sheet(xlsx_path: Path) -> dict:
