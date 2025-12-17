@@ -65,8 +65,15 @@ def _normalize_ship_routes_wide_to_long(df: pd.DataFrame,
                 seq += 1
                 current_loc = dest_loc
             elif 'Unload' in field_name and 'Store' not in field_name:
-                store_field = field_name + " Store"
-                store_name = route_map.get(store_field)
+                # Try multiple store field name patterns
+                store_name = None
+                for pattern in [field_name + " Store", 
+                                field_name.replace(" Unload", " Store"),
+                                field_name.replace("Unload", "Store")]:
+                    store_name = route_map.get(pattern)
+                    if store_name and store_name.lower() not in ('nan', 'none', ''):
+                        break
+                
                 key = None
                 if store_name:
                     key = store_lookup.get((current_loc, store_name.upper(), val))
