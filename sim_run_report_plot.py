@@ -458,6 +458,7 @@ def _generate_manufacturing_charts(df_log: pd.DataFrame) -> dict:
     daily_prod = production.groupby(['location', 'equipment', 'product', 'day'])['qty_t'].sum().reset_index()
 
     downtime_by_unit = {}
+    downtime_hours_by_unit = {}
     if not downtime.empty:
         for _, row in downtime.iterrows():
             loc = row.get('location', '')
@@ -467,10 +468,13 @@ def _generate_manufacturing_charts(df_log: pd.DataFrame) -> dict:
             key = f"{loc}|{equip}"
             if key not in downtime_by_unit:
                 downtime_by_unit[key] = {}
+                downtime_hours_by_unit[key] = {}
             if d not in downtime_by_unit[key]:
                 downtime_by_unit[key][d] = {'Maintenance': 0, 'Breakdown': 0}
+                downtime_hours_by_unit[key][d] = 0
             if event_type in downtime_by_unit[key][d]:
                 downtime_by_unit[key][d][event_type] += 1
+            downtime_hours_by_unit[key][d] += 1
 
     figs = {}
     for (loc, equip), group in daily_prod.groupby(['location', 'equipment']):
@@ -508,10 +512,38 @@ def _generate_manufacturing_charts(df_log: pd.DataFrame) -> dict:
                     hovertemplate="Day %{x}: Breakdown<extra></extra>"
                 ))
 
+        if unit_key in downtime_hours_by_unit:
+            unit_hours = downtime_hours_by_unit[unit_key]
+            if unit_hours:
+                all_days = sorted(group['day'].unique())
+                cumulative = 0
+                cum_days = []
+                cum_hours = []
+                for d in all_days:
+                    cumulative += unit_hours.get(d, 0)
+                    cum_days.append(d)
+                    cum_hours.append(cumulative)
+                
+                if cum_hours and max(cum_hours) > 0:
+                    fig.add_trace(go.Scatter(
+                        x=cum_days, y=cum_hours,
+                        name="Cumulative Downtime",
+                        mode='lines',
+                        line=dict(color='#9c27b0', width=2, dash='dot'),
+                        yaxis='y2',
+                        hovertemplate="Day %{x}: %{y:.0f} hours total downtime<extra></extra>"
+                    ))
+
         fig.update_layout(
             title=f"Production: {equip} @ {loc}",
             xaxis_title="Day",
             yaxis_title="Production (Tons)",
+            yaxis2=dict(
+                title="Cumulative Downtime (Hours)",
+                overlaying='y',
+                side='right',
+                showgrid=False
+            ),
             template="plotly_white",
             height=350,
             barmode='stack',
