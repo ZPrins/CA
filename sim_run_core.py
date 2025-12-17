@@ -152,6 +152,26 @@ class SupplyChainSimulation:
                 self.demand_rate_map[str(d.store_key)] = 0.0
             self.env.process(self.consumer(d))
 
+        # Add production consumption rates to demand map for ship urgency scoring
+        # This ensures mills that consume materials (like CL for GP production) are recognized as having demand
+        for unit in makes:
+            if hasattr(unit, 'candidates') and unit.candidates:
+                for cand in unit.candidates:
+                    in_keys = []
+                    if hasattr(cand, 'in_store_keys') and cand.in_store_keys:
+                        in_keys = list(cand.in_store_keys)
+                    elif hasattr(cand, 'in_store_key') and cand.in_store_key:
+                        in_keys = [cand.in_store_key]
+                    
+                    consumption_pct = float(getattr(cand, 'consumption_pct', 1.0) or 1.0)
+                    # Use rate_tph (tons per hour) - the correct attribute name
+                    rate = float(getattr(cand, 'rate_tph', 0.0) or 0.0) * consumption_pct
+                    
+                    for in_key in in_keys:
+                        if in_key and rate > 0:
+                            current = self.demand_rate_map.get(str(in_key), 0.0)
+                            self.demand_rate_map[str(in_key)] = current + rate
+
         horizon_days = self.settings.get("horizon_days", 365)
 
         # Snapshot Day 0
