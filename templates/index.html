@@ -454,6 +454,9 @@
                     </div>
                     <small class="text-muted mt-2 d-block" id="kpiProgressText">Preparing simulations...</small>
                 </div>
+                <div id="kpiLogContainer" class="mb-3" style="display: none;">
+                    <pre id="kpiLog" style="background: rgba(0,0,0,0.3); border-radius: 10px; padding: 15px; max-height: 200px; overflow-y: auto; font-size: 12px; font-family: 'Consolas', 'Monaco', monospace; color: #b0bec5; margin: 0;"></pre>
+                </div>
                 <div class="table-container" id="kpiTableContainer" style="display: none;">
                     <table class="param-table" id="kpiTable">
                         <thead>
@@ -674,6 +677,10 @@
                 try { window.__simStream.close(); } catch (e) {}
                 window.__simStream = null;
             }
+            if (window.__multiSimStream) {
+                try { window.__multiSimStream.close(); } catch (e) {}
+                window.__multiSimStream = null;
+            }
             if (abortController) {
                 abortController.abort();
                 abortController = null;
@@ -817,7 +824,7 @@
             }
         });
 
-        // Run Full Simulation (multi-run with KPIs)
+        // Run Full Simulation (multi-run with KPIs) using streaming
         document.getElementById('runFullBtn').addEventListener('click', async function() {
             const btn = this;
             const btnText = document.getElementById('runFullBtnText');
@@ -826,6 +833,8 @@
             const kpiProgress = document.getElementById('kpiProgress');
             const kpiProgressBar = document.getElementById('kpiProgressBar');
             const kpiProgressText = document.getElementById('kpiProgressText');
+            const kpiLogContainer = document.getElementById('kpiLogContainer');
+            const kpiLog = document.getElementById('kpiLog');
             const kpiTableContainer = document.getElementById('kpiTableContainer');
             const kpiTableBody = document.getElementById('kpiTableBody');
             const kpiSummary = document.getElementById('kpiSummary');
@@ -842,6 +851,8 @@
             document.getElementById('outputCard').style.display = 'none';
             kpiCard.style.display = 'block';
             kpiProgress.style.display = 'block';
+            kpiLogContainer.style.display = 'block';
+            kpiLog.textContent = '';
             kpiProgressBar.style.width = '0%';
             kpiProgressText.textContent = `Starting ${numRuns} simulation(s)...`;
             kpiTableContainer.style.display = 'none';
@@ -855,72 +866,111 @@
             btnText.textContent = 'Running...';
             spinner.classList.remove('d-none');
 
-            abortController = new AbortController();
-            
-            try {
-                const response = await fetch('/run-multi-simulation', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        horizon_days: settings.horizon_days,
-                        random_opening: settings.random_opening,
-                        num_runs: numRuns
-                    }),
-                    signal: abortController.signal
-                });
-
-                const result = await response.json();
-                
-                if (result.success && result.kpis && result.kpis.length > 0) {
-                    // Show KPI table
-                    kpiTableContainer.style.display = 'block';
-                    result.kpis.forEach((kpi, idx) => {
-                        const tr = document.createElement('tr');
-                        tr.innerHTML = `
-                            <td>${idx + 1}</td>
-                            <td>${(kpi.total_unmet_demand || 0).toLocaleString()}</td>
-                            <td>${(kpi.total_production || 0).toLocaleString()}</td>
-                            <td>${(kpi.avg_inventory_pct || 0).toFixed(1)}%</td>
-                            <td>${kpi.ship_trips || 0}</td>
-                            <td>${kpi.train_trips || 0}</td>
-                        `;
-                        kpiTableBody.appendChild(tr);
-                    });
-
-                    // Calculate and show averages
-                    const avgUnmet = result.kpis.reduce((a,k) => a + (k.total_unmet_demand || 0), 0) / result.kpis.length;
-                    const avgProd = result.kpis.reduce((a,k) => a + (k.total_production || 0), 0) / result.kpis.length;
-                    const avgInv = result.kpis.reduce((a,k) => a + (k.avg_inventory_pct || 0), 0) / result.kpis.length;
-
-                    document.getElementById('avgUnmetDemand').textContent = avgUnmet.toLocaleString() + ' t';
-                    document.getElementById('avgProduction').textContent = avgProd.toLocaleString() + ' t';
-                    document.getElementById('avgInventory').textContent = avgInv.toFixed(1) + '%';
-                    kpiSummary.style.display = 'block';
-
-                    kpiStatusBadge.textContent = 'Complete';
-                    kpiStatusBadge.className = 'status-badge status-ready';
-                } else {
-                    kpiStatusBadge.textContent = 'Error';
-                    kpiStatusBadge.className = 'status-badge status-pending';
-                    kpiProgressText.textContent = result.error || 'Simulation failed';
-                }
-
-                kpiProgress.style.display = 'none';
-            } catch (err) {
-                if (err.name !== 'AbortError') {
-                    kpiStatusBadge.textContent = 'Error';
-                    kpiStatusBadge.className = 'status-badge status-pending';
-                    kpiProgressText.textContent = 'Error: ' + err.message;
-                }
+            function appendLog(msg) {
+                kpiLog.textContent += msg + '\n';
+                kpiLog.scrollTop = kpiLog.scrollHeight;
             }
 
-            isRunning = false;
-            hideStopButton();
-            abortController = null;
-            btn.disabled = false;
-            document.getElementById('runSingleBtn').disabled = false;
-            btnText.textContent = 'Run Full Simulation';
-            spinner.classList.add('d-none');
+            try {
+                const params = new URLSearchParams({
+                    horizon_days: String(settings.horizon_days),
+                    random_opening: settings.random_opening ? 'true' : 'false',
+                    num_runs: String(numRuns)
+                });
+                
+                const es = new EventSource('/stream-multi-simulation?' + params.toString());
+                window.__multiSimStream = es;
+                
+                es.onmessage = (ev) => {
+                    if (ev.data) appendLog(ev.data);
+                };
+                
+                es.addEventListener('start', (ev) => {
+                    try {
+                        const data = JSON.parse(ev.data);
+                        kpiProgressText.textContent = `Running ${data.total} simulation(s) with ${data.workers} workers...`;
+                    } catch (e) {}
+                });
+                
+                es.addEventListener('progress', (ev) => {
+                    try {
+                        const data = JSON.parse(ev.data);
+                        kpiProgressBar.style.width = data.pct + '%';
+                        kpiProgressText.textContent = `Completed ${data.completed}/${data.total} runs (${data.pct}%)`;
+                    } catch (e) {}
+                });
+                
+                es.addEventListener('done', (ev) => {
+                    try { es.close(); } catch (e) {}
+                    window.__multiSimStream = null;
+                    isRunning = false;
+                    hideStopButton();
+                    
+                    let result = {};
+                    try { result = JSON.parse(ev.data); } catch (e) {}
+                    
+                    if (result.stopped) {
+                        kpiStatusBadge.textContent = 'Stopped';
+                        kpiStatusBadge.className = 'status-badge status-pending';
+                    } else if (result.success && result.kpis && result.kpis.length > 0) {
+                        // Populate table
+                        result.kpis.forEach((kpi, idx) => {
+                            const tr = document.createElement('tr');
+                            tr.innerHTML = `
+                                <td>${idx + 1}</td>
+                                <td>${(kpi.total_unmet_demand || 0).toLocaleString()}</td>
+                                <td>${(kpi.total_production || 0).toLocaleString()}</td>
+                                <td>${(kpi.avg_inventory_pct || 0).toFixed(1)}%</td>
+                                <td>${kpi.ship_trips || 0}</td>
+                                <td>${kpi.train_trips || 0}</td>
+                            `;
+                            kpiTableBody.appendChild(tr);
+                        });
+
+                        // Calculate averages
+                        const avgUnmet = result.kpis.reduce((a,k) => a + (k.total_unmet_demand || 0), 0) / result.kpis.length;
+                        const avgProd = result.kpis.reduce((a,k) => a + (k.total_production || 0), 0) / result.kpis.length;
+                        const avgInv = result.kpis.reduce((a,k) => a + (k.avg_inventory_pct || 0), 0) / result.kpis.length;
+
+                        document.getElementById('avgUnmetDemand').textContent = avgUnmet.toLocaleString() + ' t';
+                        document.getElementById('avgProduction').textContent = avgProd.toLocaleString() + ' t';
+                        document.getElementById('avgInventory').textContent = avgInv.toFixed(1) + '%';
+
+                        kpiTableContainer.style.display = 'block';
+                        kpiSummary.style.display = 'block';
+                        kpiStatusBadge.textContent = 'Complete';
+                        kpiStatusBadge.className = 'status-badge status-ready';
+                        kpiProgressBar.style.width = '100%';
+                        kpiProgressText.textContent = `Completed ${result.successful_runs}/${result.total_runs} runs`;
+                        appendLog(`\nAll ${result.successful_runs} simulations complete!`);
+                    } else {
+                        kpiStatusBadge.textContent = 'Error';
+                        kpiStatusBadge.className = 'status-badge status-pending';
+                        kpiProgressText.textContent = result.error || 'Simulation failed';
+                    }
+
+                    kpiProgress.style.display = 'none';
+                    btn.disabled = false;
+                    document.getElementById('runSingleBtn').disabled = false;
+                    btnText.textContent = 'Run Full Simulation';
+                    spinner.classList.add('d-none');
+                });
+                
+                es.addEventListener('error', () => {
+                    appendLog('Stream error.');
+                });
+                
+            } catch (err) {
+                kpiStatusBadge.textContent = 'Error';
+                kpiStatusBadge.className = 'status-badge status-pending';
+                kpiProgressText.textContent = 'Error: ' + err.message;
+                isRunning = false;
+                hideStopButton();
+                btn.disabled = false;
+                document.getElementById('runSingleBtn').disabled = false;
+                btnText.textContent = 'Run Full Simulation';
+                spinner.classList.add('d-none');
+            }
         });
     </script>
 </body>

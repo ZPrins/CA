@@ -337,7 +337,7 @@ print("KPI_JSON:" + json.dumps(result.get("kpis", {})))
 
 @app.route('/run-multi-simulation', methods=['POST'])
 def run_multi_simulation():
-    """Run multiple simulations in parallel using multiprocessing."""
+    """Run multiple simulations in parallel using multiprocessing with streaming progress."""
     try:
         data = request.get_json() or {}
         
@@ -385,6 +385,86 @@ def run_multi_simulation():
             'total_runs': num_runs,
             'successful_runs': len(kpis)
         })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/stream-multi-simulation')
+def stream_multi_simulation():
+    """SSE endpoint that streams progress for multi-run simulations."""
+    global stop_requested
+    stop_requested = False
+    
+    try:
+        horizon_days = int(request.args.get('horizon_days', 365))
+        random_opening = request.args.get('random_opening', 'true').lower() == 'true'
+        num_runs = int(request.args.get('num_runs', 1))
+        
+        num_runs = min(num_runs, 100)
+        
+        import random as rand_module
+        base_seed = rand_module.randint(1, 100000)
+        
+        run_args = [
+            (i, horizon_days, random_opening, base_seed)
+            for i in range(num_runs)
+        ]
+        
+        max_workers = min(multiprocessing.cpu_count(), 4, num_runs)
+        
+        def sse_progress():
+            kpis = []
+            errors = []
+            completed = 0
+            
+            yield f'event: start\ndata: {{"total": {num_runs}, "workers": {max_workers}}}\n\n'
+            yield f'data: Starting {num_runs} simulation(s) with {max_workers} parallel workers...\n\n'
+            
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(run_single_sim_for_kpi, args): args[0] for args in run_args}
+                
+                for future in as_completed(futures):
+                    if stop_requested:
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        yield 'data: Simulation stopped by user\n\n'
+                        yield f'event: done\ndata: {{"stopped": true}}\n\n'
+                        return
+                    
+                    result = future.result()
+                    completed += 1
+                    run_idx = result.get('run_idx', '?')
+                    
+                    if 'error' in result:
+                        errors.append(result)
+                        yield f'data: Run {run_idx + 1}/{num_runs}: ERROR - {result["error"][:100]}\n\n'
+                    else:
+                        kpis.append(result)
+                        unmet = result.get('total_unmet_demand', 0)
+                        prod = result.get('total_production', 0)
+                        ships = result.get('ship_trips', 0)
+                        trains = result.get('train_trips', 0)
+                        yield f'data: Run {run_idx + 1}/{num_runs}: Unmet={unmet:,.0f}t, Prod={prod:,.0f}t, Ships={ships}, Trains={trains}\n\n'
+                    
+                    pct = int((completed / num_runs) * 100)
+                    yield f'event: progress\ndata: {{"completed": {completed}, "total": {num_runs}, "pct": {pct}}}\n\n'
+            
+            kpis.sort(key=lambda x: x.get('run_idx', 0))
+            
+            payload = {
+                'success': len(kpis) > 0,
+                'kpis': kpis,
+                'errors': errors,
+                'total_runs': num_runs,
+                'successful_runs': len(kpis)
+            }
+            yield f'event: done\ndata: {json.dumps(payload)}\n\n'
+        
+        headers = {
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+        }
+        return Response(stream_with_context(sse_progress()), mimetype='text/event-stream', headers=headers)
         
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
