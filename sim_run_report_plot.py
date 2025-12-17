@@ -10,14 +10,20 @@ import re
 from sim_run_config import config
 
 
-def _extract_prev_inventory_from_html(html_path: Path) -> dict:
-    """Extract Level (t) data from existing HTML report for 'Prev Level' comparison."""
+def _extract_prev_inventory_from_html(html_path: Path) -> tuple:
+    """Extract Level (t) data and runtime from existing HTML report for 'Prev Level' comparison."""
     if not html_path.exists():
-        return {}
+        return {}, 30  # Default 30 seconds if no previous report
     
     try:
         html_content = html_path.read_text(encoding='utf-8')
         prev_data = {}
+        prev_runtime = 30  # Default fallback
+        
+        # Extract previous runtime from data attribute
+        runtime_match = re.search(r'data-prev-runtime="(\d+)"', html_content)
+        if runtime_match:
+            prev_runtime = int(runtime_match.group(1))
         
         # Find all inventory plot divs and their corresponding Plotly.newPlot calls
         # Pattern: data-category="inventory" data-product="X" data-location="Y"
@@ -42,9 +48,9 @@ def _extract_prev_inventory_from_html(html_path: Path) -> dict:
             except json.JSONDecodeError:
                 continue
         
-        return prev_data
+        return prev_data, prev_runtime
     except Exception:
-        return {}
+        return {}, 30
 
 
 def _merge_days_to_intervals(days: list) -> list:
@@ -64,7 +70,7 @@ def _merge_days_to_intervals(days: list) -> list:
     return intervals
 
 
-def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | None = None, graph_sequence: list | None = None, report_data: dict | None = None):
+def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | None = None, graph_sequence: list | None = None, report_data: dict | None = None, elapsed_seconds: int = 0):
     if not config.write_plots: return
     
     import time
@@ -73,9 +79,9 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
     makes = makes or []
     graph_sequence = graph_sequence or []  # List of (Location, Equipment, Process) tuples
 
-    # Extract previous inventory data from existing HTML before overwriting
+    # Extract previous inventory data and runtime from existing HTML before overwriting
     html_path = out_dir / "sim_outputs_plots_all.html"
-    prev_inventory = _extract_prev_inventory_from_html(html_path)
+    prev_inventory, prev_runtime = _extract_prev_inventory_from_html(html_path)
 
     # Use precomputed data if available, otherwise compute from sim
     if report_data:
@@ -411,7 +417,7 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
 
     print(f"  [timing] Content assembly: {time.time()-t1:.1f}s")
     t1 = time.time()
-    _generate_html_report(sim, out_dir, content, sorted(all_products), location_order)
+    _generate_html_report(sim, out_dir, content, sorted(all_products), location_order, elapsed_seconds, prev_runtime)
     print(f"  [timing] HTML write: {time.time()-t1:.1f}s")
     print(f"  [timing] TOTAL plot_results: {time.time()-t0:.1f}s")
 
@@ -833,12 +839,15 @@ def _generate_vessel_state_chart(df_log: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def _generate_html_report(sim, out_dir: Path, content: list, products: list = None, locations: list = None):
+def _generate_html_report(sim, out_dir: Path, content: list, products: list = None, locations: list = None, elapsed_seconds: int = 0, prev_runtime: int = 30):
     html_path = out_dir / "sim_outputs_plots_all.html"
     total_unmet = sum(sim.unmet.values())
     run_time_utc = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     products = products or []
     locations = locations or []
+    
+    # Use current elapsed time for next run's countdown, fallback to previous runtime
+    countdown_seconds = elapsed_seconds if elapsed_seconds > 0 else prev_runtime
 
     product_buttons = ''.join([f'<button class="filter-btn product-btn" data-product="{p}" onclick="toggleProduct(\'{p}\')">{p}</button>' for p in products])
     location_checkboxes = ''.join([f'<label class="loc-checkbox"><input type="checkbox" checked data-location="{loc}" onchange="toggleLocation(\'{loc}\')"><span>{loc}</span></label>' for loc in locations])
@@ -894,7 +903,7 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         .footer {{ margin-top: 50px; color: #a0aec0; font-size: 0.9em; text-align: center; padding-bottom: 20px; }}
     </style>
 </head>
-<body>
+<body data-prev-runtime="{countdown_seconds}">
     <div class="sticky-header">
         <div class="header-top">
             <h1>Cement Australia Supply Chain Simulation</h1>
@@ -1073,17 +1082,34 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         });
     }
 
+    let countdownInterval = null;
+    
     async function runSimulation() {
         const btn = document.getElementById('runBtn');
         const status = document.getElementById('status');
+        const prevRuntime = parseInt(document.body.dataset.prevRuntime) || 30;
+        let countdown = prevRuntime;
+        
         btn.disabled = true;
-        btn.textContent = 'Running...';
+        btn.textContent = `Running... ${countdown}s`;
         status.textContent = 'Simulation in progress...';
+        
+        countdownInterval = setInterval(() => {
+            countdown--;
+            if (countdown > 0) {
+                btn.textContent = `Running... ${countdown}s`;
+            } else {
+                btn.textContent = 'Finishing...';
+            }
+        }, 1000);
+        
         try {
             const response = await fetch('/run-simulation', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ horizon_days: 365, random_opening: true }) });
+            clearInterval(countdownInterval);
             const result = await response.json();
             if (result.success && result.report_ready) {
                 status.textContent = 'Complete! Reloading...';
+                btn.textContent = 'Complete!';
                 setTimeout(() => window.location.reload(), 500);
             } else {
                 status.textContent = 'Error: ' + (result.output || 'Unknown error');
@@ -1091,6 +1117,7 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
                 btn.textContent = 'Run Single Simulation';
             }
         } catch (err) {
+            clearInterval(countdownInterval);
             status.textContent = 'Error: ' + err.message;
             btn.disabled = false;
             btn.textContent = 'Run Single Simulation';
