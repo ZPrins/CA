@@ -81,10 +81,36 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
         current_day = int(env.now / 24) % 365 + 1
         
         if current_day in maintenance_days:
+            log_func(
+                process="Downtime",
+                event="Maintenance",
+                location=unit.location,
+                equipment=unit.equipment,
+                product=None,
+                qty=None,
+                from_store=None,
+                from_level=None,
+                to_store=None,
+                to_level=None,
+                route_id=None
+            )
             yield env.timeout(unit.step_hours)
             continue
         
         if downtime_pct > 0 and random.random() < downtime_pct:
+            log_func(
+                process="Downtime",
+                event="Breakdown",
+                location=unit.location,
+                equipment=unit.equipment,
+                product=None,
+                qty=None,
+                from_store=None,
+                from_level=None,
+                to_store=None,
+                to_level=None,
+                route_id=None
+            )
             yield env.timeout(unit.step_hours)
             continue
         

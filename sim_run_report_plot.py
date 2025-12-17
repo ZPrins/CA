@@ -94,6 +94,27 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
         # Production Consumption (Make) - material consumed FROM store for production
         aggregate_flow((df_log["event"] == "Produce"), "Consumption", "out")
 
+    # 2b. Downtime Events by Location and Day
+    downtime_by_location = {}  # location -> {day -> {'Maintenance': count, 'Breakdown': count}}
+    if sim.action_log:
+        df_log = pd.DataFrame(sim.action_log)
+        df_log["day"] = (pd.to_numeric(df_log["time_h"], errors="coerce") / 24.0).astype(int) + 1
+        
+        downtime_events = df_log[df_log["process"] == "Downtime"]
+        if not downtime_events.empty:
+            for _, row in downtime_events.iterrows():
+                loc = row.get("location", "Unknown")
+                d = int(row["day"])
+                event_type = row.get("event", "Unknown")
+                
+                if loc not in downtime_by_location:
+                    downtime_by_location[loc] = {}
+                if d not in downtime_by_location[loc]:
+                    downtime_by_location[loc][d] = {"Maintenance": 0, "Breakdown": 0}
+                
+                if event_type in downtime_by_location[loc][d]:
+                    downtime_by_location[loc][d][event_type] += 1
+
     # 3. Transport Timelines (separate for Train and Ship)
     train_transport_fig = None
     ship_route_group_figs = []
@@ -177,6 +198,35 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
             if "Consumption_out" in data.columns and data["Consumption_out"].sum() > 0:
                 fig.add_trace(go.Scatter(x=data["day"], y=data["Consumption_out"], name="Consumption (t)",
                                          line=dict(color="#d62728", dash="dashdot", width=1.5)), secondary_y=True)
+
+            # Downtime Markers - extract location from store_key
+            store_location = store_key.split("|")[1] if "|" in store_key else None
+            if store_location and store_location in downtime_by_location:
+                loc_downtime = downtime_by_location[store_location]
+                
+                # Maintenance days
+                maint_days = [d for d in loc_downtime if loc_downtime[d].get("Maintenance", 0) > 0]
+                if maint_days:
+                    cap_val = data["capacity"].iloc[0] if not data.empty else 1000
+                    maint_y = [cap_val * 0.95] * len(maint_days)
+                    fig.add_trace(go.Scatter(
+                        x=maint_days, y=maint_y,
+                        name="Maintenance", mode='markers',
+                        marker=dict(symbol='x', size=8, color='#ff9800', line=dict(width=2)),
+                        hovertemplate="Day %{x}: Maintenance<extra></extra>"
+                    ), secondary_y=False)
+                
+                # Breakdown days
+                breakdown_days = [d for d in loc_downtime if loc_downtime[d].get("Breakdown", 0) > 0]
+                if breakdown_days:
+                    cap_val = data["capacity"].iloc[0] if not data.empty else 1000
+                    breakdown_y = [cap_val * 0.90] * len(breakdown_days)
+                    fig.add_trace(go.Scatter(
+                        x=breakdown_days, y=breakdown_y,
+                        name="Breakdown", mode='markers',
+                        marker=dict(symbol='x', size=8, color='#f44336', line=dict(width=2)),
+                        hovertemplate="Day %{x}: Breakdown<extra></extra>"
+                    ), secondary_y=False)
 
             cap = data["capacity"].iloc[0]
             suppliers = supplier_map.get(store_key, [])
