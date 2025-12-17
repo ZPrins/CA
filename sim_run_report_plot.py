@@ -10,25 +10,16 @@ import re
 from sim_run_config import config
 
 
-def _extract_prev_inventory_from_html(html_path: Path) -> tuple:
-    """Extract Level (t) data and runtime from existing HTML report for 'Prev Level' comparison."""
+def _extract_prev_inventory_from_html(html_path: Path) -> dict:
+    """Extract Level (t) data from existing HTML report for 'Prev Level' comparison."""
     if not html_path.exists():
-        return {}, 30  # Default 30 seconds if no previous report
+        return {}
     
     try:
         html_content = html_path.read_text(encoding='utf-8')
         prev_data = {}
-        prev_runtime = 30  # Default fallback
-        
-        # Extract previous runtime from data attribute
-        runtime_match = re.search(r'data-prev-runtime="(\d+)"', html_content)
-        if runtime_match:
-            prev_runtime = int(runtime_match.group(1))
         
         # Find all inventory plot divs and their corresponding Plotly.newPlot calls
-        # Pattern: data-category="inventory" data-product="X" data-location="Y"
-        # followed by Plotly.newPlot("plot-N", {...})
-        
         pattern = r'<div id="(plot-\d+)" class="plot" data-category="inventory" data-product="([^"]*)" data-location="([^"]*)"[^>]*></div><script>Plotly\.newPlot\("[^"]+", (\{.*?\})\);</script>'
         
         for match in re.finditer(pattern, html_content):
@@ -48,9 +39,9 @@ def _extract_prev_inventory_from_html(html_path: Path) -> tuple:
             except json.JSONDecodeError:
                 continue
         
-        return prev_data, prev_runtime
+        return prev_data
     except Exception:
-        return {}, 30
+        return {}
 
 
 def _merge_days_to_intervals(days: list) -> list:
@@ -70,7 +61,7 @@ def _merge_days_to_intervals(days: list) -> list:
     return intervals
 
 
-def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | None = None, graph_sequence: list | None = None, report_data: dict | None = None, elapsed_seconds: int = 0):
+def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | None = None, graph_sequence: list | None = None, report_data: dict | None = None):
     if not config.write_plots: return
     
     import time
@@ -79,9 +70,18 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
     makes = makes or []
     graph_sequence = graph_sequence or []  # List of (Location, Equipment, Process) tuples
 
-    # Extract previous inventory data and runtime from existing HTML before overwriting
+    # Extract previous inventory data from existing HTML before overwriting
     html_path = out_dir / "sim_outputs_plots_all.html"
-    prev_inventory, prev_runtime = _extract_prev_inventory_from_html(html_path)
+    prev_inventory = _extract_prev_inventory_from_html(html_path)
+    
+    # Read previous runtime from file
+    runtime_file = out_dir / ".prev_runtime"
+    prev_runtime = 30  # Default
+    if runtime_file.exists():
+        try:
+            prev_runtime = int(runtime_file.read_text().strip())
+        except:
+            pass
 
     # Use precomputed data if available, otherwise compute from sim
     if report_data:
@@ -417,7 +417,7 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
 
     print(f"  [timing] Content assembly: {time.time()-t1:.1f}s")
     t1 = time.time()
-    _generate_html_report(sim, out_dir, content, sorted(all_products), location_order, elapsed_seconds, prev_runtime)
+    _generate_html_report(sim, out_dir, content, sorted(all_products), location_order, prev_runtime)
     print(f"  [timing] HTML write: {time.time()-t1:.1f}s")
     print(f"  [timing] TOTAL plot_results: {time.time()-t0:.1f}s")
 
@@ -839,15 +839,13 @@ def _generate_vessel_state_chart(df_log: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def _generate_html_report(sim, out_dir: Path, content: list, products: list = None, locations: list = None, elapsed_seconds: int = 0, prev_runtime: int = 30):
+def _generate_html_report(sim, out_dir: Path, content: list, products: list = None, locations: list = None, prev_runtime: int = 30):
     html_path = out_dir / "sim_outputs_plots_all.html"
     total_unmet = sum(sim.unmet.values())
     run_time_utc = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     products = products or []
     locations = locations or []
-    
-    # Use current elapsed time for next run's countdown, fallback to previous runtime
-    countdown_seconds = elapsed_seconds if elapsed_seconds > 0 else prev_runtime
+    countdown_seconds = prev_runtime
 
     product_buttons = ''.join([f'<button class="filter-btn product-btn" data-product="{p}" onclick="toggleProduct(\'{p}\')">{p}</button>' for p in products])
     location_checkboxes = ''.join([f'<label class="loc-checkbox"><input type="checkbox" checked data-location="{loc}" onchange="toggleLocation(\'{loc}\')"><span>{loc}</span></label>' for loc in locations])
@@ -1091,15 +1089,15 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         let countdown = prevRuntime;
         
         btn.disabled = true;
-        btn.textContent = `Running... ${countdown}s`;
-        status.textContent = 'Simulation in progress...';
+        btn.textContent = 'Running...';
+        status.innerHTML = '<span style="font-size:1.4em;font-weight:600;color:#4fc3f7;margin-left:10px;">' + countdown + 's</span> remaining';
         
         countdownInterval = setInterval(() => {
             countdown--;
             if (countdown > 0) {
-                btn.textContent = `Running... ${countdown}s`;
+                status.innerHTML = '<span style="font-size:1.4em;font-weight:600;color:#4fc3f7;margin-left:10px;">' + countdown + 's</span> remaining';
             } else {
-                btn.textContent = 'Finishing...';
+                status.innerHTML = '<span style="color:#ffc107;margin-left:10px;">Finishing up...</span>';
             }
         }, 1000);
         
@@ -1108,7 +1106,7 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
             clearInterval(countdownInterval);
             const result = await response.json();
             if (result.success && result.report_ready) {
-                status.textContent = 'Complete! Reloading...';
+                status.innerHTML = '<span style="color:#4caf50;margin-left:10px;">Complete! Reloading...</span>';
                 btn.textContent = 'Complete!';
                 setTimeout(() => window.location.reload(), 500);
             } else {

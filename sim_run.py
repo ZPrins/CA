@@ -290,11 +290,14 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
                         graph_sequence.append(key)
         
         html_start = time.time()
-        # Calculate elapsed time up to HTML start for countdown timer
-        elapsed_to_html = int(time.time() - total_start)
-        plot_results(sim, out_dir, moves, makes, graph_sequence, report_data, elapsed_to_html)
+        plot_results(sim, out_dir, moves, makes, graph_sequence, report_data)
         html_elapsed = int(time.time() - html_start)
         log(f"Interactive HTML report generated ({html_elapsed}s)")
+        
+        # Store total time up to HTML completion for next run's countdown
+        elapsed_to_html = int(time.time() - total_start)
+        runtime_file = Path(out_dir) / ".prev_runtime"
+        runtime_file.write_text(str(elapsed_to_html))
         
         csv_start = time.time()
         write_csv_outputs(sim, out_dir, report_data)
