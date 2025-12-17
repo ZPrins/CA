@@ -739,7 +739,7 @@ def _generate_vessel_state_chart(df_log: pd.DataFrame) -> go.Figure:
 def _generate_html_report(sim, out_dir: Path, content: list, products: list = None, locations: list = None):
     html_path = out_dir / "sim_outputs_plots_all.html"
     total_unmet = sum(sim.unmet.values())
-    run_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+    run_time_utc = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     products = products or []
     locations = locations or []
 
@@ -830,7 +830,20 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         </div>
     </div>
     <div class="content">
-        <div class="summary"><p><strong>Generated:</strong> {run_time}</p><p><strong>Total Unmet Demand:</strong> <span style="color: {'red' if total_unmet > 0 else 'green'}">{total_unmet:,.0f} tons</span></p><p><strong>Status:</strong> Complete</p></div>
+        <div class="summary"><p><strong>Generated:</strong> <span id="genTime" data-utc="{run_time_utc}"></span></p><p><strong>Total Unmet Demand:</strong> <span style="color: {'red' if total_unmet > 0 else 'green'}">{total_unmet:,.0f} tons</span></p><p><strong>Status:</strong> Complete</p></div>
+        <script>
+            (function() {{
+                var el = document.getElementById('genTime');
+                var utc = el.dataset.utc;
+                var d = new Date(utc);
+                var y = d.getFullYear();
+                var m = String(d.getMonth() + 1).padStart(2, '0');
+                var day = String(d.getDate()).padStart(2, '0');
+                var h = String(d.getHours()).padStart(2, '0');
+                var min = String(d.getMinutes()).padStart(2, '0');
+                el.textContent = y + '-' + m + '-' + day + ' ' + h + ':' + min;
+            }})();
+        </script>
 """
 
     div_id = 0
