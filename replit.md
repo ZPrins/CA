@@ -55,10 +55,17 @@ The codebase follows a layered architecture:
 - `TransportRoute`: Rail or ship route with payload, rates, and timing
 - `Demand`: Customer demand specification
 
-### Web Interface (Optional)
+### Web Interface
 - Flask app (`app.py`) provides a browser-based UI
 - Template in `templates/index.html`
-- Runs simulation via subprocess with environment variable configuration
+- Modular simulation runners:
+  - `sim_run_single.py`: Single simulation with streaming output and full artifacts
+  - `sim_run_multi.py`: Multi-run simulation with parallel execution and KPI extraction
+- Features:
+  - Single simulation with live console output and full HTML/CSV reports
+  - Multi-run simulation (default 50 runs) with parallel processing (up to 4 workers)
+  - Stop button to halt running simulations
+  - Editable model parameters with change highlighting
 
 ### Visualization Tools
 - `supply_chain_viz.py`: NetworkX/PyVis visualization of supply chain topology
