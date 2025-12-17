@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import time
 import pandas as pd
 
 # Check if quiet mode is enabled (for multi-run simulations)
@@ -190,6 +191,9 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
     Returns:
         dict with 'success', 'kpis', and optionally 'sim' object
     """
+    total_start = time.time()
+    step_start = time.time()
+    
     log(f"Starting simulation with input file: {input_file}")
 
     # 1. Load & Clean
@@ -207,8 +211,11 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
     moves = build_transport_routes(clean_data)
     demands = build_demands(clean_data.get('Deliver', pd.DataFrame()))
 
+    load_elapsed = int(time.time() - step_start)
+    step_start = time.time()
+    
     # --- SAFETY CHECK ---
-    log(f"\nModel Summary:")
+    log(f"\nModel Summary: (loaded in {load_elapsed}s)")
     log(f"  Stores:  {len(stores_cfg)}")
     log(f"  Makes:   {len(makes)}")
     log(f"  Moves:   {len(moves)}")
@@ -248,6 +255,10 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
 
     sim = SupplyChainSimulation(settings)
     sim.run(stores_cfg, makes, moves, demands)
+    
+    sim_elapsed = int(time.time() - step_start)
+    step_start = time.time()
+    log(f"\nSimulation completed in {sim_elapsed}s")
     
     # Extract KPIs from simulation object (always)
     kpis = extract_kpis_from_sim(sim)
@@ -292,9 +303,21 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
     log(f"  Train Loads: {n_train_loads} ({train_tons:,.0f} tons)")
     log(f"  Total Unmet: {sum(sim.unmet.values()):,.0f} tons")
     
+    # Top 5 Lost Demand by product/location
+    if sim.unmet:
+        sorted_unmet = sorted(sim.unmet.items(), key=lambda x: x[1], reverse=True)[:5]
+        log(f"\n=== Top 5 Lost Demand ===")
+        for i, (key, val) in enumerate(sorted_unmet, 1):
+            log(f"  {i}. {key}: {val:,.0f} t")
+    
+    total_elapsed = int(time.time() - total_start)
+    
     if artifacts == 'full':
+        report_elapsed = int(time.time() - step_start)
         out_dir = settings.get('out_dir', config.out_dir)
-        log(f"\nAll complete! Check '{out_dir}' for results.")
+        log(f"\nReports generated in {report_elapsed}s")
+        log(f"Total runtime: {total_elapsed}s")
+        log(f"All complete! Check '{out_dir}' for results.")
     
     return {'success': True, 'kpis': kpis}
 
