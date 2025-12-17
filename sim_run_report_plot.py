@@ -5,7 +5,46 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pathlib import Path
 from datetime import datetime
+import json
+import re
 from sim_run_config import config
+
+
+def _extract_prev_inventory_from_html(html_path: Path) -> dict:
+    """Extract Level (t) data from existing HTML report for 'Prev Level' comparison."""
+    if not html_path.exists():
+        return {}
+    
+    try:
+        html_content = html_path.read_text(encoding='utf-8')
+        prev_data = {}
+        
+        # Find all inventory plot divs and their corresponding Plotly.newPlot calls
+        # Pattern: data-category="inventory" data-product="X" data-location="Y"
+        # followed by Plotly.newPlot("plot-N", {...})
+        
+        pattern = r'<div id="(plot-\d+)" class="plot" data-category="inventory" data-product="([^"]*)" data-location="([^"]*)"[^>]*></div><script>Plotly\.newPlot\("[^"]+", (\{.*?\})\);</script>'
+        
+        for match in re.finditer(pattern, html_content):
+            plot_id, product, location, fig_json = match.groups()
+            key = f"{location}|{product}"
+            
+            try:
+                fig_data = json.loads(fig_json)
+                # Find Level (t) trace
+                for trace in fig_data.get('data', []):
+                    if trace.get('name') == 'Level (t)':
+                        x_data = trace.get('x', [])
+                        y_data = trace.get('y', [])
+                        if x_data and y_data:
+                            prev_data[key] = {'x': x_data, 'y': y_data}
+                        break
+            except json.JSONDecodeError:
+                continue
+        
+        return prev_data
+    except Exception:
+        return {}
 
 
 def _merge_days_to_intervals(days: list) -> list:
@@ -33,6 +72,10 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
     
     makes = makes or []
     graph_sequence = graph_sequence or []  # List of (Location, Equipment, Process) tuples
+
+    # Extract previous inventory data from existing HTML before overwriting
+    html_path = out_dir / "sim_outputs_plots_all.html"
+    prev_inventory = _extract_prev_inventory_from_html(html_path)
 
     # Use precomputed data if available, otherwise compute from sim
     if report_data:
@@ -164,6 +207,20 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
                                          marker=dict(symbol='triangle-up', size=8, color='#e377c2')), secondary_y=True)
 
             # === FOREGROUND TRACES (added last, drawn on top) ===
+            
+            # Previous Level (behind current level for comparison)
+            parts = str(store_key).split("|")
+            if len(parts) >= 4:
+                loc = parts[1]
+                product = parts[3]
+                prev_key = f"{loc}|{product}"
+                if prev_key in prev_inventory:
+                    prev = prev_inventory[prev_key]
+                    fig.add_trace(
+                        go.Scatter(x=prev['x'], y=prev['y'], name="Prev Level (t)",
+                                   line=dict(color="rgba(150,150,150,0.6)", width=1.5, dash="dot"),
+                                   hovertemplate="Day %{x}: %{y:,.0f} tons<extra>Previous</extra>"),
+                        secondary_y=False)
             
             # Level (on top so it's always visible - thicker line)
             fig.add_trace(
@@ -1016,61 +1073,9 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         });
     }
 
-    function captureInventoryData() {
-        const invData = {};
-        document.querySelectorAll('.plot[data-category="inventory"]').forEach(el => {
-            const plotId = el.id;
-            const product = el.dataset.product || '';
-            const location = el.dataset.location || '';
-            const key = location + '|' + product;
-            const gd = document.getElementById(plotId);
-            if (gd && gd.data) {
-                const levelTrace = gd.data.find(t => t.name === 'Level (t)');
-                if (levelTrace && levelTrace.x && levelTrace.y) {
-                    invData[key] = { x: Array.from(levelTrace.x), y: Array.from(levelTrace.y) };
-                }
-            }
-        });
-        return invData;
-    }
-    
-    function injectPrevLevelTraces() {
-        const prevData = localStorage.getItem('prevInventoryData');
-        if (!prevData) return;
-        const data = JSON.parse(prevData);
-        document.querySelectorAll('.plot[data-category="inventory"]').forEach(el => {
-            const plotId = el.id;
-            const product = el.dataset.product || '';
-            const location = el.dataset.location || '';
-            const key = location + '|' + product;
-            if (data[key]) {
-                const gd = document.getElementById(plotId);
-                if (gd) {
-                    Plotly.addTraces(gd, {
-                        x: data[key].x,
-                        y: data[key].y,
-                        name: 'Prev Level (t)',
-                        line: { color: 'rgba(150,150,150,0.6)', width: 1.5, dash: 'dot' },
-                        mode: 'lines',
-                        hovertemplate: 'Day %{x}: %{y:,.0f} tons<extra>Previous</extra>'
-                    });
-                }
-            }
-        });
-        localStorage.removeItem('prevInventoryData');
-    }
-    
-    window.addEventListener('load', injectPrevLevelTraces);
-
     async function runSimulation() {
         const btn = document.getElementById('runBtn');
         const status = document.getElementById('status');
-        
-        const invData = captureInventoryData();
-        if (Object.keys(invData).length > 0) {
-            localStorage.setItem('prevInventoryData', JSON.stringify(invData));
-        }
-        
         btn.disabled = true;
         btn.textContent = 'Running...';
         status.textContent = 'Simulation in progress...';
@@ -1084,13 +1089,11 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
                 status.textContent = 'Error: ' + (result.output || 'Unknown error');
                 btn.disabled = false;
                 btn.textContent = 'Run Single Simulation';
-                localStorage.removeItem('prevInventoryData');
             }
         } catch (err) {
             status.textContent = 'Error: ' + err.message;
             btn.disabled = false;
             btn.textContent = 'Run Single Simulation';
-            localStorage.removeItem('prevInventoryData');
         }
     }
     </script></body></html>""")
