@@ -255,12 +255,21 @@ def run_single_sim_for_kpi(args):
         env['SIM_HORIZON_DAYS'] = str(horizon_days)
         env['SIM_RANDOM_OPENING'] = 'true' if random_opening else 'false'
         env['SIM_RANDOM_SEED'] = str(seed) if seed is not None else ''
-        env['SIM_QUIET_MODE'] = 'true'  # Disable detailed logging
+        env['SIM_QUIET_MODE'] = 'true'  # Disable console logging
+        env['SIM_KPI_ONLY'] = 'true'  # Skip CSV/HTML/codegen output files
         env['PYTHONUNBUFFERED'] = '1'
         
-        # Run simulation
+        # Run simulation in KPI-only mode (no file artifacts)
         result = subprocess.run(
-            ['python', 'sim_run.py'],
+            ['python', '-c', '''
+import os
+import json
+os.environ["SIM_QUIET_MODE"] = "true"
+os.environ["SIM_KPI_ONLY"] = "true"
+from sim_run import run_simulation
+result = run_simulation(artifacts="kpi_only")
+print("KPI_JSON:" + json.dumps(result.get("kpis", {})))
+'''],
             capture_output=True,
             text=True,
             timeout=600,
@@ -270,63 +279,19 @@ def run_single_sim_for_kpi(args):
         if result.returncode != 0:
             return {'run_idx': run_idx, 'error': result.stderr}
         
-        # Extract KPIs from output files
-        kpis = extract_kpis_from_outputs()
-        kpis['run_idx'] = run_idx
+        # Parse KPIs from stdout
+        kpis = {'run_idx': run_idx}
+        for line in result.stdout.split('\n'):
+            if line.startswith('KPI_JSON:'):
+                try:
+                    kpis.update(json.loads(line[9:]))
+                except:
+                    pass
+        
         return kpis
         
     except Exception as e:
         return {'run_idx': run_idx, 'error': str(e)}
-
-
-def extract_kpis_from_outputs():
-    """Extract key KPIs from simulation output files."""
-    kpis = {
-        'total_unmet_demand': 0,
-        'total_production': 0,
-        'avg_inventory_pct': 0,
-        'ship_trips': 0,
-        'train_trips': 0
-    }
-    
-    try:
-        # Read simulation log for production and transport stats
-        log_file = OUT_DIR / 'sim_outputs_sim_log.csv'
-        if log_file.exists():
-            df = pd.read_csv(log_file)
-            
-            # Total production
-            prod = df[(df['process'] == 'Make') & (df['event'] == 'Produce')]
-            if not prod.empty and 'qty' in prod.columns:
-                kpis['total_production'] = prod['qty'].astype(float).sum()
-            
-            # Ship trips
-            ship_moves = df[(df['process'] == 'Move') & (df['equipment'] == 'Ship') & (df['event'] == 'ShipUnload')]
-            kpis['ship_trips'] = len(ship_moves)
-            
-            # Train trips
-            train_moves = df[(df['process'] == 'Move') & (df['equipment'] == 'Train') & (df['event'] == 'Unload')]
-            kpis['train_trips'] = len(train_moves)
-        
-        # Read unmet demand
-        unmet_file = OUT_DIR / 'sim_outputs_unmet_demand.csv'
-        if unmet_file.exists():
-            df_unmet = pd.read_csv(unmet_file)
-            if 'unmet_qty' in df_unmet.columns:
-                kpis['total_unmet_demand'] = df_unmet['unmet_qty'].astype(float).sum()
-        
-        # Read inventory for average utilization
-        inv_file = OUT_DIR / 'sim_outputs_inventory_daily.csv'
-        if inv_file.exists():
-            df_inv = pd.read_csv(inv_file)
-            if 'level' in df_inv.columns and 'capacity' in df_inv.columns:
-                df_inv['pct'] = (df_inv['level'] / df_inv['capacity']) * 100
-                kpis['avg_inventory_pct'] = df_inv['pct'].mean()
-                
-    except Exception as e:
-        print(f"Error extracting KPIs: {e}")
-    
-    return kpis
 
 
 @app.route('/run-multi-simulation', methods=['POST'])

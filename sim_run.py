@@ -132,16 +132,66 @@ def _check_supply_sources(stores_cfg, makes, moves, demands):
         log("  These stores will deplete and cause unmet demand.\n")
 
 
-def main():
-    if len(sys.argv) > 1:
-        INPUT_FILE = sys.argv[1]
-    else:
-        INPUT_FILE = "generated_model_inputs.xlsx"
+def extract_kpis_from_sim(sim):
+    """Extract KPIs directly from simulation object (no file I/O)."""
+    kpis = {
+        'total_unmet_demand': 0,
+        'total_production': 0,
+        'avg_inventory_pct': 0,
+        'ship_trips': 0,
+        'train_trips': 0
+    }
+    
+    try:
+        # Total unmet demand
+        kpis['total_unmet_demand'] = sum(sim.unmet.values())
+        
+        # Process action log
+        if sim.action_log:
+            df_log = pd.DataFrame(sim.action_log)
+            
+            # Total production
+            prod = df_log[(df_log['process'] == 'Make') & (df_log['event'] == 'Produce')]
+            if not prod.empty and 'qty' in prod.columns:
+                kpis['total_production'] = prod['qty'].astype(float).sum()
+            
+            # Ship trips (unloads = completed trips)
+            ship_moves = df_log[(df_log['process'] == 'Move') & (df_log['equipment'] == 'Ship') & (df_log['event'] == 'ShipUnload')]
+            kpis['ship_trips'] = len(ship_moves)
+            
+            # Train trips (unloads = completed trips)
+            train_moves = df_log[(df_log['process'] == 'Move') & (df_log['equipment'] == 'Train') & (df_log['event'] == 'Unload')]
+            kpis['train_trips'] = len(train_moves)
+        
+        # Average inventory utilization from snapshots
+        if sim.inventory_snapshots:
+            df_inv = pd.DataFrame(sim.inventory_snapshots)
+            if 'level' in df_inv.columns and 'capacity' in df_inv.columns:
+                df_inv['pct'] = (df_inv['level'] / df_inv['capacity']) * 100
+                kpis['avg_inventory_pct'] = df_inv['pct'].mean()
+                
+    except Exception as e:
+        log(f"[WARNING] Error extracting KPIs: {e}")
+    
+    return kpis
 
-    log(f"Starting simulation with input file: {INPUT_FILE}")
+
+def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', settings_override=None):
+    """
+    Run simulation and return results.
+    
+    Args:
+        input_file: Path to Excel input file
+        artifacts: 'full' to generate all outputs, 'kpi_only' to skip file generation
+        settings_override: Optional dict to override settings
+    
+    Returns:
+        dict with 'success', 'kpis', and optionally 'sim' object
+    """
+    log(f"Starting simulation with input file: {input_file}")
 
     # 1. Load & Clean
-    raw_data = load_data_frames(INPUT_FILE)
+    raw_data = load_data_frames(input_file)
     
     # Apply any UI overrides before cleaning
     raw_data = apply_ui_overrides(raw_data)
@@ -167,11 +217,12 @@ def main():
 
     if len(stores_cfg) == 0:
         log("\n[ERROR] No stores were loaded! Please check inputs.")
-        return
+        return {'success': False, 'error': 'No stores loaded', 'kpis': {}}
 
-        # 3. Configure
+    # 3. Configure
     settings.update(run_settings)
 
+    # Apply environment variable overrides
     if 'SIM_HORIZON_DAYS' in os.environ:
         try:
             settings['horizon_days'] = int(os.environ['SIM_HORIZON_DAYS'])
@@ -185,22 +236,29 @@ def main():
             settings['random_seed'] = int(os.environ['SIM_RANDOM_SEED'].strip())
         except:
             pass
+    
+    # Apply explicit settings override
+    if settings_override:
+        settings.update(settings_override)
 
     if 'out_dir' not in settings:
         settings['out_dir'] = config.out_dir
 
     sim = SupplyChainSimulation(settings)
     sim.run(stores_cfg, makes, moves, demands)
+    
+    # Extract KPIs from simulation object (always)
+    kpis = extract_kpis_from_sim(sim)
 
-    # 4. Report
-    out_dir = settings.get('out_dir', config.out_dir)
-
-    write_csv_outputs(sim, out_dir)
-    plot_results(sim, out_dir, moves)
-    generate_standalone(settings, stores_cfg, makes, moves, demands, out_dir)
+    # 4. Generate reports only if artifacts='full'
+    if artifacts == 'full':
+        out_dir = settings.get('out_dir', config.out_dir)
+        write_csv_outputs(sim, out_dir)
+        plot_results(sim, out_dir, moves)
+        generate_standalone(settings, stores_cfg, makes, moves, demands, out_dir)
 
     # --- MOVEMENT SUMMARY ---
-    df_log = pd.DataFrame(sim.action_log)
+    df_log = pd.DataFrame(sim.action_log) if sim.action_log else pd.DataFrame()
     if not df_log.empty:
         n_ship_loads = len(df_log[(df_log['event'] == 'Load') & (df_log['equipment'] == 'Ship')])
         n_train_loads = len(df_log[(df_log['event'] == 'Load') & (df_log['equipment'] == 'Train')])
@@ -214,7 +272,29 @@ def main():
     log(f"  Ship Loads:  {n_ship_loads} ({ship_tons:,.0f} tons)")
     log(f"  Train Loads: {n_train_loads} ({train_tons:,.0f} tons)")
     log(f"  Total Unmet: {sum(sim.unmet.values()):,.0f} tons")
-    log(f"\nAll complete! Check '{out_dir}' for results.")
+    
+    if artifacts == 'full':
+        out_dir = settings.get('out_dir', config.out_dir)
+        log(f"\nAll complete! Check '{out_dir}' for results.")
+    
+    return {'success': True, 'kpis': kpis}
+
+
+def main():
+    if len(sys.argv) > 1:
+        INPUT_FILE = sys.argv[1]
+    else:
+        INPUT_FILE = "generated_model_inputs.xlsx"
+    
+    # Check if running in KPI-only mode
+    kpi_only = os.environ.get('SIM_KPI_ONLY', 'false').lower() == 'true'
+    artifacts = 'kpi_only' if kpi_only else 'full'
+    
+    result = run_simulation(INPUT_FILE, artifacts=artifacts)
+    
+    if not result['success']:
+        log(f"\n[ERROR] Simulation failed: {result.get('error', 'Unknown error')}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
