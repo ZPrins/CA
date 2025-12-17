@@ -220,17 +220,6 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
                         hovertemplate="Day %{x}: Maintenance<extra></extra>"
                     ), secondary_y=False)
                 
-                # Breakdown days
-                breakdown_days = [d for d in loc_downtime if loc_downtime[d].get("Breakdown", 0) > 0]
-                if breakdown_days:
-                    cap_val = data["capacity"].iloc[0] if not data.empty else 1000
-                    breakdown_y = [cap_val * 0.90] * len(breakdown_days)
-                    fig.add_trace(go.Scatter(
-                        x=breakdown_days, y=breakdown_y,
-                        name="Breakdown", mode='markers',
-                        marker=dict(symbol='x', size=8, color='#f44336', line=dict(width=2)),
-                        hovertemplate="Day %{x}: Breakdown<extra></extra>"
-                    ), secondary_y=False)
 
             cap = data["capacity"].iloc[0]
             suppliers = supplier_map.get(store_key, [])
