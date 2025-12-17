@@ -119,11 +119,13 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
     train_transport_fig = None
     ship_route_group_figs = []
     vessel_state_fig = None
+    fleet_util_fig = None
     if sim.action_log:
         df_log_all = pd.DataFrame(sim.action_log)
         train_transport_fig = _generate_transport_plot(df_log_all, equipment_type="Train")
         ship_route_group_figs = _generate_ship_timeline_by_route_group(df_log_all)
         vessel_state_fig = _generate_vessel_state_chart(df_log_all)
+        fleet_util_fig = _generate_fleet_utilisation_chart(df_log_all)
 
     # 4. Store Figures
     store_figs = {}
@@ -251,6 +253,9 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
     content = []
     if train_transport_fig:
         content.append({"type": "fig", "fig": train_transport_fig, "title": "Rail Transport Timeline"})
+    
+    if fleet_util_fig:
+        content.append({"type": "fig", "fig": fleet_util_fig, "title": "Ship Fleet Utilization"})
     
     if vessel_state_fig:
         content.append({"type": "fig", "fig": vessel_state_fig, "title": "Fleet State Over Time"})
@@ -404,6 +409,69 @@ def _generate_ship_timeline_by_route_group(df_log: pd.DataFrame) -> List[go.Figu
         figs.append((rg, fig))
 
     return figs
+
+
+def _generate_fleet_utilisation_chart(df_log: pd.DataFrame) -> go.Figure:
+    """Generate daily fleet utilization chart - IDLE = not utilized, else utilized."""
+    if df_log.empty: return None
+
+    state_changes = df_log[df_log['process'] == 'ShipState'].copy()
+    if state_changes.empty: return None
+
+    state_changes['time_h'] = pd.to_numeric(state_changes['time_h'], errors='coerce')
+    state_changes = state_changes.sort_values('time_h')
+
+    vessel_states = {}
+    max_day = int(state_changes['time_h'].max() / 24) + 1
+
+    daily_util = []
+    for day in range(1, max_day + 1):
+        day_start = (day - 1) * 24
+        day_end = day * 24
+
+        day_events = state_changes[state_changes['time_h'] < day_end]
+        for _, row in day_events.iterrows():
+            vid = row.get('vessel_id')
+            new_state = row.get('ship_state')
+            if vid is not None and new_state is not None:
+                vessel_states[vid] = new_state
+
+        total_vessels = len(vessel_states)
+        if total_vessels > 0:
+            idle_count = sum(1 for v, st in vessel_states.items() if st == 'IDLE')
+            utilized_count = total_vessels - idle_count
+            util_pct = (utilized_count / total_vessels) * 100
+        else:
+            util_pct = 0
+
+        daily_util.append({'day': day, 'utilization': util_pct})
+
+    if not daily_util:
+        return None
+
+    df_util = pd.DataFrame(daily_util)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df_util['day'],
+        y=df_util['utilization'],
+        mode='lines',
+        name='Fleet Utilization',
+        line=dict(color='#1f77b4', width=2),
+        fill='tozeroy',
+        fillcolor='rgba(31, 119, 180, 0.3)'
+    ))
+
+    fig.update_layout(
+        title="Ship Fleet Utilization by Day",
+        xaxis_title="Day of Year",
+        yaxis_title="Utilization (%)",
+        template="plotly_white",
+        height=350,
+        yaxis=dict(range=[0, 105])
+    )
+
+    return fig
 
 
 def _generate_vessel_state_chart(df_log: pd.DataFrame) -> go.Figure:
