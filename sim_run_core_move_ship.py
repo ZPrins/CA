@@ -11,8 +11,8 @@ Ships move through explicit states:
 - ERROR: Unable to proceed (logged, remains idle)
 
 Planning logic:
-- Evaluate candidate routes based on utilization (hull fill %) and urgency
-- At least 60% hulls must be filled before departure
+- Evaluate candidate routes based on utilization (hold fill %) and urgency
+- At least 60% holds must be filled before departure
 - Travel time = distance / speed + pilot_in + pilot_out hours
 
 Execution:
@@ -79,7 +79,7 @@ def _get_start_location(itinerary: List[Dict]) -> Optional[str]:
 
 
 def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Container],
-                           payload_per_hull: float, n_hulls: int, demand_rates: Dict[str, float],
+                           payload_per_hold: float, n_holds: int, demand_rates: Dict[str, float],
                            nm_distances: Dict, speed_knots: float, berth_info: Dict,
                            sole_supplier_stores: Optional[set] = None,
                            production_rates: Optional[Dict[str, float]] = None,
@@ -96,7 +96,7 @@ def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contai
     unload_steps = [s for s in itinerary if s.get('kind') == 'unload']
     
     total_available = 0.0
-    total_capacity = float(n_hulls * payload_per_hull)
+    total_capacity = float(n_holds * payload_per_hold)
     
     for step in load_steps:
         sk = step.get('store_key')
@@ -179,8 +179,8 @@ def transporter(env: simpy.Environment, route: TransportRoute,
             yield env.timeout(24)
     
     speed_knots = float(getattr(route, 'speed_knots', 10.0) or 10.0)
-    n_hulls = int(getattr(route, 'hulls_per_vessel', 5) or 5)
-    payload_per_hull = float(getattr(route, 'payload_per_hull_t', 5000.0) or 5000.0)
+    n_holds = int(getattr(route, 'holds_per_vessel', 5) or 5)
+    payload_per_hold = float(getattr(route, 'payload_per_hold_t', 5000.0) or 5000.0)
     route_group = getattr(route, 'route_group', 'Ship')
     berth_info = getattr(route, 'berth_info', {}) or {}
     nm_distances = getattr(route, 'nm_distance', {}) or {}
@@ -243,7 +243,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
             
             for it in candidate_its:
                 score, util, _, overflow_bonus = _calculate_route_score(
-                    it, stores, payload_per_hull, n_hulls, 
+                    it, stores, payload_per_hold, n_holds, 
                     demand_rates_map, nm_distances, speed_knots, berth_info,
                     sole_supplier_stores, prod_rates, capacities
                 )
@@ -310,29 +310,29 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                         load_rate, _ = _get_store_rates(store_rates, store_key, default_load_rate, default_unload_rate)
                         
                         already_loaded = sum(cargo.values())
-                        remaining_cap = max(0, (n_hulls * payload_per_hull) - already_loaded)
-                        hulls_remaining = int(remaining_cap // payload_per_hull)
+                        remaining_cap = max(0, (n_holds * payload_per_hold) - already_loaded)
+                        holds_remaining = int(remaining_cap // payload_per_hold)
                         
                         total_loaded_this_stop = 0.0
-                        time_per_hull = payload_per_hull / max(load_rate, 1.0)
+                        time_per_hold = payload_per_hold / max(load_rate, 1.0)
                         max_wait_hours = 24.0
                         
-                        for hull_num in range(hulls_remaining):
-                            if cont.level >= payload_per_hull:
-                                yield cont.get(payload_per_hull)
+                        for hold_num in range(holds_remaining):
+                            if cont.level >= payload_per_hold:
+                                yield cont.get(payload_per_hold)
                                 from_level = cont.level
-                                yield env.timeout(time_per_hull)
-                                total_loaded_this_stop += payload_per_hull
+                                yield env.timeout(time_per_hold)
+                                total_loaded_this_stop += payload_per_hold
                             elif total_loaded_this_stop > 0:
                                 waited = 0.0
-                                while cont.level < payload_per_hull and waited < max_wait_hours:
+                                while cont.level < payload_per_hold and waited < max_wait_hours:
                                     yield env.timeout(1.0)
                                     waited += 1.0
-                                if cont.level >= payload_per_hull:
-                                    yield cont.get(payload_per_hull)
+                                if cont.level >= payload_per_hold:
+                                    yield cont.get(payload_per_hold)
                                     from_level = cont.level
-                                    yield env.timeout(time_per_hull)
-                                    total_loaded_this_stop += payload_per_hull
+                                    yield env.timeout(time_per_hold)
+                                    total_loaded_this_stop += payload_per_hold
                                 else:
                                     break
                             else:
@@ -359,7 +359,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
             
             elif kind == 'sail':
                 total_loaded = sum(cargo.values())
-                utilization = total_loaded / max(n_hulls * payload_per_hull, 1.0)
+                utilization = total_loaded / max(n_holds * payload_per_hold, 1.0)
                 
                 if utilization >= min_utilization:
                     state = ShipState.IN_TRANSIT

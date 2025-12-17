@@ -181,8 +181,8 @@ def build_transport_routes(clean_data: Dict[str, pd.DataFrame]) -> List[Transpor
                     mode="SHIP",
                     route_group=route_group,
                     speed_knots=float(row.get('Speed_Knots', 0.0) or 0.0),
-                    hulls_per_vessel=int(row.get('Hulls_Per_Vessel', 5) or 5),
-                    payload_per_hull_t=float(row.get('Payload_Per_Hull_T', 5000.0) or 5000.0),
+                    holds_per_vessel=int(row.get('Holds_Per_Vessel', 5) or 5),
+                    payload_per_hold_t=float(row.get('Payload_Per_Hold_T', 5000.0) or 5000.0),
                     itineraries=itineraries,
                     berth_info=berth_info,
                     nm_distance=nm_distances

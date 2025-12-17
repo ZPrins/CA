@@ -332,22 +332,22 @@ def clean_all_data(raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]
         "No. Vessels": "N_Units",
         "Origin Location": "Origin_Location",
         "Route avg Speed (knots)": "Speed_Knots",
-        "#Hulls": "Hulls_Per_Vessel",
-        "Payload per Hull": "Payload_Per_Hull_T"
+        "#Holds": "Holds_Per_Vessel",
+        "Payload per Hold": "Payload_Per_Hold_T"
     })
 
     if not df_ship.empty:
         def calc_payload_ship(row):
             try:
-                hulls = float(row.get('Hulls_Per_Vessel', 0) or 0)
-                per_hull = float(row.get('Payload_Per_Hull_T', 0) or 0)
-                return hulls * per_hull
+                holds = float(row.get('Holds_Per_Vessel', 0) or 0)
+                per_hold = float(row.get('Payload_Per_Hold_T', 0) or 0)
+                return holds * per_hold
             except:
                 return 0.0
 
         df_ship['Payload_T'] = df_ship.apply(calc_payload_ship, axis=1)
         
-        for col in ['N_Units', 'Speed_Knots', 'Hulls_Per_Vessel', 'Payload_Per_Hull_T']:
+        for col in ['N_Units', 'Speed_Knots', 'Holds_Per_Vessel', 'Payload_Per_Hold_T']:
             if col in df_ship.columns:
                 df_ship[col] = pd.to_numeric(df_ship[col], errors='coerce').fillna(0.0)
 

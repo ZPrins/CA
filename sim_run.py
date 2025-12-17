@@ -65,10 +65,10 @@ def apply_ui_overrides(raw_data: dict) -> dict:
                         df.loc[df.index[i], '# Vessels'] = override['# Vessels']
                     if 'Route avg Speed (knots)' in override:
                         df.loc[df.index[i], 'Route avg Speed (knots)'] = override['Route avg Speed (knots)']
-                    if '#Hulls' in override:
-                        df.loc[df.index[i], '#Hulls'] = override['#Hulls']
-                    if 'Payload per Hull' in override:
-                        df.loc[df.index[i], 'Payload per Hull'] = override['Payload per Hull']
+                    if '#Holds' in override:
+                        df.loc[df.index[i], '#Holds'] = override['#Holds']
+                    if 'Payload per Hold' in override:
+                        df.loc[df.index[i], 'Payload per Hold'] = override['Payload per Hold']
             raw_data['Move_SHIP'] = df
             log(f"  [INFO] Applied UI overrides to Move_SHIP data ({len(overrides['move_ship'])} rows)")
         

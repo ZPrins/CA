@@ -1324,15 +1324,15 @@ MOVE_TRAIN_SHEET_COLS = MOVE_TRAIN_KEY_COLS + [
 ] + MOVE_TRAIN_REQUIRED_INPUT_COLS
 
 # MOVE_SHIP sheet per spec
-# Updated to include two additional columns: "#Hulls" and "Payload per Hull"
+# Updated to include two additional columns: "#Holds" and "Payload per Hold"
 # placed immediately after "Route avg Speed (knots)" for clarity.
 MOVE_SHIP_SHEET_COLS = [
     "Origin Location",
     "Route Group",
     "# Vessels",
     "Route avg Speed (knots)",
-    "#Hulls",
-    "Payload per Hull",
+    "#Holds",
+    "Payload per Hold",
 ]
 
 # BERTHS sheet
