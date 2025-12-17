@@ -1245,7 +1245,7 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         btn.disabled = true;
         btn.className = 'run-btn running-badge';
         btn.textContent = countdown + 's';
-        status.textContent = '';
+        status.innerHTML = '<span style="color:#fff;margin-left:8px;">Running...</span>';
         
         countdownInterval = setInterval(() => {
             countdown--;
@@ -1254,6 +1254,7 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
             } else {
                 btn.textContent = '...';
                 btn.className = 'run-btn finishing-badge';
+                status.innerHTML = '<span style="color:#fff;margin-left:8px;">Finishing Up...</span>';
             }
         }, 1000);
         
@@ -1264,6 +1265,7 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
             if (result.success && result.report_ready) {
                 btn.textContent = 'Complete';
                 btn.className = 'run-btn complete-badge';
+                status.innerHTML = '<span style="color:#a5d6a7;margin-left:8px;">Reloading...</span>';
                 setTimeout(() => window.location.reload(), 500);
             } else {
                 status.textContent = 'Error: ' + (result.output || 'Unknown error');
