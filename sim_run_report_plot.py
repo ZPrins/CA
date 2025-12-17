@@ -891,6 +891,8 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         .dropdown-actions button {{ flex: 1; padding: 4px 8px; font-size: 0.75em; border-radius: 4px; border: none; cursor: pointer; }}
         .dropdown-actions .select-all {{ background: #4fc3f7; color: #1a1a2e; }}
         .dropdown-actions .clear-all {{ background: rgba(255,255,255,0.1); color: #b0bec5; }}
+        .quick-btn {{ background: rgba(255,255,255,0.06); color: #78909c; border: 1px solid rgba(255,255,255,0.1); padding: 4px 10px; font-size: 0.75em; border-radius: 12px; cursor: pointer; transition: all 0.2s ease; }}
+        .quick-btn:hover {{ background: rgba(79,195,247,0.15); color: #4fc3f7; }}
         .content {{ padding: 20px 40px; max-width: 1400px; margin: 0 auto; }}
         .summary {{ background: #fff; padding: 20px 24px; border-radius: 12px; margin-bottom: 30px; border-left: 4px solid #4fc3f7; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }}
         .summary p {{ margin: 8px 0; color: #4a5568; }}
@@ -912,11 +914,15 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         </div>
         <div class="filter-bar">
             <span class="filter-label">Categories:</span>
+            <button class="quick-btn" onclick="selectAllCategories()">All</button>
+            <button class="quick-btn" onclick="clearAllCategories()">None</button>
             <button class="filter-btn active" data-category="inventory" onclick="toggleCategory('inventory')">Inventory</button>
             <button class="filter-btn active" data-category="manufacturing" onclick="toggleCategory('manufacturing')">Manufacturing</button>
             <button class="filter-btn active" data-category="shipping" onclick="toggleCategory('shipping')">Shipping</button>
             <div class="filter-divider"></div>
             <span class="filter-label">Products:</span>
+            <button class="quick-btn" onclick="selectAllProducts()">All</button>
+            <button class="quick-btn" onclick="clearAllProducts()">None</button>
             {product_buttons}
             <div class="filter-divider"></div>
             <span class="filter-label">Locations:</span>
@@ -970,10 +976,42 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         document.querySelector(`[data-category="${cat}"].filter-btn`).classList.toggle('active', categoryState[cat]);
         applyFilters();
     }
+    
+    function selectAllCategories() {
+        ['inventory', 'manufacturing', 'shipping'].forEach(cat => {
+            categoryState[cat] = true;
+            document.querySelector(`[data-category="${cat}"].filter-btn`).classList.add('active');
+        });
+        applyFilters();
+    }
+    
+    function clearAllCategories() {
+        ['inventory', 'manufacturing', 'shipping'].forEach(cat => {
+            categoryState[cat] = false;
+            document.querySelector(`[data-category="${cat}"].filter-btn`).classList.remove('active');
+        });
+        applyFilters();
+    }
 
     function toggleProduct(prod) {
         productState[prod] = !productState[prod];
         document.querySelector(`[data-product="${prod}"].filter-btn`).classList.toggle('active', productState[prod]);
+        applyFilters();
+    }
+    
+    function selectAllProducts() {
+        document.querySelectorAll('.product-btn').forEach(btn => {
+            productState[btn.dataset.product] = true;
+            btn.classList.add('active');
+        });
+        applyFilters();
+    }
+    
+    function clearAllProducts() {
+        document.querySelectorAll('.product-btn').forEach(btn => {
+            productState[btn.dataset.product] = false;
+            btn.classList.remove('active');
+        });
         applyFilters();
     }
     
