@@ -93,7 +93,7 @@ def run_multi_simulation(horizon_days: int, random_opening: bool, num_runs: int)
         for i in range(num_runs)
     ]
     
-    max_workers = min(multiprocessing.cpu_count(), 4, num_runs)
+    max_workers = min(multiprocessing.cpu_count(), num_runs)
     
     kpis = []
     errors = []
@@ -141,7 +141,7 @@ def stream_multi_simulation(horizon_days: int, random_opening: bool, num_runs: i
         for i in range(num_runs)
     ]
     
-    max_workers = min(multiprocessing.cpu_count(), 4, num_runs)
+    max_workers = min(multiprocessing.cpu_count(), num_runs)
     
     kpis = []
     errors = []
