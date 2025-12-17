@@ -314,19 +314,27 @@ def clean_all_data(raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]
         "Route Group": "Route_Group",
         "# Vessels": "N_Units",
         "Vessels": "N_Units",
-        "No. Vessels": "N_Units"
+        "No. Vessels": "N_Units",
+        "Origin Location": "Origin_Location",
+        "Route avg Speed (knots)": "Speed_Knots",
+        "#Hulls": "Hulls_Per_Vessel",
+        "Payload per Hull": "Payload_Per_Hull_T"
     })
 
     if not df_ship.empty:
         def calc_payload_ship(row):
             try:
-                hulls = float(row.get('#Hulls', 0) or 0)
-                per_hull = float(row.get('Payload per Hull', 0) or 0)
+                hulls = float(row.get('Hulls_Per_Vessel', 0) or 0)
+                per_hull = float(row.get('Payload_Per_Hull_T', 0) or 0)
                 return hulls * per_hull
             except:
                 return 0.0
 
         df_ship['Payload_T'] = df_ship.apply(calc_payload_ship, axis=1)
+        
+        for col in ['N_Units', 'Speed_Knots', 'Hulls_Per_Vessel', 'Payload_Per_Hull_T']:
+            if col in df_ship.columns:
+                df_ship[col] = pd.to_numeric(df_ship[col], errors='coerce').fillna(0.0)
 
     clean_data['Move_SHIP'] = clean_df_cols_str(df_ship, ['Product_Class', 'Route_Group'])
 
@@ -336,8 +344,14 @@ def clean_all_data(raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]
     else:
         clean_data['SHIP_ROUTES'] = pd.DataFrame()
 
-    clean_data['SHIP_BERTHS'] = clean_df_cols_str(raw_data.get('SHIP_BERTHS', pd.DataFrame()),
-                                                  ['Location', 'Store_Key'])
+    df_berths = raw_data.get('SHIP_BERTHS', pd.DataFrame())
+    df_berths = _rename_cols(df_berths, {
+        "# Berths": "N_Berths",
+        "Probability Berth Occupied %": "P_Occupied",
+        "Pilot In (Hours)": "Pilot_In_H",
+        "Pilot Out (Hours)": "Pilot_Out_H"
+    })
+    clean_data['SHIP_BERTHS'] = clean_df_cols_str(df_berths, ['Location', 'Store_Key'])
     clean_data['SHIP_DISTANCES'] = clean_df_cols_str(raw_data.get('SHIP_DISTANCES', pd.DataFrame()), [0, 1])
 
     return clean_data
