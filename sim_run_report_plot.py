@@ -247,7 +247,7 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
             # Ship Out
             if "Ship_out" in data.columns and data["Ship_out"].sum() > 0:
                 fig.add_trace(go.Scatter(x=data["day"], y=data["Ship_out"], name="Ship Out (t)", mode='markers',
-                                         marker=dict(symbol='triangle-up', size=10, color='#17becf')), secondary_y=True)
+                                         marker=dict(symbol='triangle-up', size=10, color='#17becf')), secondary_y=False)
 
             # Consumption (material consumed from this store for production)
             if "Consumption_out" in data.columns and data["Consumption_out"].sum() > 0:
