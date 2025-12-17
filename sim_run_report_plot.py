@@ -1,4 +1,5 @@
 # sim_run_report_plot.py
+from typing import List, Tuple
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -95,11 +96,13 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
 
     # 3. Transport Timelines (separate for Train and Ship)
     train_transport_fig = None
-    ship_transport_fig = None
+    ship_route_group_figs = []
+    vessel_state_fig = None
     if sim.action_log:
         df_log_all = pd.DataFrame(sim.action_log)
         train_transport_fig = _generate_transport_plot(df_log_all, equipment_type="Train")
-        ship_transport_fig = _generate_transport_plot(df_log_all, equipment_type="Ship")
+        ship_route_group_figs = _generate_ship_timeline_by_route_group(df_log_all)
+        vessel_state_fig = _generate_vessel_state_chart(df_log_all)
 
     # 4. Store Figures
     store_figs = {}
@@ -198,8 +201,12 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
     content = []
     if train_transport_fig:
         content.append({"type": "fig", "fig": train_transport_fig, "title": "Rail Transport Timeline"})
-    if ship_transport_fig:
-        content.append({"type": "fig", "fig": ship_transport_fig, "title": "Ship Transport Timeline"})
+    
+    if vessel_state_fig:
+        content.append({"type": "fig", "fig": vessel_state_fig, "title": "Fleet State Over Time"})
+    
+    for route_group, fig in ship_route_group_figs:
+        content.append({"type": "fig", "fig": fig, "title": f"Ship Route: {route_group}"})
 
     if not df_inv.empty:
         df_inv["location_only"] = df_inv["store_key"].apply(
@@ -262,6 +269,129 @@ def _generate_transport_plot(df_log: pd.DataFrame, equipment_type: str = None) -
     fig.update_layout(title=title, xaxis_title="Day of Year", yaxis_title="Route",
                       height=max(400, len(moves['Route'].unique()) * 30), template="plotly_white",
                       yaxis=dict(autorange="reversed"))
+    return fig
+
+
+def _generate_ship_timeline_by_route_group(df_log: pd.DataFrame) -> List[go.Figure]:
+    """Generate separate ship timeline charts for each route group, showing loads/unloads by location."""
+    if df_log.empty: return []
+
+    moves = df_log[(df_log['process'] == 'Move') & (df_log['equipment'] == 'Ship')].copy()
+    if moves.empty: return []
+
+    moves['day'] = pd.to_numeric(moves['time_h'], errors='coerce') / 24.0
+    if 'qty_t' not in moves.columns:
+        moves['qty_t'] = pd.to_numeric(moves.get('qty', 0), errors='coerce').fillna(0)
+
+    route_groups = moves['route_id'].dropna().unique()
+    figs = []
+
+    for rg in sorted(route_groups):
+        rg_moves = moves[moves['route_id'] == rg].copy()
+        if rg_moves.empty: continue
+
+        loads = rg_moves[rg_moves['event'].isin(['Load', 'ShipLoad'])]
+        unloads = rg_moves[rg_moves['event'].isin(['Unload', 'ShipUnload'])]
+
+        fig = go.Figure()
+
+        if not loads.empty:
+            fig.add_trace(go.Scatter(
+                x=loads['day'], y=loads['location'], mode='markers',
+                marker=dict(symbol='triangle-right', size=10, color='green', opacity=0.7),
+                name='Load',
+                text=loads.apply(lambda r: f"{r['product']}: {r['qty_t']:,.0f} t", axis=1),
+                hovertemplate="<b>LOAD</b><br>Day: %{x:.1f}<br>Location: %{y}<br>%{text}<extra></extra>"
+            ))
+
+        if not unloads.empty:
+            fig.add_trace(go.Scatter(
+                x=unloads['day'], y=unloads['location'], mode='markers',
+                marker=dict(symbol='triangle-left', size=10, color='red', opacity=0.7),
+                name='Unload',
+                text=unloads.apply(lambda r: f"{r['product']}: {r['qty_t']:,.0f} t", axis=1),
+                hovertemplate="<b>UNLOAD</b><br>Day: %{x:.1f}<br>Location: %{y}<br>%{text}<extra></extra>"
+            ))
+
+        locations = rg_moves['location'].dropna().unique()
+        fig.update_layout(
+            title=f"Ship Route: {rg}",
+            xaxis_title="Day of Year",
+            yaxis_title="Location",
+            height=max(300, len(locations) * 40),
+            template="plotly_white",
+            yaxis=dict(autorange="reversed")
+        )
+        figs.append((rg, fig))
+
+    return figs
+
+
+def _generate_vessel_state_chart(df_log: pd.DataFrame) -> go.Figure:
+    """Generate stacked area chart showing vessel count by state over time."""
+    if df_log.empty: return None
+
+    state_changes = df_log[df_log['process'] == 'ShipState'].copy()
+    if state_changes.empty: return None
+
+    state_changes['day'] = pd.to_numeric(state_changes['time_h'], errors='coerce') / 24.0
+    state_changes = state_changes.sort_values('time_h')
+
+    states = ['IDLE', 'LOADING', 'IN_TRANSIT', 'WAITING_FOR_BERTH', 'UNLOADING']
+    state_colors = {
+        'IDLE': '#2ca02c',
+        'LOADING': '#1f77b4',
+        'IN_TRANSIT': '#ff7f0e',
+        'WAITING_FOR_BERTH': '#d62728',
+        'UNLOADING': '#9467bd'
+    }
+
+    vessel_states = {}
+    timeline_data = []
+
+    for _, row in state_changes.iterrows():
+        vid = row.get('vessel_id')
+        new_state = row.get('ship_state')
+        day = row['day']
+
+        if vid is not None and new_state is not None:
+            vessel_states[vid] = new_state
+
+            counts = {s: 0 for s in states}
+            for v, st in vessel_states.items():
+                if st in counts:
+                    counts[st] += 1
+
+            timeline_data.append({'day': day, **counts})
+
+    if not timeline_data:
+        return None
+
+    df_timeline = pd.DataFrame(timeline_data)
+
+    fig = go.Figure()
+    for state in states:
+        if state in df_timeline.columns:
+            fig.add_trace(go.Scatter(
+                x=df_timeline['day'],
+                y=df_timeline[state],
+                mode='lines',
+                name=state.replace('_', ' ').title(),
+                fill='tonexty' if state != 'IDLE' else 'tozeroy',
+                line=dict(width=0.5, color=state_colors.get(state, '#999')),
+                stackgroup='one'
+            ))
+
+    fig.update_layout(
+        title="Fleet State Over Time",
+        xaxis_title="Day of Year",
+        yaxis_title="Number of Vessels",
+        template="plotly_white",
+        height=400,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    fig.update_yaxes(tickformat='d')
+
     return fig
 
 

@@ -70,7 +70,7 @@ class SupplyChainSimulation:
             self.choose_output
         )
 
-    def transporter(self, route: TransportRoute):
+    def transporter(self, route: TransportRoute, vessel_id: int = 1):
         mode = (getattr(route, 'mode', 'TRAIN') or 'TRAIN').upper()
         if mode == 'SHIP':
             yield from _transporter_ship(
@@ -81,7 +81,8 @@ class SupplyChainSimulation:
                 self.log,
                 store_rates=self.settings.get('store_rates', {}),
                 require_full=self.settings.get("require_full_payload", True),
-                demand_rates=self.demand_rate_map
+                demand_rates=self.demand_rate_map,
+                vessel_id=vessel_id
             )
         else:  # TRAIN
             yield from _transporter_train(
@@ -138,9 +139,11 @@ class SupplyChainSimulation:
             res = simpy.Resource(self.env, capacity=1)
             self.env.process(self.producer(res, merged_unit))
 
+        vessel_counter = 0
         for mv in moves:
-            for _ in range(mv.n_units):
-                self.env.process(self.transporter(mv))
+            for i in range(mv.n_units):
+                vessel_counter += 1
+                self.env.process(self.transporter(mv, vessel_id=vessel_counter))
 
         for d in demands:
             try:

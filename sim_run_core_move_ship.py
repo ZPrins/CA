@@ -131,7 +131,8 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                 log_func: Callable,
                 store_rates: Dict[str, Tuple[float, float]],
                 require_full: bool = True,
-                demand_rates: Optional[Dict[str, float]] = None):
+                demand_rates: Optional[Dict[str, float]] = None,
+                vessel_id: int = 1):
     """
     Main ship vessel process. This is called once per vessel by the simulation core.
     Follows the state machine: IDLE -> LOADING -> IN_TRANSIT -> WAITING_FOR_BERTH -> UNLOADING -> IDLE
@@ -159,6 +160,25 @@ def transporter(env: simpy.Environment, route: TransportRoute,
     demand_rates_map = demand_rates or {}
     active_berth = None
     active_berth_req = None
+    
+    def log_state_change(new_state: ShipState, location: str = None):
+        log_func(
+            process="ShipState",
+            event="StateChange",
+            location=location or current_location,
+            equipment="Ship",
+            product=None,
+            qty=None,
+            from_store=None,
+            from_level=None,
+            to_store=None,
+            to_level=None,
+            route_id=route_group,
+            vessel_id=vessel_id,
+            ship_state=new_state.value
+        )
+    
+    log_state_change(state, origin_location)
     
     while True:
         if state == ShipState.IDLE:
@@ -188,6 +208,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
             
             chosen_itinerary = best_it
             state = ShipState.LOADING
+            log_state_change(state)
             cargo = {}
             itinerary_idx = 0
             
@@ -199,6 +220,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
         elif state == ShipState.LOADING:
             if itinerary_idx >= len(chosen_itinerary):
                 state = ShipState.IN_TRANSIT
+                log_state_change(state)
                 continue
             
             step = chosen_itinerary[itinerary_idx]
@@ -253,6 +275,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                 
                 if utilization >= min_utilization:
                     state = ShipState.IN_TRANSIT
+                    log_state_change(state)
                 else:
                     for i, s in enumerate(chosen_itinerary):
                         if s.get('kind') == 'load':
@@ -266,6 +289,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
             if itinerary_idx >= len(chosen_itinerary):
                 current_location = origin_location
                 state = ShipState.IDLE
+                log_state_change(state)
                 cargo = {}
                 yield env.timeout(0.01)
                 continue
@@ -294,9 +318,11 @@ def transporter(env: simpy.Environment, route: TransportRoute,
             
             elif kind == 'unload':
                 state = ShipState.WAITING_FOR_BERTH
+                log_state_change(state)
             
             elif kind == 'load':
                 state = ShipState.LOADING
+                log_state_change(state)
             
             else:
                 itinerary_idx += 1
@@ -310,6 +336,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
             yield berth_req
             
             state = ShipState.UNLOADING
+            log_state_change(state, unload_location)
             active_berth = berth
             active_berth_req = berth_req
         
@@ -320,6 +347,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                     active_berth = None
                 current_location = origin_location
                 state = ShipState.IDLE
+                log_state_change(state)
                 cargo = {}
                 yield env.timeout(0.01)
                 continue
@@ -369,6 +397,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                     active_berth.release(active_berth_req)
                     active_berth = None
                 state = ShipState.IN_TRANSIT
+                log_state_change(state)
         
         elif state == ShipState.ERROR:
             log_func(
