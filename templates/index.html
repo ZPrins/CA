@@ -399,8 +399,8 @@
                                                 <th>Route Group</th>
                                                 <th># Vessels</th>
                                                 <th>Speed (knots)</th>
-                                                <th># Hulls</th>
-                                                <th>Payload/Hull</th>
+                                                <th># Holds</th>
+                                                <th>Payload/Hold</th>
                                             </tr>
                                         </thead>
                                         <tbody id="shipTableBody"></tbody>
@@ -592,8 +592,8 @@
                     <td><input type="text" value="${row['Route Group'] || ''}" readonly></td>
                     <td>${editableInput('# Vessels', idx, row['# Vessels'] || 0, 'move_ship')}</td>
                     <td>${editableInput('Route avg Speed (knots)', idx, row['Route avg Speed (knots)'] || 0, 'move_ship', '0.1')}</td>
-                    <td>${editableInput('#Hulls', idx, row['#Hulls'] || 0, 'move_ship')}</td>
-                    <td>${editableInput('Payload per Hull', idx, row['Payload per Hull'] || 0, 'move_ship')}</td>
+                    <td>${editableInput('#Holds', idx, row['#Holds'] || 0, 'move_ship')}</td>
+                    <td>${editableInput('Payload per Hold', idx, row['Payload per Hold'] || 0, 'move_ship')}</td>
                 `;
                 tbody.appendChild(tr);
             });
