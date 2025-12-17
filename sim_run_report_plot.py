@@ -28,6 +28,9 @@ def _merge_days_to_intervals(days: list) -> list:
 def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | None = None, graph_sequence: list | None = None, report_data: dict | None = None):
     if not config.write_plots: return
     
+    import time
+    t0 = time.time()
+    
     makes = makes or []
     graph_sequence = graph_sequence or []  # List of (Location, Equipment, Process) tuples
 
@@ -77,13 +80,24 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
     fleet_util_fig = None
     manufacturing_figs = {}
     if not df_log.empty:
+        t1 = time.time()
         train_transport_fig = _generate_transport_plot(df_log, equipment_type="Train")
+        print(f"  [timing] Train transport: {time.time()-t1:.1f}s")
+        t1 = time.time()
         ship_route_group_figs = _generate_ship_timeline_by_route_group(df_log)
+        print(f"  [timing] Ship timelines: {time.time()-t1:.1f}s")
+        t1 = time.time()
         vessel_state_fig = _generate_vessel_state_chart(df_log)
+        print(f"  [timing] Vessel state: {time.time()-t1:.1f}s")
+        t1 = time.time()
         fleet_util_fig = _generate_fleet_utilisation_chart(df_log)
+        print(f"  [timing] Fleet util: {time.time()-t1:.1f}s")
+        t1 = time.time()
         manufacturing_figs = _generate_manufacturing_charts(df_log)
+        print(f"  [timing] Manufacturing: {time.time()-t1:.1f}s")
 
     # 4. Store Figures
+    t1 = time.time()
     store_figs = {}
     if not df_inv.empty:
         supplier_map = {}
@@ -233,6 +247,8 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
 
             store_figs[store_key] = fig
 
+    print(f"  [timing] Store figures: {time.time()-t1:.1f}s")
+    
     # 5. Collect all products from inventory data for filters
     all_products = set()
     if not df_inv.empty:
@@ -242,6 +258,7 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
                 all_products.add(parts[3])
 
     # 6. HTML Generation
+    t1 = time.time()
     content = []
 
     if train_transport_fig:
@@ -335,7 +352,11 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
         for (sk, product) in sorted(remaining_stores):
             content.append({"type": "fig", "fig": store_figs[sk], "category": "inventory", "product": product, "location": "Other"})
 
+    print(f"  [timing] Content assembly: {time.time()-t1:.1f}s")
+    t1 = time.time()
     _generate_html_report(sim, out_dir, content, sorted(all_products), location_order)
+    print(f"  [timing] HTML write: {time.time()-t1:.1f}s")
+    print(f"  [timing] TOTAL plot_results: {time.time()-t0:.1f}s")
 
 
 def _generate_transport_plot(df_log: pd.DataFrame, equipment_type: str = None) -> go.Figure:
