@@ -17,6 +17,60 @@ from sim_run_report_plot import plot_results
 from sim_run_report_codegen import generate_standalone
 
 
+def _check_supply_sources(stores_cfg, makes, moves, demands):
+    """Check for stores with demand but no supply sources (production, rail, or ship)."""
+    
+    # Build set of stores that receive supply
+    supplied_stores = set()
+    
+    # 1. Production outputs
+    for make in makes:
+        for candidate in make.candidates:
+            if candidate.out_store_key:
+                supplied_stores.add(candidate.out_store_key.upper())
+            if candidate.out_store_keys:
+                for key in candidate.out_store_keys:
+                    if key:
+                        supplied_stores.add(key.upper())
+    
+    # 2. Transport destinations (rail and ship)
+    for move in moves:
+        if move.dest_stores:
+            for store_key in move.dest_stores:
+                if store_key:
+                    supplied_stores.add(store_key.upper())
+        # Also check ship itineraries for unload destinations
+        if move.itineraries:
+            for it in move.itineraries:
+                for step in it:
+                    if step.get('kind') == 'unload':
+                        store_key = step.get('store_key')
+                        if store_key:
+                            supplied_stores.add(store_key.upper())
+    
+    # 3. Get stores with demand
+    demand_stores = set()
+    for demand in demands:
+        if demand.store_key:
+            demand_stores.add(demand.store_key.upper())
+    
+    # 4. Find unsupplied stores (have demand but no supply)
+    unsupplied = []
+    for store_key_upper in demand_stores:
+        if store_key_upper not in supplied_stores:
+            # Get store config for initial level info
+            store_cfg = next((s for s in stores_cfg if s.key.upper() == store_key_upper), None)
+            initial = (store_cfg.opening_low + store_cfg.opening_high) / 2 if store_cfg else 0
+            unsupplied.append((store_key_upper, initial))
+    
+    if unsupplied:
+        print(f"\n[WARNING] Stores with demand but NO supply sources:")
+        for store_key, initial in sorted(unsupplied):
+            init_note = f" (initial: {initial:,.0f}t)" if initial > 0 else ""
+            print(f"  - {store_key}{init_note}")
+        print("  These stores will deplete and cause unmet demand.\n")
+
+
 def main():
     if len(sys.argv) > 1:
         INPUT_FILE = sys.argv[1]
@@ -42,6 +96,9 @@ def main():
     print(f"  Makes:   {len(makes)}")
     print(f"  Moves:   {len(moves)}")
     print(f"  Demands: {len(demands)}")
+
+    # --- CHECK FOR STORES WITH NO SUPPLY SOURCES ---
+    _check_supply_sources(stores_cfg, makes, moves, demands)
 
     if len(stores_cfg) == 0:
         print("\n[ERROR] No stores were loaded! Please check inputs.")
