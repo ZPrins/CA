@@ -1,0 +1,94 @@
+imulation Output
+Error
+Simulation started
+Starting simulation with input file: generated_model_inputs.xlsx
+--- Loading Data from: 'generated_model_inputs.xlsx' ---
+  [INFO] Detected Excel file. Reading sheets...
+  [OK] Loaded sheet 'Settings' (3 rows)
+  [OK] Loaded sheet 'Store' (34 rows)
+  [OK] Loaded sheet 'Make' (13 rows)
+  [OK] Loaded sheet 'Deliver' (22 rows)
+  [OK] Loaded sheet 'Move_TRAIN' (9 rows)
+  [OK] Loaded sheet 'Move_SHIP' (4 rows)
+  [OK] Loaded sheet 'SHIP_ROUTES' (20 rows)
+  [OK] Loaded sheet 'SHIP_BERTHS' (10 rows)
+  [OK] Loaded sheet 'SHIP_DISTANCES' (17 rows)
+  [OK] Loaded sheet 'Network' (108 rows)
+  [INFO] Applied UI overrides to Store data (34 rows)
+  [INFO] Applied UI overrides to Move_SHIP data (4 rows)
+  [INFO] Normalizing Wide 'SHIP_ROUTES' format...
+Model Summary: (loaded in 0s)
+  Stores:  34
+  Makes:   10
+  Moves:   13
+  Demands: 22
+Progress: 10% (36/365 days)
+Progress: 20% (73/365 days)
+Progress: 30% (110/365 days)
+Progress: 40% (146/365 days)
+Progress: 50% (182/365 days)
+Progress: 60% (219/365 days)
+Progress: 70% (255/365 days)
+Progress: 80% (292/365 days)
+Progress: 90% (328/365 days)
+Progress: 100% (365/365 days)
+=== Simulation Complete ===
+Final store levels:
+  CL|Bulwer Island|CL_STORE_I|CL: 3649.4 tons
+  CL|Bulwer Island|CL_STORE|CL: 3593.1 tons
+  CL|Gladstone|CL_STORE|CL: 96882.0 tons
+  CL|Import_CL|CL_STORE|CL: 299999.0 tons
+  CL|Port Kembla|CL_STORE_I|CL: 16701.6 tons
+  CL|Railton|CL_STORE|CL: 114857.6 tons
+  FA|Gladstone|FA_EXPSILO_STORE|FA: 3231.3 tons
+  FA|Melbourne|FA_STORE|FA: 0.0 tons
+  FA|Osborne|FA_STORE|FA: 0.0 tons
+  FA|Port Kembla|FA_STORE|FA: 13485.5 tons
+  GBFS|Bulwer Island|GBFS_STORE|GBFS: 24740.0 tons
+  GBFS|Import_GBFS|GBFS_STORE|GBFS: 299999.0 tons
+  GBFS|Port Kembla|GBFS_STORE|GBFS: 0.0 tons
+  GP|Albury|GP_STORE|GP: 2805.2 tons
+  GP|Bulwer Island|GP_STORE|GP: 20338.2 tons
+  GP|Clyde|GP_STORE|GP: 2505.9 tons
+  GP|Devonport|GP_STORE|GP: 21001.7 tons
+  GP|Gladstone|GP_STORE|GP: 9701.3 tons
+  GP|Mackay|GP_STORE|GP: 2559.7 tons
+  GP|Melbourne|GP_STORE|GP: 8728.7 tons
+  GP|Newcastle|GP_STORE|GP: 0.0 tons
+  GP|Osborne|GP_STORE|GP: 8755.1 tons
+  GP|Port Kembla|GP_STORE|GP: 29664.2 tons
+  GP|Railton|GP_STORE_Q|GP: 0.0 tons
+  GP|Railton|GP_STORE_ST|GP: 535.0 tons
+  GP|Townsville|GP_STORE|GP: 17611.1 tons
+  GP|Wagga|GP_STORE|GP: 2368.6 tons
+  SG|Bulwer Island|SG_STORE|SG: 266.1 tons
+  SG|Chullora|SG_STORE|SG: 2586.6 tons
+  SG|Clyde|SG_STORE|SG: 2128.8 tons
+  SG|Melbourne|SG_STORE|SG: 0.0 tons
+  SG|Newcastle|SG_STORE|SG: 2796.5 tons
+  SG|Port Kembla|SG_STORE|SG: 0.0 tons
+  SG|Tennyson|SG_STORE|SG: 589.2 tons
+Total unmet demand: 847571.7 tons
+Simulation completed in 4s
+Report data prepared (3s)
+  [timing] Train transport: 0.2s
+  [timing] Ship timelines: 0.1s
+  [timing] Vessel state: 0.1s
+  [timing] Fleet util: 0.1s
+  [timing] Manufacturing: 0.7s
+  [timing] Store figures: 1.1s
+  [timing] Content assembly: 0.0s
+Interactive HTML report: sim_outputs/sim_outputs_plots_all.html
+  [timing] HTML write: 0.2s
+  [timing] TOTAL plot_results: 2.5s
+Interactive HTML report generated (2s)
+Traceback (most recent call last):
+  File "/home/runner/workspace/sim_run.py", line 363, in <module>
+    main()
+  File "/home/runner/workspace/sim_run.py", line 355, in main
+    result = run_simulation(INPUT_FILE, artifacts=artifacts)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/sim_run.py", line 299, in run_simulation
+    runtime_file = Path(out_dir) / ".prev_runtime"
+                   ^^^^
+NameError: name 'Path' is not defined
