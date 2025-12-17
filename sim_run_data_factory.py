@@ -23,11 +23,23 @@ def build_store_configs(df_store: pd.DataFrame) -> List[StoreConfig]:
 
 
 def _parse_maintenance_days(val) -> List[int]:
-    """Parse maintenance days from comma-separated string like '2, 3, 4, 5'"""
+    """Parse maintenance days from comma-separated string with ranges like '1-5,6,9-12'"""
     if pd.isna(val) or val is None or str(val).strip() == '':
         return []
     try:
-        return [int(d.strip()) for d in str(val).split(',') if d.strip().isdigit()]
+        result = []
+        parts = str(val).split(',')
+        for part in parts:
+            part = part.strip()
+            if '-' in part:
+                range_parts = part.split('-')
+                if len(range_parts) == 2:
+                    start = int(range_parts[0].strip())
+                    end = int(range_parts[1].strip())
+                    result.extend(range(start, end + 1))
+            elif part.isdigit():
+                result.append(int(part))
+        return sorted(set(result))
     except:
         return []
 
