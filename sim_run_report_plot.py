@@ -380,35 +380,40 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
             loc, equip = parts[0], parts[1]
             mfg_by_loc_equip[(loc, equip)] = unit_key
     
+    # Group graph_sequence items by location (preserving order within each location)
+    location_order = []  # List of unique locations in order of first appearance
+    items_by_location = {}  # location -> list of (equip, proc) in sequence order
+    for (loc, equip, proc) in graph_sequence:
+        if loc not in items_by_location:
+            location_order.append(loc)
+            items_by_location[loc] = []
+        items_by_location[loc].append((equip, proc))
+    
     # Track what we've added
     added_stores = set()
     added_mfg = set()
-    current_location = None
     
-    # Add graphs in the exact order from graph_sequence
-    for (loc, equip, proc) in graph_sequence:
-        # Add location header if we've changed locations
-        if loc != current_location:
-            content.append({"type": "header", "location": loc, "category": "inventory"})
-            current_location = loc
+    # Add graphs grouped by location, with all products under each location
+    for loc in location_order:
+        content.append({"type": "header", "location": loc, "category": "inventory"})
         
-        if proc == 'Make':
-            # Add manufacturing graph
-            unit_key = mfg_by_loc_equip.get((loc, equip))
-            if unit_key and unit_key not in added_mfg:
-                fig = manufacturing_figs.get(unit_key)
-                if fig:
-                    content.append({"type": "fig", "fig": fig, "title": f"Manufacturing: {unit_key}", "category": "manufacturing"})
-                    added_mfg.add(unit_key)
-        
-        elif proc == 'Store':
-            # Add store inventory graph(s)
-            key = (loc, equip)
-            if key in store_by_loc_name:
-                for (sk, product) in store_by_loc_name[key]:
-                    if sk not in added_stores:
-                        content.append({"type": "fig", "fig": store_figs[sk], "category": "inventory", "product": product})
-                        added_stores.add(sk)
+        # Process all items for this location in sequence order
+        for (equip, proc) in items_by_location[loc]:
+            if proc == 'Make':
+                unit_key = mfg_by_loc_equip.get((loc, equip))
+                if unit_key and unit_key not in added_mfg:
+                    fig = manufacturing_figs.get(unit_key)
+                    if fig:
+                        content.append({"type": "fig", "fig": fig, "title": f"Manufacturing: {unit_key}", "category": "manufacturing"})
+                        added_mfg.add(unit_key)
+            
+            elif proc == 'Store':
+                key = (loc, equip)
+                if key in store_by_loc_name:
+                    for (sk, product) in store_by_loc_name[key]:
+                        if sk not in added_stores:
+                            content.append({"type": "fig", "fig": store_figs[sk], "category": "inventory", "product": product})
+                            added_stores.add(sk)
     
     # Add any remaining manufacturing/store graphs not in the sequence
     remaining_stores = [(sk, prod) for items in store_by_loc_name.values() for (sk, prod) in items if sk not in added_stores]
