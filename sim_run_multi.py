@@ -133,6 +133,8 @@ def stream_multi_simulation(horizon_days: int, random_opening: bool, num_runs: i
     Yields:
         SSE-formatted strings for progress updates
     """
+    import time
+    
     num_runs = min(num_runs, 100)
     base_seed = random.randint(1, 100000)
     
@@ -146,6 +148,11 @@ def stream_multi_simulation(horizon_days: int, random_opening: bool, num_runs: i
     kpis = []
     errors = []
     completed = 0
+    start_time = time.time()
+    last_time = start_time
+    
+    # Aggregate unmet demand by key across all runs
+    unmet_totals = {}
     
     yield f'event: start\ndata: {{"total": {num_runs}, "workers": {max_workers}}}\n\n'
     yield f'data: Starting {num_runs} simulation(s) with {max_workers} parallel workers...\n\n'
@@ -160,23 +167,48 @@ def stream_multi_simulation(horizon_days: int, random_opening: bool, num_runs: i
                 yield f'event: done\ndata: {{"stopped": true}}\n\n'
                 return
             
+            current_time = time.time()
+            elapsed = int(current_time - last_time)
+            last_time = current_time
+            
             result = future.result()
             completed += 1
             run_idx = result.get('run_idx', '?')
             
             if 'error' in result:
                 errors.append(result)
-                yield f'data: Run {run_idx + 1}/{num_runs}: ERROR - {result["error"][:100]}\n\n'
+                yield f'data: Run {run_idx + 1}/{num_runs} ({elapsed}s): ERROR - {result["error"][:100]}\n\n'
             else:
                 kpis.append(result)
                 unmet = result.get('total_unmet_demand', 0)
                 prod = result.get('total_production', 0)
                 ships = result.get('ship_trips', 0)
                 trains = result.get('train_trips', 0)
-                yield f'data: Run {run_idx + 1}/{num_runs}: Unmet={unmet:,.0f}t, Prod={prod:,.0f}t, Ships={ships}, Trains={trains}\n\n'
+                
+                # Aggregate unmet by key
+                unmet_by_key = result.get('unmet_by_key', {})
+                for key, val in unmet_by_key.items():
+                    unmet_totals[key] = unmet_totals.get(key, 0) + val
+                
+                yield f'data: Run {run_idx + 1}/{num_runs} ({elapsed}s): Unmet={unmet:,.0f}t, Prod={prod:,.0f}t, Ships={ships}, Trains={trains}\n\n'
             
             pct = int((completed / num_runs) * 100)
             yield f'event: progress\ndata: {{"completed": {completed}, "total": {num_runs}, "pct": {pct}}}\n\n'
+    
+    # Calculate total elapsed time
+    total_elapsed = int(time.time() - start_time)
+    
+    # Show top 5 unmet demand by product/location
+    if unmet_totals:
+        sorted_unmet = sorted(unmet_totals.items(), key=lambda x: x[1], reverse=True)[:5]
+        yield f'data: \n\n'
+        yield f'data: === Top 5 Lost Demand (avg across {len(kpis)} runs) ===\n\n'
+        for i, (key, total) in enumerate(sorted_unmet, 1):
+            avg = total / len(kpis) if kpis else 0
+            yield f'data:   {i}. {key}: {avg:,.0f} t/run\n\n'
+    
+    yield f'data: \n\n'
+    yield f'data: Total runtime: {total_elapsed}s\n\n'
     
     kpis.sort(key=lambda x: x.get('run_idx', 0))
     

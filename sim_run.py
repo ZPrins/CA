@@ -139,12 +139,14 @@ def extract_kpis_from_sim(sim):
         'total_production': 0,
         'avg_inventory_pct': 0,
         'ship_trips': 0,
-        'train_trips': 0
+        'train_trips': 0,
+        'unmet_by_key': {}
     }
     
     try:
-        # Total unmet demand
+        # Total unmet demand and breakdown by key
         kpis['total_unmet_demand'] = sum(sim.unmet.values())
+        kpis['unmet_by_key'] = dict(sim.unmet)
         
         # Process action log
         if sim.action_log:
