@@ -236,6 +236,8 @@
                                                 <th>Capacity</th>
                                                 <th>Opening (High)</th>
                                                 <th>Opening (Low)</th>
+                                                <th>Load Rate</th>
+                                                <th>Unload Rate</th>
                                             </tr>
                                         </thead>
                                         <tbody id="storeTableBody"></tbody>
@@ -324,6 +326,8 @@
                     <td><input type="number" data-field="Silo Max Capacity" data-idx="${idx}" value="${row['Silo Max Capacity'] || 0}"></td>
                     <td><input type="number" data-field="Silo Opening Stock (High)" data-idx="${idx}" value="${row['Silo Opening Stock (High)'] || 0}"></td>
                     <td><input type="number" data-field="Silo Opening Stock (Low)" data-idx="${idx}" value="${row['Silo Opening Stock (Low)'] || 0}"></td>
+                    <td><input type="number" data-field="Load Rate (ton/hr)" data-idx="${idx}" value="${row['Load Rate (ton/hr)'] || 0}"></td>
+                    <td><input type="number" data-field="Unload Rate (ton/hr)" data-idx="${idx}" value="${row['Unload Rate (ton/hr)'] || 0}"></td>
                 `;
                 tbody.appendChild(tr);
             });
