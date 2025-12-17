@@ -1092,15 +1092,17 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         let countdown = prevRuntime;
         
         btn.disabled = true;
-        btn.textContent = 'Running...';
-        status.innerHTML = '<span style="font-size:1.4em;font-weight:600;color:#4fc3f7;margin-left:10px;">' + countdown + 's</span> remaining';
+        btn.textContent = countdown + 's';
+        btn.style.minWidth = '120px';
+        status.innerHTML = '<span style="color:#81d4fa;margin-left:12px;">Running simulation...</span>';
         
         countdownInterval = setInterval(() => {
             countdown--;
             if (countdown > 0) {
-                status.innerHTML = '<span style="font-size:1.4em;font-weight:600;color:#4fc3f7;margin-left:10px;">' + countdown + 's</span> remaining';
+                btn.textContent = countdown + 's';
             } else {
-                status.innerHTML = '<span style="color:#ffc107;margin-left:10px;">Finishing up...</span>';
+                btn.textContent = '...';
+                status.innerHTML = '<span style="color:#ffd54f;margin-left:12px;">Finishing up...</span>';
             }
         }, 1000);
         
