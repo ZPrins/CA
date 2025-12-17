@@ -147,7 +147,7 @@
             </div>
             <div class="card-body">
                 <div class="d-flex flex-wrap gap-2 mb-3">
-                    <a href="/report" target="_blank" class="btn btn-outline-light">
+                    <a href="/report" target="_blank" class="btn btn-outline-light" id="viewReportBtn">
                         View Interactive Report
                     </a>
                 </div>
@@ -253,6 +253,12 @@
                         const st = await fetch('/api/status').then(r => r.json());
                         if (st && (st.report_exists || (payload && payload.report_ready))) {
                             resultsCard.style.display = '';
+                            // Make View Report button blue when report is ready
+                            const viewReportBtn = document.getElementById('viewReportBtn');
+                            if (viewReportBtn && ok) {
+                                viewReportBtn.classList.remove('btn-outline-light');
+                                viewReportBtn.classList.add('btn-primary');
+                            }
                         }
                         const csvLinks = document.getElementById('csvLinks');
                         if (csvLinks && st && Array.isArray(st.csv_files)) {
