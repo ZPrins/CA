@@ -1016,9 +1016,61 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         });
     }
 
+    function captureInventoryData() {
+        const invData = {};
+        document.querySelectorAll('.plot[data-category="inventory"]').forEach(el => {
+            const plotId = el.id;
+            const product = el.dataset.product || '';
+            const location = el.dataset.location || '';
+            const key = location + '|' + product;
+            const gd = document.getElementById(plotId);
+            if (gd && gd.data) {
+                const levelTrace = gd.data.find(t => t.name === 'Level (t)');
+                if (levelTrace && levelTrace.x && levelTrace.y) {
+                    invData[key] = { x: Array.from(levelTrace.x), y: Array.from(levelTrace.y) };
+                }
+            }
+        });
+        return invData;
+    }
+    
+    function injectPrevLevelTraces() {
+        const prevData = localStorage.getItem('prevInventoryData');
+        if (!prevData) return;
+        const data = JSON.parse(prevData);
+        document.querySelectorAll('.plot[data-category="inventory"]').forEach(el => {
+            const plotId = el.id;
+            const product = el.dataset.product || '';
+            const location = el.dataset.location || '';
+            const key = location + '|' + product;
+            if (data[key]) {
+                const gd = document.getElementById(plotId);
+                if (gd) {
+                    Plotly.addTraces(gd, {
+                        x: data[key].x,
+                        y: data[key].y,
+                        name: 'Prev Level (t)',
+                        line: { color: 'rgba(150,150,150,0.6)', width: 1.5, dash: 'dot' },
+                        mode: 'lines',
+                        hovertemplate: 'Day %{x}: %{y:,.0f} tons<extra>Previous</extra>'
+                    });
+                }
+            }
+        });
+        localStorage.removeItem('prevInventoryData');
+    }
+    
+    window.addEventListener('load', injectPrevLevelTraces);
+
     async function runSimulation() {
         const btn = document.getElementById('runBtn');
         const status = document.getElementById('status');
+        
+        const invData = captureInventoryData();
+        if (Object.keys(invData).length > 0) {
+            localStorage.setItem('prevInventoryData', JSON.stringify(invData));
+        }
+        
         btn.disabled = true;
         btn.textContent = 'Running...';
         status.textContent = 'Simulation in progress...';
@@ -1032,11 +1084,13 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
                 status.textContent = 'Error: ' + (result.output || 'Unknown error');
                 btn.disabled = false;
                 btn.textContent = 'Run Single Simulation';
+                localStorage.removeItem('prevInventoryData');
             }
         } catch (err) {
             status.textContent = 'Error: ' + err.message;
             btn.disabled = false;
             btn.textContent = 'Run Single Simulation';
+            localStorage.removeItem('prevInventoryData');
         }
     }
     </script></body></html>""")
