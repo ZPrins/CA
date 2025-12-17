@@ -326,21 +326,41 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
     for route_group, fig in ship_route_group_figs:
         content.append({"type": "fig", "fig": fig, "title": f"Ship Route: {route_group}", "category": "shipping"})
 
-    for unit_key in sorted(manufacturing_figs.keys()):
-        fig = manufacturing_figs[unit_key]
-        content.append({"type": "fig", "fig": fig, "title": f"Manufacturing: {unit_key}", "category": "manufacturing"})
+    # Group manufacturing by location
+    mfg_by_location = {}
+    for unit_key in manufacturing_figs.keys():
+        loc = unit_key.split("|")[0] if "|" in unit_key else "Other"
+        if loc not in mfg_by_location:
+            mfg_by_location[loc] = []
+        mfg_by_location[loc].append(unit_key)
 
     if not df_inv.empty:
         df_inv["location_only"] = df_inv["store_key"].apply(
             lambda sk: str(sk).split("|")[1] if "|" in str(sk) else "Other")
         for loc in sorted(df_inv["location_only"].unique()):
             content.append({"type": "header", "location": loc, "category": "inventory"})
+            
+            # Add manufacturing graphs for this location first
+            for unit_key in sorted(mfg_by_location.get(loc, [])):
+                fig = manufacturing_figs[unit_key]
+                content.append({"type": "fig", "fig": fig, "title": f"Manufacturing: {unit_key}", "category": "manufacturing"})
+            
+            # Then add inventory store graphs
             loc_stores = df_inv[df_inv["location_only"] == loc]["store_key"].unique()
             for sk in sorted(loc_stores):
                 if sk in store_figs:
                     parts = str(sk).split("|")
                     product = parts[3] if len(parts) >= 4 else "Other"
                     content.append({"type": "fig", "fig": store_figs[sk], "category": "inventory", "product": product})
+    
+    # Add any manufacturing graphs for locations not in inventory (edge case)
+    inv_locations = set(df_inv["location_only"].unique()) if not df_inv.empty else set()
+    for loc in sorted(mfg_by_location.keys()):
+        if loc not in inv_locations:
+            content.append({"type": "header", "location": loc, "category": "manufacturing"})
+            for unit_key in sorted(mfg_by_location[loc]):
+                fig = manufacturing_figs[unit_key]
+                content.append({"type": "fig", "fig": fig, "title": f"Manufacturing: {unit_key}", "category": "manufacturing"})
 
     _generate_html_report(sim, out_dir, content, sorted(all_products))
 
