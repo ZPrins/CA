@@ -8,8 +8,11 @@ from datetime import datetime
 from sim_run_config import config
 
 
-def plot_results(sim, out_dir: Path, routes: list | None = None):
+def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | None = None, location_sequence: list | None = None):
     if not config.write_plots: return
+    
+    makes = makes or []
+    location_sequence = location_sequence or []
 
     # 1. Inventory Data (Daily)
     if sim.inventory_snapshots:
@@ -99,11 +102,31 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
     # Also track which equipment outputs to which stores
     equipment_to_stores = {}  # unit_key -> set of store_keys
     
+    # Build equipment -> stores mapping from MAKES CONFIG (not just log events)
+    # This ensures we capture the relationship even if equipment was down the whole time
+    for make_unit in makes:
+        loc = getattr(make_unit, 'location', '')
+        equip = getattr(make_unit, 'equipment', '')
+        if loc and equip:
+            unit_key = f"{loc}|{equip}"
+            if unit_key not in equipment_to_stores:
+                equipment_to_stores[unit_key] = set()
+            # Get output stores from candidates
+            candidates = getattr(make_unit, 'candidates', []) or []
+            for cand in candidates:
+                out_key = getattr(cand, 'out_store_key', None)
+                if out_key:
+                    equipment_to_stores[unit_key].add(out_key)
+                out_keys = getattr(cand, 'out_store_keys', []) or []
+                for ok in out_keys:
+                    if ok:
+                        equipment_to_stores[unit_key].add(ok)
+    
     if sim.action_log:
         df_log = pd.DataFrame(sim.action_log)
         df_log["day"] = (pd.to_numeric(df_log["time_h"], errors="coerce") / 24.0).astype(int) + 1
         
-        # Build equipment -> stores mapping from production events
+        # Also add equipment -> stores from production events (supplements config)
         production_events = df_log[(df_log["process"] == "Make") & (df_log["event"] == "Produce")]
         if not production_events.empty:
             for _, row in production_events.iterrows():
@@ -337,7 +360,21 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
     if not df_inv.empty:
         df_inv["location_only"] = df_inv["store_key"].apply(
             lambda sk: str(sk).split("|")[1] if "|" in str(sk) else "Other")
-        for loc in sorted(df_inv["location_only"].unique()):
+        
+        # Sort locations by Network sheet sequence (or alphabetically if not in sequence)
+        all_locations = list(df_inv["location_only"].unique())
+        if location_sequence:
+            # Create sort key based on position in location_sequence
+            def loc_sort_key(loc):
+                try:
+                    return location_sequence.index(loc)
+                except ValueError:
+                    return len(location_sequence) + 1000  # Put unknown locations at end
+            all_locations.sort(key=loc_sort_key)
+        else:
+            all_locations.sort()
+        
+        for loc in all_locations:
             content.append({"type": "header", "location": loc, "category": "inventory"})
             
             # Add manufacturing graphs for this location first
@@ -355,12 +392,22 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
     
     # Add any manufacturing graphs for locations not in inventory (edge case)
     inv_locations = set(df_inv["location_only"].unique()) if not df_inv.empty else set()
-    for loc in sorted(mfg_by_location.keys()):
-        if loc not in inv_locations:
-            content.append({"type": "header", "location": loc, "category": "manufacturing"})
-            for unit_key in sorted(mfg_by_location[loc]):
-                fig = manufacturing_figs[unit_key]
-                content.append({"type": "fig", "fig": fig, "title": f"Manufacturing: {unit_key}", "category": "manufacturing"})
+    remaining_mfg_locs = [loc for loc in mfg_by_location.keys() if loc not in inv_locations]
+    if location_sequence:
+        def loc_sort_key(loc):
+            try:
+                return location_sequence.index(loc)
+            except ValueError:
+                return len(location_sequence) + 1000
+        remaining_mfg_locs.sort(key=loc_sort_key)
+    else:
+        remaining_mfg_locs.sort()
+    
+    for loc in remaining_mfg_locs:
+        content.append({"type": "header", "location": loc, "category": "manufacturing"})
+        for unit_key in sorted(mfg_by_location[loc]):
+            fig = manufacturing_figs[unit_key]
+            content.append({"type": "fig", "fig": fig, "title": f"Manufacturing: {unit_key}", "category": "manufacturing"})
 
     _generate_html_report(sim, out_dir, content, sorted(all_products))
 

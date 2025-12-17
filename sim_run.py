@@ -254,7 +254,14 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
     if artifacts == 'full':
         out_dir = settings.get('out_dir', config.out_dir)
         write_csv_outputs(sim, out_dir)
-        plot_results(sim, out_dir, moves)
+        
+        # Get location sequence from Network sheet for proper sorting
+        network_df = raw_data.get('Network', pd.DataFrame())
+        location_sequence = []
+        if not network_df.empty and 'Location' in network_df.columns:
+            location_sequence = network_df['Location'].dropna().unique().tolist()
+        
+        plot_results(sim, out_dir, moves, makes, location_sequence)
         generate_standalone(settings, stores_cfg, makes, moves, demands, out_dir)
 
     # --- MOVEMENT SUMMARY ---
