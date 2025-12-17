@@ -208,16 +208,23 @@ def plot_results(sim, out_dir: Path, routes: list | None = None):
             if store_location and store_location in downtime_by_location:
                 loc_downtime = downtime_by_location[store_location]
                 
-                # Maintenance days
+                # Maintenance days - add shaded regions behind all other traces
                 maint_days = [d for d in loc_downtime if loc_downtime[d].get("Maintenance", 0) > 0]
+                for maint_day in maint_days:
+                    fig.add_vrect(
+                        x0=maint_day - 0.5, x1=maint_day + 0.5,
+                        fillcolor="rgba(255, 152, 0, 0.15)",
+                        layer="below",
+                        line_width=0,
+                    )
+                # Add invisible trace for legend
                 if maint_days:
-                    cap_val = data["capacity"].iloc[0] if not data.empty else 1000
-                    maint_y = [cap_val * 0.95] * len(maint_days)
                     fig.add_trace(go.Scatter(
-                        x=maint_days, y=maint_y,
-                        name="Maintenance", mode='markers',
-                        marker=dict(symbol='x', size=8, color='#ff9800', line=dict(width=2)),
-                        hovertemplate="Day %{x}: Maintenance<extra></extra>"
+                        x=[None], y=[None],
+                        name="Maintenance",
+                        mode='markers',
+                        marker=dict(symbol='square', size=12, color='rgba(255, 152, 0, 0.4)'),
+                        showlegend=True
                     ), secondary_y=False)
                 
 
@@ -484,12 +491,22 @@ def _generate_manufacturing_charts(df_log: pd.DataFrame) -> dict:
             max_prod = group['qty_t'].max() if not group.empty else 100
 
             maint_days = [d for d in unit_dt if unit_dt[d].get('Maintenance', 0) > 0]
+            # Add shaded regions for maintenance days behind all other traces
+            for maint_day in maint_days:
+                fig.add_vrect(
+                    x0=maint_day - 0.5, x1=maint_day + 0.5,
+                    fillcolor="rgba(255, 152, 0, 0.2)",
+                    layer="below",
+                    line_width=0,
+                )
+            # Add invisible trace for legend
             if maint_days:
                 fig.add_trace(go.Scatter(
-                    x=maint_days, y=[max_prod * 1.05] * len(maint_days),
-                    name="Maintenance", mode='markers',
-                    marker=dict(symbol='square', size=10, color='#ff9800'),
-                    hovertemplate="Day %{x}: Maintenance<extra></extra>"
+                    x=[None], y=[None],
+                    name="Maintenance",
+                    mode='markers',
+                    marker=dict(symbol='square', size=12, color='rgba(255, 152, 0, 0.5)'),
+                    showlegend=True
                 ))
 
 
