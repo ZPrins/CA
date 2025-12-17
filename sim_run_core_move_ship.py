@@ -365,8 +365,21 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                     _, unload_rate = _get_store_rates(store_rates, store_key, default_load_rate, default_unload_rate)
                     
                     carried = float(cargo.get(product, 0.0))
+                    
+                    # Wait until there's room for the FULL cargo (no partial unloads)
+                    # Max wait: 48 hours to avoid indefinite blocking
+                    wait_hours = 0
+                    max_wait = 48
+                    while wait_hours < max_wait:
+                        room = float(cont.capacity - cont.level)
+                        if room >= carried - 1e-6:
+                            break
+                        yield env.timeout(1.0)
+                        wait_hours += 1
+                    
+                    # After waiting, unload what we can (should be full if room became available)
                     room = float(cont.capacity - cont.level)
-                    qty_to_unload = min(carried, room)
+                    qty_to_unload = min(carried, room)  # Full cargo if room, else max possible
                     
                     if qty_to_unload > 1e-6:
                         unload_time = qty_to_unload / max(unload_rate, 1.0)
