@@ -6,6 +6,8 @@ import json
 import tempfile
 from pathlib import Path
 import pandas as pd
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
 
 # Move config import to top level (assumes config doesn't import app)
 from sim_run_config import config
@@ -236,6 +238,150 @@ def status():
         'report_exists': (OUT_DIR / 'sim_outputs_plots_all.html').exists(),
         'csv_files': [f.name for f in OUT_DIR.glob('*.csv')] if OUT_DIR.exists() else []
     })
+
+
+def run_single_sim_for_kpi(args):
+    """Run a single simulation and extract KPIs. Used for multiprocessing."""
+    run_idx, horizon_days, random_opening, base_seed = args
+    
+    try:
+        # Each run gets a unique seed based on the base seed and run index
+        if base_seed is not None:
+            seed = base_seed + run_idx
+        else:
+            seed = None
+        
+        env = os.environ.copy()
+        env['SIM_HORIZON_DAYS'] = str(horizon_days)
+        env['SIM_RANDOM_OPENING'] = 'true' if random_opening else 'false'
+        env['SIM_RANDOM_SEED'] = str(seed) if seed is not None else ''
+        env['SIM_QUIET_MODE'] = 'true'  # Disable detailed logging
+        env['PYTHONUNBUFFERED'] = '1'
+        
+        # Run simulation
+        result = subprocess.run(
+            ['python', 'sim_run.py'],
+            capture_output=True,
+            text=True,
+            timeout=600,
+            env=env
+        )
+        
+        if result.returncode != 0:
+            return {'run_idx': run_idx, 'error': result.stderr}
+        
+        # Extract KPIs from output files
+        kpis = extract_kpis_from_outputs()
+        kpis['run_idx'] = run_idx
+        return kpis
+        
+    except Exception as e:
+        return {'run_idx': run_idx, 'error': str(e)}
+
+
+def extract_kpis_from_outputs():
+    """Extract key KPIs from simulation output files."""
+    kpis = {
+        'total_unmet_demand': 0,
+        'total_production': 0,
+        'avg_inventory_pct': 0,
+        'ship_trips': 0,
+        'train_trips': 0
+    }
+    
+    try:
+        # Read simulation log for production and transport stats
+        log_file = OUT_DIR / 'sim_outputs_sim_log.csv'
+        if log_file.exists():
+            df = pd.read_csv(log_file)
+            
+            # Total production
+            prod = df[(df['process'] == 'Make') & (df['event'] == 'Produce')]
+            if not prod.empty and 'qty' in prod.columns:
+                kpis['total_production'] = prod['qty'].astype(float).sum()
+            
+            # Ship trips
+            ship_moves = df[(df['process'] == 'Move') & (df['equipment'] == 'Ship') & (df['event'] == 'ShipUnload')]
+            kpis['ship_trips'] = len(ship_moves)
+            
+            # Train trips
+            train_moves = df[(df['process'] == 'Move') & (df['equipment'] == 'Train') & (df['event'] == 'Unload')]
+            kpis['train_trips'] = len(train_moves)
+        
+        # Read unmet demand
+        unmet_file = OUT_DIR / 'sim_outputs_unmet_demand.csv'
+        if unmet_file.exists():
+            df_unmet = pd.read_csv(unmet_file)
+            if 'unmet_qty' in df_unmet.columns:
+                kpis['total_unmet_demand'] = df_unmet['unmet_qty'].astype(float).sum()
+        
+        # Read inventory for average utilization
+        inv_file = OUT_DIR / 'sim_outputs_inventory_daily.csv'
+        if inv_file.exists():
+            df_inv = pd.read_csv(inv_file)
+            if 'level' in df_inv.columns and 'capacity' in df_inv.columns:
+                df_inv['pct'] = (df_inv['level'] / df_inv['capacity']) * 100
+                kpis['avg_inventory_pct'] = df_inv['pct'].mean()
+                
+    except Exception as e:
+        print(f"Error extracting KPIs: {e}")
+    
+    return kpis
+
+
+@app.route('/run-multi-simulation', methods=['POST'])
+def run_multi_simulation():
+    """Run multiple simulations in parallel using multiprocessing."""
+    try:
+        data = request.get_json() or {}
+        
+        horizon_days = int(data.get('horizon_days', 365))
+        random_opening = data.get('random_opening', True)
+        num_runs = int(data.get('num_runs', 1))
+        
+        # Cap at 100 runs
+        num_runs = min(num_runs, 100)
+        
+        # Use a random base seed for all runs
+        import random
+        base_seed = random.randint(1, 100000)
+        
+        # Prepare arguments for each run
+        run_args = [
+            (i, horizon_days, random_opening, base_seed)
+            for i in range(num_runs)
+        ]
+        
+        # Use number of CPU cores, capped at 4 for stability
+        max_workers = min(multiprocessing.cpu_count(), 4, num_runs)
+        
+        kpis = []
+        errors = []
+        
+        # Run simulations in parallel
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(run_single_sim_for_kpi, args): args[0] for args in run_args}
+            
+            for future in as_completed(futures):
+                result = future.result()
+                if 'error' in result:
+                    errors.append(result)
+                else:
+                    kpis.append(result)
+        
+        # Sort KPIs by run index
+        kpis.sort(key=lambda x: x.get('run_idx', 0))
+        
+        return jsonify({
+            'success': len(kpis) > 0,
+            'kpis': kpis,
+            'errors': errors,
+            'total_runs': num_runs,
+            'successful_runs': len(kpis)
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
 
 
 if __name__ == '__main__':

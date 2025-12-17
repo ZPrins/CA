@@ -3,6 +3,14 @@ import os
 import json
 import pandas as pd
 
+# Check if quiet mode is enabled (for multi-run simulations)
+QUIET_MODE = os.environ.get('SIM_QUIET_MODE', 'false').lower() == 'true'
+
+def log(msg):
+    """Print message only if not in quiet mode."""
+    if not QUIET_MODE:
+        print(msg)
+
 # Data Loading Modules
 from sim_run_data_ingest import load_data_frames, get_config_map
 from sim_run_data_clean import clean_all_data
@@ -46,7 +54,7 @@ def apply_ui_overrides(raw_data: dict) -> dict:
                     if 'Unload Rate (ton/hr)' in override:
                         df.loc[df.index[i], 'Unload Rate (ton/hr)'] = override['Unload Rate (ton/hr)']
             raw_data['Store'] = df
-            print(f"  [INFO] Applied UI overrides to Store data ({len(overrides['store'])} rows)")
+            log(f"  [INFO] Applied UI overrides to Store data ({len(overrides['store'])} rows)")
         
         # Apply Move_SHIP overrides
         if 'move_ship' in overrides and 'Move_SHIP' in raw_data and not raw_data['Move_SHIP'].empty:
@@ -62,10 +70,10 @@ def apply_ui_overrides(raw_data: dict) -> dict:
                     if 'Payload per Hull' in override:
                         df.loc[df.index[i], 'Payload per Hull'] = override['Payload per Hull']
             raw_data['Move_SHIP'] = df
-            print(f"  [INFO] Applied UI overrides to Move_SHIP data ({len(overrides['move_ship'])} rows)")
+            log(f"  [INFO] Applied UI overrides to Move_SHIP data ({len(overrides['move_ship'])} rows)")
         
     except Exception as e:
-        print(f"  [WARNING] Failed to apply UI overrides: {e}")
+        log(f"  [WARNING] Failed to apply UI overrides: {e}")
     
     return raw_data
 
@@ -117,11 +125,11 @@ def _check_supply_sources(stores_cfg, makes, moves, demands):
             unsupplied.append((store_key_upper, initial))
     
     if unsupplied:
-        print(f"\n[WARNING] Stores with demand but NO supply sources:")
+        log(f"\n[WARNING] Stores with demand but NO supply sources:")
         for store_key, initial in sorted(unsupplied):
             init_note = f" (initial: {initial:,.0f}t)" if initial > 0 else ""
-            print(f"  - {store_key}{init_note}")
-        print("  These stores will deplete and cause unmet demand.\n")
+            log(f"  - {store_key}{init_note}")
+        log("  These stores will deplete and cause unmet demand.\n")
 
 
 def main():
@@ -130,7 +138,7 @@ def main():
     else:
         INPUT_FILE = "generated_model_inputs.xlsx"
 
-    print(f"Starting simulation with input file: {INPUT_FILE}")
+    log(f"Starting simulation with input file: {INPUT_FILE}")
 
     # 1. Load & Clean
     raw_data = load_data_frames(INPUT_FILE)
@@ -148,17 +156,17 @@ def main():
     demands = build_demands(clean_data.get('Deliver', pd.DataFrame()))
 
     # --- SAFETY CHECK ---
-    print(f"\nModel Summary:")
-    print(f"  Stores:  {len(stores_cfg)}")
-    print(f"  Makes:   {len(makes)}")
-    print(f"  Moves:   {len(moves)}")
-    print(f"  Demands: {len(demands)}")
+    log(f"\nModel Summary:")
+    log(f"  Stores:  {len(stores_cfg)}")
+    log(f"  Makes:   {len(makes)}")
+    log(f"  Moves:   {len(moves)}")
+    log(f"  Demands: {len(demands)}")
 
     # --- CHECK FOR STORES WITH NO SUPPLY SOURCES ---
     _check_supply_sources(stores_cfg, makes, moves, demands)
 
     if len(stores_cfg) == 0:
-        print("\n[ERROR] No stores were loaded! Please check inputs.")
+        log("\n[ERROR] No stores were loaded! Please check inputs.")
         return
 
         # 3. Configure
@@ -202,11 +210,11 @@ def main():
         n_ship_loads = n_train_loads = 0
         ship_tons = train_tons = 0
 
-    print(f"\n=== Transport Summary ===")
-    print(f"  Ship Loads:  {n_ship_loads} ({ship_tons:,.0f} tons)")
-    print(f"  Train Loads: {n_train_loads} ({train_tons:,.0f} tons)")
-    print(f"  Total Unmet: {sum(sim.unmet.values()):,.0f} tons")
-    print(f"\nAll complete! Check '{out_dir}' for results.")
+    log(f"\n=== Transport Summary ===")
+    log(f"  Ship Loads:  {n_ship_loads} ({ship_tons:,.0f} tons)")
+    log(f"  Train Loads: {n_train_loads} ({train_tons:,.0f} tons)")
+    log(f"  Total Unmet: {sum(sim.unmet.values()):,.0f} tons")
+    log(f"\nAll complete! Check '{out_dir}' for results.")
 
 
 if __name__ == "__main__":

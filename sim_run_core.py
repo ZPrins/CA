@@ -2,9 +2,18 @@
 from __future__ import annotations
 from typing import Dict, List
 import simpy
+import os
 from collections import defaultdict
 
 from sim_run_types import StoreConfig, ProductionCandidate, MakeUnit, TransportRoute, Demand
+
+# Check if quiet mode is enabled (for multi-run simulations)
+QUIET_MODE = os.environ.get('SIM_QUIET_MODE', 'false').lower() == 'true'
+
+def _log_progress(msg):
+    """Print progress message only if not in quiet mode."""
+    if not QUIET_MODE:
+        print(msg, flush=True)
 
 # Logic Modules
 from sim_run_core_store import build_stores as _build_stores
@@ -243,14 +252,14 @@ class SupplyChainSimulation:
             # FIX: Compare day with checkpoints[cp_idx][1]
             while cp_idx < len(checkpoints) and day >= checkpoints[cp_idx][1]:
                 pct = checkpoints[cp_idx][0]
-                print(f"Progress: {pct}% ({day}/{horizon_days} days)", flush=True)
+                _log_progress(f"Progress: {pct}% ({day}/{horizon_days} days)")
                 cp_idx += 1
 
-        print(f"Progress: 100% ({horizon_days}/{horizon_days} days)")
-        print("\n=== Simulation Complete ===")
-        print("Final store levels:")
+        _log_progress(f"Progress: 100% ({horizon_days}/{horizon_days} days)")
+        _log_progress("\n=== Simulation Complete ===")
+        _log_progress("Final store levels:")
         for key in sorted(self.stores):
-            print(f"  {key}: {self.stores[key].level:.1f} tons")
+            _log_progress(f"  {key}: {self.stores[key].level:.1f} tons")
         total_unmet = sum(self.unmet.values())
         if total_unmet > 0:
-            print(f"Total unmet demand: {total_unmet:.1f} tons")
+            _log_progress(f"Total unmet demand: {total_unmet:.1f} tons")

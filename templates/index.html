@@ -79,6 +79,26 @@
             transform: translateY(-2px);
         }
         .btn-primary:disabled { opacity: 0.5; transform: none; }
+        .btn-secondary {
+            background: linear-gradient(135deg, #7c4dff 0%, #651fff 50%, #6200ea 100%);
+            border: none;
+            font-weight: 600;
+            padding: 14px 36px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(124,77,255,0.3), 0 0 0 1px rgba(255,255,255,0.1) inset;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 14px;
+            color: #fff;
+        }
+        .btn-secondary:hover { 
+            background: linear-gradient(135deg, #651fff 0%, #6200ea 50%, #5600e8 100%);
+            box-shadow: 0 6px 30px rgba(124,77,255,0.4), 0 0 0 1px rgba(255,255,255,0.15) inset;
+            transform: translateY(-2px);
+            color: #fff;
+        }
+        .btn-secondary:disabled { opacity: 0.5; transform: none; }
         .btn-outline-light {
             border: 1px solid rgba(255,255,255,0.2);
             color: #b0bec5;
@@ -278,18 +298,23 @@
             <div class="card-body">
                 <form id="simForm">
                     <div class="row g-3">
-                        <div class="col-md-4">
+                        <div class="col-md-3">
                             <label class="form-label">Simulation Horizon (Days)</label>
                             <input type="number" class="form-control" id="horizon_days" 
                                    value="{{ config.horizon_days }}" min="1" max="730">
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-3">
                             <label class="form-label">Random Seed (optional)</label>
                             <input type="number" class="form-control" id="random_seed" 
                                    placeholder="Leave blank for random"
                                    value="{{ config.random_seed if config.random_seed else '' }}">
                         </div>
-                        <div class="col-md-4 d-flex align-items-end">
+                        <div class="col-md-3">
+                            <label class="form-label"># Runs</label>
+                            <input type="number" class="form-control" id="num_runs" 
+                                   value="1" min="1" max="100">
+                        </div>
+                        <div class="col-md-3 d-flex align-items-end">
                             <div class="form-check">
                                 <input type="checkbox" class="form-check-input" id="random_opening" {% if config.random_opening %}checked{% endif %}>
                                 <label class="form-check-label" for="random_opening">
@@ -297,12 +322,6 @@
                                 </label>
                             </div>
                         </div>
-                    </div>
-                    <div class="mt-4">
-                        <button type="submit" class="btn btn-primary" id="runBtn">
-                            <span id="runBtnText">Run Simulation</span>
-                            <span id="runBtnSpinner" class="spinner-border spinner-border-sm ms-2 d-none"></span>
-                        </button>
                     </div>
                 </form>
             </div>
@@ -366,6 +385,82 @@
                                         <tbody id="shipTableBody"></tbody>
                                     </table>
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">Run Simulation</h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <button type="button" class="btn btn-primary w-100" id="runSingleBtn">
+                            <span id="runSingleBtnText">Run Single Simulation</span>
+                            <span id="runSingleSpinner" class="spinner-border spinner-border-sm ms-2 d-none"></span>
+                        </button>
+                        <small class="text-muted d-block mt-2">Run one simulation with full detailed logging and interactive report</small>
+                    </div>
+                    <div class="col-md-6">
+                        <button type="button" class="btn btn-secondary w-100" id="runFullBtn">
+                            <span id="runFullBtnText">Run Full Simulation</span>
+                            <span id="runFullSpinner" class="spinner-border spinner-border-sm ms-2 d-none"></span>
+                        </button>
+                        <small class="text-muted d-block mt-2">Run multiple simulations (# Runs) in parallel with KPI summary</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-4" id="kpiCard" style="display: none;">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Multi-Run KPI Summary</h5>
+                <span id="kpiStatusBadge" class="status-badge"></span>
+            </div>
+            <div class="card-body">
+                <div id="kpiProgress" class="mb-3" style="display: none;">
+                    <div class="progress" style="height: 24px; background: rgba(255,255,255,0.1); border-radius: 12px;">
+                        <div class="progress-bar" id="kpiProgressBar" role="progressbar" style="width: 0%; background: linear-gradient(135deg, #7c4dff, #651fff);"></div>
+                    </div>
+                    <small class="text-muted mt-2 d-block" id="kpiProgressText">Preparing simulations...</small>
+                </div>
+                <div class="table-container" id="kpiTableContainer" style="display: none;">
+                    <table class="param-table" id="kpiTable">
+                        <thead>
+                            <tr>
+                                <th>Run #</th>
+                                <th>Total Unmet Demand (t)</th>
+                                <th>Total Production (t)</th>
+                                <th>Avg Inventory (%)</th>
+                                <th>Ship Trips</th>
+                                <th>Train Trips</th>
+                            </tr>
+                        </thead>
+                        <tbody id="kpiTableBody"></tbody>
+                    </table>
+                </div>
+                <div id="kpiSummary" class="mt-3" style="display: none;">
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <div class="p-3" style="background: rgba(255,255,255,0.05); border-radius: 10px;">
+                                <small class="text-muted">Avg Unmet Demand</small>
+                                <div class="h5 mb-0" id="avgUnmetDemand">-</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="p-3" style="background: rgba(255,255,255,0.05); border-radius: 10px;">
+                                <small class="text-muted">Avg Production</small>
+                                <div class="h5 mb-0" id="avgProduction">-</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="p-3" style="background: rgba(255,255,255,0.05); border-radius: 10px;">
+                                <small class="text-muted">Avg Inventory</small>
+                                <div class="h5 mb-0" id="avgInventory">-</div>
                             </div>
                         </div>
                     </div>
@@ -513,18 +608,18 @@
         populateStoreTable();
         populateShipTable();
 
-        document.getElementById('simForm').addEventListener('submit', async function(e) {
-            e.preventDefault();
-            
-            const runBtn = document.getElementById('runBtn');
-            const runBtnText = document.getElementById('runBtnText');
-            const runBtnSpinner = document.getElementById('runBtnSpinner');
-            const outputCard = document.getElementById('outputCard');
-            const outputLog = document.getElementById('outputLog');
-            const statusBadge = document.getElementById('statusBadge');
-            const resultsCard = document.getElementById('resultsCard');
-            
-            // Save modified parameters before running simulation
+        // Get simulation settings
+        function getSimSettings() {
+            return {
+                horizon_days: parseInt(document.getElementById('horizon_days').value) || 365,
+                random_opening: document.getElementById('random_opening').checked,
+                random_seed: document.getElementById('random_seed').value,
+                num_runs: parseInt(document.getElementById('num_runs').value) || 1
+            };
+        }
+
+        // Save model parameters before simulation
+        async function saveModelParams() {
             try {
                 await fetch('/api/save-params', {
                     method: 'POST',
@@ -534,29 +629,40 @@
             } catch (err) {
                 console.error('Failed to save params:', err);
             }
+        }
+
+        // Run Single Simulation (with detailed logging and report)
+        document.getElementById('runSingleBtn').addEventListener('click', async function() {
+            const btn = this;
+            const btnText = document.getElementById('runSingleBtnText');
+            const spinner = document.getElementById('runSingleSpinner');
+            const outputCard = document.getElementById('outputCard');
+            const outputLog = document.getElementById('outputLog');
+            const statusBadge = document.getElementById('statusBadge');
+            const resultsCard = document.getElementById('resultsCard');
+            
+            await saveModelParams();
             
             // Reset UI
             outputLog.textContent = '';
             outputCard.style.display = 'block';
+            document.getElementById('kpiCard').style.display = 'none';
             statusBadge.textContent = 'Running';
             statusBadge.className = 'status-badge status-pending';
 
-            runBtn.disabled = true;
-            runBtnText.textContent = 'Running...';
-            runBtnSpinner.classList.remove('d-none');
+            btn.disabled = true;
+            document.getElementById('runFullBtn').disabled = true;
+            btnText.textContent = 'Running...';
+            spinner.classList.remove('d-none');
 
-            // Build SSE URL with query params
-            const horizon = parseInt(document.getElementById('horizon_days').value);
-            const ro = document.getElementById('random_opening').checked;
-            const rs = document.getElementById('random_seed').value;
+            const settings = getSimSettings();
             const params = new URLSearchParams({
-                horizon_days: String(isNaN(horizon) ? 365 : horizon),
-                random_opening: ro ? 'true' : 'false',
-                random_seed: rs || ''
+                horizon_days: String(settings.horizon_days),
+                random_opening: settings.random_opening ? 'true' : 'false',
+                random_seed: settings.random_seed || ''
             });
             const url = '/stream-simulation?' + params.toString();
 
-            // Close any previous stream
             if (window.__simStream) {
                 try { window.__simStream.close(); } catch (e) {}
                 window.__simStream = null;
@@ -566,7 +672,6 @@
                 const es = new EventSource(url);
                 window.__simStream = es;
 
-                // Helper to append a line if it's not a duplicate of the last line
                 function appendLine(msg){
                     if (!msg) return;
                     const text = outputLog.textContent;
@@ -578,24 +683,14 @@
                     }
                 }
 
-                es.addEventListener('start', (ev) => {
-                    appendLine(ev.data || 'Simulation started');
-                });
-
+                es.addEventListener('start', (ev) => appendLine(ev.data || 'Simulation started'));
                 es.addEventListener('progress', (ev) => {
                     const msg = ev.data || '';
                     appendLine(msg);
-                    // Extract percent if present
                     const m = msg.match(/Progress:\s*(\d+)%/);
-                    if (m) {
-                        statusBadge.textContent = m[1] + '%';
-                    }
+                    if (m) statusBadge.textContent = m[1] + '%';
                 });
-
-                es.onmessage = (ev) => {
-                    if (!ev.data) return;
-                    appendLine(ev.data);
-                };
+                es.onmessage = (ev) => { if (ev.data) appendLine(ev.data); };
 
                 es.addEventListener('done', async (ev) => {
                     try { es.close(); } catch (e) {}
@@ -605,15 +700,14 @@
                     const ok = !!payload.success;
                     statusBadge.textContent = ok ? 'Complete' : 'Error';
                     statusBadge.className = 'status-badge ' + (ok ? 'status-ready' : 'status-pending');
-                    runBtn.disabled = false;
-                    runBtnText.textContent = 'Run Simulation';
-                    runBtnSpinner.classList.add('d-none');
-                    // Refresh results section
+                    btn.disabled = false;
+                    document.getElementById('runFullBtn').disabled = false;
+                    btnText.textContent = 'Run Single Simulation';
+                    spinner.classList.add('d-none');
                     try {
                         const st = await fetch('/api/status').then(r => r.json());
-                        if (st && (st.report_exists || (payload && payload.report_ready))) {
+                        if (st && (st.report_exists || payload.report_ready)) {
                             resultsCard.style.display = '';
-                            // Make View Report button blue when report is ready
                             const viewReportBtn = document.getElementById('viewReportBtn');
                             if (viewReportBtn && ok) {
                                 viewReportBtn.classList.remove('btn-outline-light');
@@ -627,8 +721,7 @@
                     } catch (e) {}
                 });
 
-                es.addEventListener('error', (ev) => {
-                    // Generic error handler
+                es.addEventListener('error', () => {
                     outputLog.textContent += 'Stream error.\n';
                     outputLog.scrollTop = outputLog.scrollHeight;
                 });
@@ -636,10 +729,107 @@
                 outputLog.textContent += 'Failed to start stream: ' + err.message + '\n';
                 statusBadge.textContent = 'Error';
                 statusBadge.className = 'status-badge status-pending';
-                runBtn.disabled = false;
-                runBtnText.textContent = 'Run Simulation';
-                runBtnSpinner.classList.add('d-none');
+                btn.disabled = false;
+                document.getElementById('runFullBtn').disabled = false;
+                btnText.textContent = 'Run Single Simulation';
+                spinner.classList.add('d-none');
             }
+        });
+
+        // Run Full Simulation (multi-run with KPIs)
+        document.getElementById('runFullBtn').addEventListener('click', async function() {
+            const btn = this;
+            const btnText = document.getElementById('runFullBtnText');
+            const spinner = document.getElementById('runFullSpinner');
+            const kpiCard = document.getElementById('kpiCard');
+            const kpiProgress = document.getElementById('kpiProgress');
+            const kpiProgressBar = document.getElementById('kpiProgressBar');
+            const kpiProgressText = document.getElementById('kpiProgressText');
+            const kpiTableContainer = document.getElementById('kpiTableContainer');
+            const kpiTableBody = document.getElementById('kpiTableBody');
+            const kpiSummary = document.getElementById('kpiSummary');
+            const kpiStatusBadge = document.getElementById('kpiStatusBadge');
+
+            await saveModelParams();
+
+            const settings = getSimSettings();
+            const numRuns = settings.num_runs;
+
+            // Reset UI
+            document.getElementById('outputCard').style.display = 'none';
+            kpiCard.style.display = 'block';
+            kpiProgress.style.display = 'block';
+            kpiProgressBar.style.width = '0%';
+            kpiProgressText.textContent = `Starting ${numRuns} simulation(s)...`;
+            kpiTableContainer.style.display = 'none';
+            kpiTableBody.innerHTML = '';
+            kpiSummary.style.display = 'none';
+            kpiStatusBadge.textContent = 'Running';
+            kpiStatusBadge.className = 'status-badge status-pending';
+
+            btn.disabled = true;
+            document.getElementById('runSingleBtn').disabled = true;
+            btnText.textContent = 'Running...';
+            spinner.classList.remove('d-none');
+
+            try {
+                const response = await fetch('/run-multi-simulation', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        horizon_days: settings.horizon_days,
+                        random_opening: settings.random_opening,
+                        num_runs: numRuns
+                    })
+                });
+
+                const result = await response.json();
+                
+                if (result.success && result.kpis && result.kpis.length > 0) {
+                    // Show KPI table
+                    kpiTableContainer.style.display = 'block';
+                    result.kpis.forEach((kpi, idx) => {
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `
+                            <td>${idx + 1}</td>
+                            <td>${(kpi.total_unmet_demand || 0).toLocaleString()}</td>
+                            <td>${(kpi.total_production || 0).toLocaleString()}</td>
+                            <td>${(kpi.avg_inventory_pct || 0).toFixed(1)}%</td>
+                            <td>${kpi.ship_trips || 0}</td>
+                            <td>${kpi.train_trips || 0}</td>
+                        `;
+                        kpiTableBody.appendChild(tr);
+                    });
+
+                    // Calculate and show averages
+                    const avgUnmet = result.kpis.reduce((a,k) => a + (k.total_unmet_demand || 0), 0) / result.kpis.length;
+                    const avgProd = result.kpis.reduce((a,k) => a + (k.total_production || 0), 0) / result.kpis.length;
+                    const avgInv = result.kpis.reduce((a,k) => a + (k.avg_inventory_pct || 0), 0) / result.kpis.length;
+
+                    document.getElementById('avgUnmetDemand').textContent = avgUnmet.toLocaleString() + ' t';
+                    document.getElementById('avgProduction').textContent = avgProd.toLocaleString() + ' t';
+                    document.getElementById('avgInventory').textContent = avgInv.toFixed(1) + '%';
+                    kpiSummary.style.display = 'block';
+
+                    kpiStatusBadge.textContent = 'Complete';
+                    kpiStatusBadge.className = 'status-badge status-ready';
+                } else {
+                    kpiStatusBadge.textContent = 'Error';
+                    kpiStatusBadge.className = 'status-badge status-pending';
+                    kpiProgressText.textContent = result.error || 'Simulation failed';
+                }
+
+                kpiProgress.style.display = 'none';
+            } catch (err) {
+                kpiStatusBadge.textContent = 'Error';
+                kpiStatusBadge.className = 'status-badge status-pending';
+                kpiProgressText.textContent = 'Error: ' + err.message;
+            }
+
+            btn.disabled = false;
+            document.getElementById('runSingleBtn').disabled = false;
+            btnText.textContent = 'Run Full Simulation';
+            spinner.classList.add('d-none');
         });
     </script>
 </body>
