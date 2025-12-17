@@ -25,6 +25,7 @@ from sim_run_core import SupplyChainSimulation
 from sim_run_report_csv import write_csv_outputs
 from sim_run_report_plot import plot_results
 from sim_run_report_codegen import generate_standalone
+from sim_run_report_data import build_report_frames
 
 TEMP_OVERRIDES_FILE = 'temp_model_overrides.json'
 
@@ -267,13 +268,18 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
     if artifacts == 'full':
         out_dir = settings.get('out_dir', config.out_dir)
         
+        # Build report dataframes once (major speedup)
+        data_start = time.time()
+        report_data = build_report_frames(sim, makes)
+        data_elapsed = int(time.time() - data_start)
+        log(f"Report data prepared ({data_elapsed}s)")
+        
         csv_start = time.time()
-        write_csv_outputs(sim, out_dir)
+        write_csv_outputs(sim, out_dir, report_data)
         csv_elapsed = int(time.time() - csv_start)
         log(f"CSV outputs written to {out_dir} ({csv_elapsed}s)")
         
         # Get graph sequence from Network sheet for proper ordering
-        # Extract (Location, Equipment Name, Process) tuples in order of appearance
         network_df = raw_data.get('Network', pd.DataFrame())
         graph_sequence = []
         if not network_df.empty:
@@ -289,7 +295,7 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
                         graph_sequence.append(key)
         
         html_start = time.time()
-        plot_results(sim, out_dir, moves, makes, graph_sequence)
+        plot_results(sim, out_dir, moves, makes, graph_sequence, report_data)
         html_elapsed = int(time.time() - html_start)
         log(f"Interactive HTML report generated ({html_elapsed}s)")
         
