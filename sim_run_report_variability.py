@@ -211,14 +211,15 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
         .chart-card {{
             background: #f8fafc;
             border-radius: 8px;
-            padding: 12px;
-            padding-bottom: 20px;
+            padding: 16px;
             border: 1px solid #e2e8f0;
-            overflow: visible;
+            min-height: 320px;
         }}
         .chart-card .plotly-graph-div {{
             width: 100% !important;
-            overflow: visible !important;
+        }}
+        .chart-card .js-plotly-plot {{
+            min-height: 280px;
         }}
         .plot-title {{
             font-weight: 600;
@@ -357,9 +358,9 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
                 xaxis_title='Duration (hours)',
                 yaxis_title='Probability Density',
                 template='plotly_white',
-                height=260,
-                margin=dict(l=60, r=20, t=25, b=55),
-                font=dict(size=10),
+                height=280,
+                margin=dict(l=65, r=25, t=30, b=65),
+                font=dict(size=11),
                 showlegend=False,
                 bargap=0.1
             )
@@ -478,9 +479,9 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
                 xaxis_title='Wait Time (hours)',
                 yaxis_title='Probability Density',
                 template='plotly_white',
-                height=260,
-                margin=dict(l=60, r=20, t=25, b=55),
-                font=dict(size=10),
+                height=280,
+                margin=dict(l=65, r=25, t=30, b=65),
+                font=dict(size=11),
                 showlegend=False,
                 bargap=0.1
             )
@@ -569,9 +570,9 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
                 xaxis_title='Opening Stock (kT)',
                 yaxis_title='Probability Density',
                 template='plotly_white',
-                height=240,
-                margin=dict(l=60, r=20, t=25, b=55),
-                font=dict(size=10),
+                height=280,
+                margin=dict(l=65, r=25, t=30, b=65),
+                font=dict(size=11),
                 showlegend=False
             )
             fig.update_xaxes(autorange=True)
