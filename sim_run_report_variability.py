@@ -317,29 +317,37 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
             fig = go.Figure()
             
             if n_events >= 2:
-                # Create histogram with normalization to approximate PDF
-                fig.add_trace(go.Histogram(
-                    x=durations,
-                    histnorm='probability density',
-                    name='Density',
+                # Use np.histogram with density=True for proper PDF (area = 1)
+                n_bins = min(15, max(5, n_events // 3))
+                counts, bin_edges = np.histogram(durations, bins=n_bins, density=True)
+                bin_centers = ((bin_edges[:-1] + bin_edges[1:]) / 2).tolist()
+                bin_width = float(bin_edges[1] - bin_edges[0])
+                counts_list = counts.tolist()
+                
+                fig.add_trace(go.Bar(
+                    x=bin_centers,
+                    y=counts_list,
+                    width=bin_width * 0.85,
                     marker_color=color,
                     opacity=0.85,
-                    nbinsx=min(15, max(5, n_events // 3))
+                    name='Density'
                 ))
                 
                 # Add vertical line for mean
                 fig.add_vline(x=eq_avg, line_dash="dash", line_color="#1e293b",
                              annotation_text=f"Mean: {eq_avg:.1f}h", annotation_position="top right")
             else:
-                # Single event - show as bar
-                fig.add_trace(go.Bar(
+                # Single event - show as marker with annotation
+                fig.add_trace(go.Scatter(
                     x=[durations[0]],
-                    y=[1],
-                    marker_color=color,
-                    width=0.5,
+                    y=[0.5],
+                    mode='markers+text',
+                    marker=dict(color=color, size=15, symbol='diamond'),
                     text=[f'{durations[0]:.1f}h'],
-                    textposition='outside'
+                    textposition='top center',
+                    name='Single Event'
                 ))
+                fig.add_annotation(x=durations[0], y=0.25, text="(1 event)", showarrow=False, font=dict(size=9, color="#64748b"))
             
             fig.update_layout(
                 xaxis_title='Duration (hours)',
@@ -349,11 +357,12 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
                 margin=dict(l=45, r=20, t=25, b=45),
                 font=dict(size=10),
                 showlegend=False,
-                bargap=0.15,
-                autosize=True
+                bargap=0.1
             )
+            fig.update_xaxes(autorange=True)
+            fig.update_yaxes(autorange=True)
             
-            chart_html = fig.to_html(full_html=False, include_plotlyjs=False, config={'responsive': True})
+            chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
             
             html_parts.append(f'''
                 <div class="plot-container">
@@ -430,26 +439,36 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
             fig = go.Figure()
             
             if n_events >= 2:
-                fig.add_trace(go.Histogram(
-                    x=wait_times,
-                    histnorm='probability density',
-                    name='Density',
+                # Use np.histogram with density=True for proper PDF (area = 1)
+                n_bins = min(15, max(5, n_events // 3))
+                counts, bin_edges = np.histogram(wait_times, bins=n_bins, density=True)
+                bin_centers = ((bin_edges[:-1] + bin_edges[1:]) / 2).tolist()
+                bin_width = float(bin_edges[1] - bin_edges[0])
+                counts_list = counts.tolist()
+                
+                fig.add_trace(go.Bar(
+                    x=bin_centers,
+                    y=counts_list,
+                    width=bin_width * 0.85,
                     marker_color=color,
                     opacity=0.85,
-                    nbinsx=min(15, max(5, n_events // 3))
+                    name='Density'
                 ))
                 
                 fig.add_vline(x=berth_avg, line_dash="dash", line_color="#1e293b",
                              annotation_text=f"Mean: {berth_avg:.1f}h", annotation_position="top right")
             else:
-                fig.add_trace(go.Bar(
+                # Single event - show as marker with annotation
+                fig.add_trace(go.Scatter(
                     x=[wait_times[0]],
-                    y=[1],
-                    marker_color=color,
-                    width=0.5,
+                    y=[0.5],
+                    mode='markers+text',
+                    marker=dict(color=color, size=15, symbol='diamond'),
                     text=[f'{wait_times[0]:.1f}h'],
-                    textposition='outside'
+                    textposition='top center',
+                    name='Single Event'
                 ))
+                fig.add_annotation(x=wait_times[0], y=0.25, text="(1 event)", showarrow=False, font=dict(size=9, color="#64748b"))
             
             fig.update_layout(
                 xaxis_title='Wait Time (hours)',
@@ -459,11 +478,12 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
                 margin=dict(l=45, r=20, t=25, b=45),
                 font=dict(size=10),
                 showlegend=False,
-                bargap=0.15,
-                autosize=True
+                bargap=0.1
             )
+            fig.update_xaxes(autorange=True)
+            fig.update_yaxes(autorange=True)
             
-            chart_html = fig.to_html(full_html=False, include_plotlyjs=False, config={'responsive': True})
+            chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
             
             html_parts.append(f'''
                 <div class="plot-container">
@@ -548,12 +568,12 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
                 height=200,
                 margin=dict(l=45, r=20, t=25, b=45),
                 font=dict(size=10),
-                showlegend=False,
-                xaxis=dict(range=[max(0, low - range_width * 0.15), high + range_width * 0.15]),
-                autosize=True
+                showlegend=False
             )
+            fig.update_xaxes(autorange=True)
+            fig.update_yaxes(autorange=True)
             
-            chart_html = fig.to_html(full_html=False, include_plotlyjs=False, config={'responsive': True})
+            chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
             
             html_parts.append(f'''
                 <div class="plot-container">
