@@ -363,8 +363,6 @@
                         </div>
                     </div>
                     <div class="col-md-4 text-end">
-                        <a href="/network-map" target="_blank" class="btn btn-success-custom">View Network Map</a>
-                        <small id="networkMapTimestamp" class="text-muted d-block mt-2" style="font-size: 11px;">Last updated: --</small>
                     </div>
                 </div>
                 <div id="dataPrepOutputCard" class="mt-3" style="display: none;">
@@ -374,11 +372,11 @@
                 <hr style="border-color: rgba(255,255,255,0.1); margin: 20px 0;">
                 
                 <div class="row g-3">
-                    <div class="col-md-6">
+                    <div class="col-md-4">
                         <div class="p-3" style="background: rgba(255,255,255,0.03); border-radius: 10px; border: 1px solid rgba(255,255,255,0.06);">
                             <div class="d-flex justify-content-between align-items-center mb-2">
                                 <span style="color: #81d4fa; font-weight: 500;">Model Inputs.xlsx</span>
-                                <span class="text-muted" style="font-size: 12px;">Source data (editable)</span>
+                                <span class="text-muted" style="font-size: 11px;">Source data</span>
                             </div>
                             <div class="d-flex gap-2">
                                 <a href="/download/model-inputs" class="btn btn-outline-light btn-sm" id="downloadModelInputs">
@@ -393,11 +391,11 @@
                             <small id="modelInputsStatus" class="text-muted d-block" style="font-size: 11px;"></small>
                         </div>
                     </div>
-                    <div class="col-md-6">
+                    <div class="col-md-4">
                         <div class="p-3" style="background: rgba(255,255,255,0.03); border-radius: 10px; border: 1px solid rgba(255,255,255,0.06);">
                             <div class="d-flex justify-content-between align-items-center mb-2">
                                 <span style="color: #81d4fa; font-weight: 500;">generated_model_inputs.xlsx</span>
-                                <span class="text-muted" style="font-size: 12px;">Generated Model Inputs</span>
+                                <span class="text-muted" style="font-size: 11px;">Generated inputs</span>
                             </div>
                             <div class="d-flex gap-2">
                                 <a href="/download/generated-inputs" class="btn btn-outline-light btn-sm" id="downloadGeneratedInputs">
@@ -405,6 +403,23 @@
                                 </a>
                             </div>
                             <small id="generatedInputsTimestamp" class="text-muted d-block mt-2" style="font-size: 11px;">Last updated: --</small>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="p-3" style="background: rgba(255,255,255,0.03); border-radius: 10px; border: 1px solid rgba(255,255,255,0.06);">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <span style="color: #81d4fa; font-weight: 500;">my_supply_chain.html</span>
+                                <span class="text-muted" style="font-size: 11px;">Network map</span>
+                            </div>
+                            <div class="d-flex gap-2">
+                                <a href="/download/network-map" class="btn btn-outline-light btn-sm" id="downloadNetworkMap">
+                                    Download
+                                </a>
+                                <a href="/network-map" target="_blank" class="btn btn-success-custom btn-sm">
+                                    View
+                                </a>
+                            </div>
+                            <small id="networkMapTimestamp" class="text-muted d-block mt-2" style="font-size: 11px;">Last updated: --</small>
                         </div>
                     </div>
                 </div>

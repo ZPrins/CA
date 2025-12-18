@@ -84,7 +84,7 @@ class Config:
 
   # Input preparation (Excel)
     # Ensure Settings, Make, Store, and Delivery sheets exist and are populated
-    prepare_inputs: bool = False
+    prepare_inputs: bool = True
 
     # Legend
     show_legend: bool = True

@@ -369,6 +369,15 @@ def download_generated_inputs():
     return "File not found", 404
 
 
+@app.route('/download/network-map')
+def download_network_map():
+    """Download my_supply_chain.html network map file."""
+    network_map_file = 'my_supply_chain.html'
+    if os.path.exists(network_map_file):
+        return send_from_directory('.', network_map_file, as_attachment=True)
+    return "File not found", 404
+
+
 @app.route('/upload/model-inputs', methods=['POST'])
 def upload_model_inputs():
     """Upload and replace Model Inputs.xlsx file."""
