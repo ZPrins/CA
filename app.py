@@ -345,6 +345,14 @@ def update_viz_config():
         return jsonify({'success': False, 'error': str(e)})
 
 
+@app.route('/network-map')
+def network_map():
+    """Serve the network map HTML file."""
+    if os.path.exists('my_supply_chain.html'):
+        return send_from_directory('.', 'my_supply_chain.html')
+    return "Network map not found. Run Generate Outputs first.", 404
+
+
 @app.route('/download/model-inputs')
 def download_model_inputs():
     """Download Model Inputs.xlsx file."""
