@@ -86,10 +86,10 @@ The generated HTML report (`sim_outputs_plots_all.html`) includes:
   - **Route Summary**: Stacked bar chart showing average time by status (Loading, In Transit, Waiting for Berth, Unloading) with trip counts on right axis
 
 ### Variability Analysis Report
-A separate HTML report (`sim_outputs_variability.html`) showing actual simulation data for stochastic elements:
-- **Breakdown Events**: Histogram of actual breakdown durations from the simulation run, with event count, average/max duration, and total downtime
-- **Configured Downtime Targets**: Reference table showing target unplanned downtime percentage per equipment
-- **Opening Stock by Store**: Bar chart of actual opening stock values used in the simulation run vs capacity
+A separate HTML report (`sim_outputs_variability.html`) showing probability density graphs for stochastic elements:
+- **Breakdown Duration PDF by Equipment**: Each equipment has its own probability density histogram showing distribution of breakdown durations (not aggregated - individual graphs per equipment)
+- **Berth Waiting Time PDF**: Distribution of time vessels spend waiting for berth availability at ports, with per-port breakdown
+- **Opening Stock PDF by Store**: Theoretical uniform probability density for each store showing sampling range and actual value used
 - Light theme styling consistent with main report
 - Link from main report summary for easy navigation
 
@@ -116,10 +116,11 @@ A separate HTML report (`sim_outputs_variability.html`) showing actual simulatio
 
 ## Recent Changes
 
-- Redesigned Variability Analysis report to show actual simulation data:
-  - Breakdown events histogram from logged BreakdownStart events
-  - Opening stock values now captured via _actual_opening attribute on StoreConfig
-  - Light theme styling matching main report
+- Redesigned Variability Analysis report with probability density graphs:
+  - Per-equipment breakdown duration PDFs (individual histogram for each equipment)
+  - Berth waiting time PDF from ship state logs (WAITING_FOR_BERTH tracking)
+  - Opening stock uniform PDFs showing theoretical distribution and sampled value
+  - Added vessel_id and ship_state columns to sim_outputs_sim_log.csv
 - Added Route Summary chart with stacked bars showing average time per status and trip counts
 - Implemented countdown timer on Run Simulation button based on previous run time
 - Added styled progress badges (orange/purple/green) for simulation status
