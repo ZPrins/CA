@@ -318,13 +318,13 @@
             </div>
             <div class="card-body">
                 <div class="row g-3 align-items-center">
-                    <div class="col-md-3">
+                    <div class="col-md-4">
                         <button type="button" class="btn btn-primary w-100" id="runDataPrepBtn">
                             <span id="runDataPrepBtnText">Generate Outputs</span>
                             <span id="runDataPrepSpinner" class="spinner-border spinner-border-sm ms-2 d-none"></span>
                         </button>
                     </div>
-                    <div class="col-md-6">
+                    <div class="col-md-5">
                         <div class="d-flex align-items-center gap-4">
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" role="switch" id="prepareInputsToggle" style="width: 50px; height: 26px;">
@@ -397,7 +397,7 @@
                         <div class="col-md-3">
                             <label class="form-label">Random Seed (optional)</label>
                             <input type="number" class="form-control" id="random_seed" 
-                                   placeholder="Leave blank for random"
+                                   placeholder="Blank = random"
                                    value="{{ config.random_seed if config.random_seed else '' }}">
                         </div>
                         <div class="col-md-3 d-flex align-items-end">
