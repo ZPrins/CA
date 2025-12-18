@@ -198,7 +198,7 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
 </head>
 <body>
     <div class="container">
-        <a href="sim_outputs_plots_all.html" class="back-link">&larr; Back to Interactive Report</a>
+        <a href="/outputs/sim_outputs_plots_all.html" class="back-link">&larr; Back to Interactive Report</a>
         <h1>Variability Distributions</h1>
         <p class="subtitle">Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Simulation Horizon: {variability['settings']['horizon_days']} days</p>
 ''')

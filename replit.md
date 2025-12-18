@@ -85,6 +85,13 @@ The generated HTML report (`sim_outputs_plots_all.html`) includes:
   - Fleet utilization and state over time
   - **Route Summary**: Stacked bar chart showing average time by status (Loading, In Transit, Waiting for Berth, Unloading) with trip counts on right axis
 
+### Variability Distributions Report
+A separate HTML report (`sim_outputs_variability.html`) showing distribution curves for all stochastic elements:
+- **Breakdown Duration**: Lognormal distribution (mean ~3h, σ=0.8) with theoretical PDF, sample histogram, and key statistics
+- **Unplanned Downtime by Equipment**: Bar chart showing configured downtime percentages per equipment
+- **Opening Stock Distribution**: Uniform distribution ranges for each store (when random opening is enabled)
+- Link from main report summary for easy navigation
+
 ## External Dependencies
 
 ### Python Packages
