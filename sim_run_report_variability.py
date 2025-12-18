@@ -318,8 +318,8 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
                     histnorm='probability density',
                     name='Density',
                     marker_color=color,
-                    opacity=0.7,
-                    nbinsx=min(20, max(5, n_events // 3))
+                    opacity=0.85,
+                    nbinsx=min(15, max(5, n_events // 3))
                 ))
                 
                 # Add vertical line for mean
@@ -328,21 +328,23 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
             else:
                 # Single event - show as bar
                 fig.add_trace(go.Bar(
-                    x=[f'{durations[0]:.1f}h'],
+                    x=[durations[0]],
                     y=[1],
                     marker_color=color,
-                    text=[f'1 event: {durations[0]:.1f}h'],
+                    width=0.5,
+                    text=[f'{durations[0]:.1f}h'],
                     textposition='outside'
                 ))
             
             fig.update_layout(
                 xaxis_title='Duration (hours)',
-                yaxis_title='Probability Density' if n_events >= 2 else 'Count',
+                yaxis_title='Probability Density',
                 template='plotly_white',
                 height=250,
                 margin=dict(l=50, r=30, t=30, b=50),
                 font=dict(size=11),
-                showlegend=False
+                showlegend=False,
+                bargap=0.15
             )
             
             chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
@@ -366,7 +368,7 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
         </div>
 ''')
     
-    # Section 2: Berth Waiting Times
+    # Section 2: Berth Waiting Times by Berth (same format as breakdown by equipment)
     berth_events = variability.get('berth_waiting_events', [])
     
     if berth_events:
@@ -375,88 +377,102 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
         max_wait = df_berth['wait_hours'].max()
         total_wait_events = len(berth_events)
         
-        fig_berth = go.Figure()
-        fig_berth.add_trace(go.Histogram(
-            x=df_berth['wait_hours'],
-            histnorm='probability density',
-            name='Wait Time Density',
-            marker_color='#8b5cf6',
-            opacity=0.7,
-            nbinsx=min(20, max(5, total_wait_events // 3))
-        ))
-        
-        fig_berth.add_vline(x=avg_wait, line_dash="dash", line_color="#1e293b",
-                          annotation_text=f"Mean: {avg_wait:.1f}h", annotation_position="top right")
-        
-        fig_berth.update_layout(
-            xaxis_title='Wait Time (hours)',
-            yaxis_title='Probability Density',
-            template='plotly_white',
-            height=300,
-            margin=dict(l=60, r=40, t=30, b=60),
-            font=dict(size=12)
-        )
-        
-        berth_html = fig_berth.to_html(full_html=False, include_plotlyjs=False)
-        
-        # By location
-        by_location = df_berth.groupby('location')['wait_hours'].agg(['count', 'mean', 'max']).reset_index()
-        
-        fig_by_loc = go.Figure()
-        fig_by_loc.add_trace(go.Bar(
-            x=by_location['location'],
-            y=by_location['mean'],
-            text=[f"Avg: {v:.1f}h<br>({c} events)" for v, c in zip(by_location['mean'], by_location['count'])],
-            textposition='outside',
-            marker_color='#8b5cf6'
-        ))
-        fig_by_loc.update_layout(
-            xaxis_title='Port Location',
-            yaxis_title='Avg Wait Time (hours)',
-            template='plotly_white',
-            height=300,
-            margin=dict(l=60, r=40, t=30, b=80),
-            font=dict(size=12)
-        )
-        fig_by_loc.update_xaxes(tickangle=45)
-        
-        by_loc_html = fig_by_loc.to_html(full_html=False, include_plotlyjs=False)
+        # Group by location (berth)
+        berth_by_location = {}
+        for evt in berth_events:
+            loc = evt['location']
+            if loc not in berth_by_location:
+                berth_by_location[loc] = []
+            berth_by_location[loc].append(evt['wait_hours'])
         
         html_parts.append(f'''
         <div class="section">
-            <div class="section-title">2. Berth Waiting Time Probability Density</div>
+            <div class="section-title">2. Berth Waiting Time Probability Density by Berth</div>
             <div class="section-desc">
-                Time vessels spend <strong>waiting for berth availability</strong> at ports.
-                Longer wait times indicate port congestion or capacity constraints.
+                Each chart shows the <strong>probability density function (PDF)</strong> of waiting times
+                at a specific berth/port. Longer wait times indicate port congestion or capacity constraints.
             </div>
             <div class="stats-grid">
                 <div class="stat-card">
+                    <div class="stat-value">{len(berth_by_location)}</div>
+                    <div class="stat-label">Berths with Waits</div>
+                </div>
+                <div class="stat-card">
                     <div class="stat-value">{total_wait_events}</div>
-                    <div class="stat-label">Wait Events</div>
+                    <div class="stat-label">Total Wait Events</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-value">{avg_wait:.1f}h</div>
-                    <div class="stat-label">Avg Wait</div>
+                    <div class="stat-label">Overall Avg Wait</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-value">{max_wait:.1f}h</div>
                     <div class="stat-label">Max Wait</div>
                 </div>
             </div>
-            <div class="plot-container">
-                <div class="plot-title">Wait Time Distribution (PDF)</div>
-                {berth_html}
-            </div>
-            <div class="plot-container">
-                <div class="plot-title">Average Wait by Port</div>
-                {by_loc_html}
+            <div class="equipment-grid">
+''')
+        
+        berth_colors = ['#8b5cf6', '#2563eb', '#10b981', '#f97316', '#ef4444', '#06b6d4', '#eab308', '#ec4899']
+        
+        for idx, (berth, wait_times) in enumerate(sorted(berth_by_location.items())):
+            color = berth_colors[idx % len(berth_colors)]
+            n_events = len(wait_times)
+            berth_avg = np.mean(wait_times)
+            berth_max = max(wait_times)
+            
+            fig = go.Figure()
+            
+            if n_events >= 2:
+                fig.add_trace(go.Histogram(
+                    x=wait_times,
+                    histnorm='probability density',
+                    name='Density',
+                    marker_color=color,
+                    opacity=0.85,
+                    nbinsx=min(15, max(5, n_events // 3))
+                ))
+                
+                fig.add_vline(x=berth_avg, line_dash="dash", line_color="#1e293b",
+                             annotation_text=f"Mean: {berth_avg:.1f}h", annotation_position="top right")
+            else:
+                fig.add_trace(go.Bar(
+                    x=[wait_times[0]],
+                    y=[1],
+                    marker_color=color,
+                    width=0.5,
+                    text=[f'{wait_times[0]:.1f}h'],
+                    textposition='outside'
+                ))
+            
+            fig.update_layout(
+                xaxis_title='Wait Time (hours)',
+                yaxis_title='Probability Density',
+                template='plotly_white',
+                height=250,
+                margin=dict(l=50, r=30, t=30, b=50),
+                font=dict(size=11),
+                showlegend=False,
+                bargap=0.15
+            )
+            
+            chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
+            
+            html_parts.append(f'''
+                <div class="plot-container">
+                    <div class="plot-title">{berth} <span style="color:#64748b;font-weight:normal">({n_events} events, avg {berth_avg:.1f}h, max {berth_max:.1f}h)</span></div>
+                    {chart_html}
+                </div>
+''')
+        
+        html_parts.append('''
             </div>
         </div>
 ''')
     else:
         html_parts.append('''
         <div class="section">
-            <div class="section-title">2. Berth Waiting Time Probability Density</div>
+            <div class="section-title">2. Berth Waiting Time Probability Density by Berth</div>
             <div class="no-data">No significant berth waiting events recorded. Ships had immediate berth access, or ship state logging is not yet enabled.</div>
         </div>
 ''')
@@ -481,10 +497,10 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
 ''')
         
         for store in sorted(stores_with_range, key=lambda x: x['store_key']):
-            low = store['opening_low']
-            high = store['opening_high']
-            actual = store['actual_value']
-            capacity = store['capacity']
+            low = store['opening_low'] / 1000  # Convert to kT
+            high = store['opening_high'] / 1000  # Convert to kT
+            actual = store['actual_value'] / 1000  # Convert to kT
+            capacity = store['capacity'] / 1000  # Convert to kT
             range_width = high - low
             pdf_height = 1.0 / range_width if range_width > 0 else 0
             
@@ -510,7 +526,7 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
                 y=[pdf_height / 2],
                 mode='markers',
                 marker=dict(color='#ef4444', size=12, symbol='diamond'),
-                name=f'Actual: {actual:,.0f}t'
+                name=f'Actual: {actual:.1f} kT'
             ))
             
             # Add capacity reference line
@@ -519,21 +535,21 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
                              annotation_text="Capacity", annotation_position="top")
             
             fig.update_layout(
-                xaxis_title='Opening Stock (tonnes)',
+                xaxis_title='Opening Stock (kT)',
                 yaxis_title='Probability Density',
                 template='plotly_white',
                 height=220,
                 margin=dict(l=50, r=30, t=30, b=50),
                 font=dict(size=10),
                 showlegend=False,
-                xaxis=dict(range=[max(0, low - range_width * 0.1), high + range_width * 0.1])
+                xaxis=dict(range=[max(0, low - range_width * 0.15), high + range_width * 0.15])
             )
             
             chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
             
             html_parts.append(f'''
                 <div class="plot-container">
-                    <div class="plot-title">{store['store_key']} <span style="color:#64748b;font-weight:normal">(Range: {low:,.0f} - {high:,.0f}t, Actual: {actual:,.0f}t)</span></div>
+                    <div class="plot-title">{store['store_key']} <span style="color:#64748b;font-weight:normal">(Range: {low:.1f} - {high:.1f} kT, Actual: {actual:.1f} kT)</span></div>
                     {chart_html}
                 </div>
 ''')
