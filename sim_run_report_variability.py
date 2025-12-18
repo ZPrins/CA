@@ -268,14 +268,19 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
 </head>
 <body>
     <script>
-        // Force Plotly to recalculate chart dimensions after page loads
-        window.addEventListener('load', function() {{
-            setTimeout(function() {{
+        // Force Plotly to recalculate chart dimensions immediately
+        document.addEventListener('DOMContentLoaded', function() {{
+            window.dispatchEvent(new Event('resize'));
+            requestAnimationFrame(function() {{
                 window.dispatchEvent(new Event('resize'));
-            }}, 100);
-            setTimeout(function() {{
-                window.dispatchEvent(new Event('resize'));
-            }}, 500);
+                // Also directly resize all Plotly charts
+                var plots = document.querySelectorAll('.js-plotly-plot');
+                plots.forEach(function(plot) {{
+                    if (window.Plotly && plot) {{
+                        Plotly.Plots.resize(plot);
+                    }}
+                }});
+            }});
         }});
     </script>
     <div class="container">
