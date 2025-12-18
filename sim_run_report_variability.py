@@ -211,9 +211,10 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
         .plot-container {{
             background: #f8fafc;
             border-radius: 8px;
-            padding: 16px;
+            padding: 12px;
             margin-bottom: 16px;
             border: 1px solid #e2e8f0;
+            overflow: hidden;
         }}
         .plot-title {{
             font-weight: 600;
@@ -246,14 +247,15 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
         }}
         .equipment-grid {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-            gap: 16px;
+            grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+            gap: 20px;
         }}
         .store-grid {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-            gap: 16px;
+            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+            gap: 20px;
         }}
+        .js-plotly-plot {{ max-width: 100% !important; }}
     </style>
 </head>
 <body>
@@ -340,14 +342,15 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
                 xaxis_title='Duration (hours)',
                 yaxis_title='Probability Density',
                 template='plotly_white',
-                height=250,
-                margin=dict(l=50, r=30, t=30, b=50),
-                font=dict(size=11),
+                height=220,
+                margin=dict(l=45, r=20, t=25, b=45),
+                font=dict(size=10),
                 showlegend=False,
-                bargap=0.15
+                bargap=0.15,
+                autosize=True
             )
             
-            chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
+            chart_html = fig.to_html(full_html=False, include_plotlyjs=False, config={'responsive': True})
             
             html_parts.append(f'''
                 <div class="plot-container">
@@ -449,14 +452,15 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
                 xaxis_title='Wait Time (hours)',
                 yaxis_title='Probability Density',
                 template='plotly_white',
-                height=250,
-                margin=dict(l=50, r=30, t=30, b=50),
-                font=dict(size=11),
+                height=220,
+                margin=dict(l=45, r=20, t=25, b=45),
+                font=dict(size=10),
                 showlegend=False,
-                bargap=0.15
+                bargap=0.15,
+                autosize=True
             )
             
-            chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
+            chart_html = fig.to_html(full_html=False, include_plotlyjs=False, config={'responsive': True})
             
             html_parts.append(f'''
                 <div class="plot-container">
@@ -538,14 +542,15 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
                 xaxis_title='Opening Stock (kT)',
                 yaxis_title='Probability Density',
                 template='plotly_white',
-                height=220,
-                margin=dict(l=50, r=30, t=30, b=50),
+                height=200,
+                margin=dict(l=45, r=20, t=25, b=45),
                 font=dict(size=10),
                 showlegend=False,
-                xaxis=dict(range=[max(0, low - range_width * 0.15), high + range_width * 0.15])
+                xaxis=dict(range=[max(0, low - range_width * 0.15), high + range_width * 0.15]),
+                autosize=True
             )
             
-            chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
+            chart_html = fig.to_html(full_html=False, include_plotlyjs=False, config={'responsive': True})
             
             html_parts.append(f'''
                 <div class="plot-container">
