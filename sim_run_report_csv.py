@@ -26,7 +26,7 @@ def write_csv_outputs(sim, out_dir: Path, report_data: dict = None):
             "location", "equipment", "product", "qty",
             "from_store", "from_level",
             "to_store", "to_level",
-            "route_id"
+            "route_id", "vessel_id", "ship_state"
         ]
         final_cols = [c for c in cols if c in df_log.columns]
         df_log[final_cols].to_csv(out_dir / "sim_outputs_sim_log.csv", index=False)
@@ -38,7 +38,7 @@ def write_csv_outputs(sim, out_dir: Path, report_data: dict = None):
             "location", "equipment", "product", "qty",
             "from_store", "from_level",
             "to_store", "to_level",
-            "route_id"
+            "route_id", "vessel_id", "ship_state"
         ]
         df_log["day"] = (pd.to_numeric(df_log["time_h"], errors='coerce') / 24).astype(int) + 1
         final_cols = [c for c in cols if c in df_log.columns]
