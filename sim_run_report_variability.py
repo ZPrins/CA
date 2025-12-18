@@ -250,15 +250,22 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
         .equipment-grid {{
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
-            gap: 20px;
+            gap: 24px;
+            overflow: visible;
         }}
         .store-grid {{
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-            gap: 20px;
+            gap: 24px;
+            overflow: visible;
         }}
-        .js-plotly-plot {{ width: 100% !important; }}
-        .js-plotly-plot .plot-container {{ width: 100% !important; }}
+        .plot-container {{
+            overflow: visible;
+            padding-bottom: 10px;
+        }}
+        .js-plotly-plot {{ width: 100% !important; overflow: visible !important; }}
+        .js-plotly-plot .plot-container {{ width: 100% !important; overflow: visible !important; }}
+        .js-plotly-plot .main-svg {{ overflow: visible !important; }}
     </style>
 </head>
 <body>
