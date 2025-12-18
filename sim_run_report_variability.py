@@ -214,7 +214,9 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
             padding: 12px;
             margin-bottom: 16px;
             border: 1px solid #e2e8f0;
-            overflow: hidden;
+        }}
+        .plot-container .plotly-graph-div {{
+            width: 100% !important;
         }}
         .plot-title {{
             font-weight: 600;
@@ -255,7 +257,8 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
             grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
             gap: 20px;
         }}
-        .js-plotly-plot {{ max-width: 100% !important; }}
+        .js-plotly-plot {{ width: 100% !important; }}
+        .js-plotly-plot .plot-container {{ width: 100% !important; }}
     </style>
 </head>
 <body>
