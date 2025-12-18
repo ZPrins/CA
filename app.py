@@ -391,7 +391,8 @@ def get_file_info(filename):
     """Get file modification time."""
     file_map = {
         'model-inputs': MODEL_INPUTS_FILE,
-        'generated-inputs': GENERATED_INPUTS_FILE
+        'generated-inputs': GENERATED_INPUTS_FILE,
+        'network-map': 'my_supply_chain.html'
     }
     
     filepath = file_map.get(filename)
