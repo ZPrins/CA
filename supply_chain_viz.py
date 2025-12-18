@@ -1439,11 +1439,13 @@ def _log_action(action: str, details: str = "") -> None:
     """Append an action entry with timestamp to the in-memory action log.
     The log is later written to the generated workbook as a 'Log' sheet.
     Also echo to console for immediate visibility.
+    Uses local system time for timestamps.
     """
     try:
-        ts = pd.Timestamp.now(tz=None)
+        import datetime
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
-        ts = pd.Timestamp.utcnow()
+        ts = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
     ACTION_LOG.append({"Timestamp": ts, "Action": action, "Details": details})
     try:
         print(f"[prepare_inputs] {ts}: {action} — {details}")

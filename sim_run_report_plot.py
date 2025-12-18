@@ -1016,7 +1016,7 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
 def _generate_html_report(sim, out_dir: Path, content: list, products: list = None, locations: list = None, current_runtime: int = 0, prev_runtime: int = 30):
     html_path = out_dir / "sim_outputs_plots_all.html"
     total_unmet = sum(sim.unmet.values())
-    run_time_utc = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    run_time_local = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     products = products or []
     locations = locations or []
     # Use previous runtime for countdown (current run's time will be used next time)
@@ -1115,20 +1115,7 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         </div>
     </div>
     <div class="content">
-        <div class="summary"><p><strong>Generated:</strong> <span id="genTime" data-utc="{run_time_utc}"></span> <span style="color:#78909c">(run time {display_runtime}s)</span></p><p><strong>Total Unmet Demand:</strong> <span style="color: {'red' if total_unmet > 0 else 'green'}">{total_unmet:,.0f} tons</span></p><p><strong>Status:</strong> Complete</p></div>
-        <script>
-            (function() {{
-                var el = document.getElementById('genTime');
-                var utc = el.dataset.utc;
-                var d = new Date(utc);
-                var y = d.getFullYear();
-                var m = String(d.getMonth() + 1).padStart(2, '0');
-                var day = String(d.getDate()).padStart(2, '0');
-                var h = String(d.getHours()).padStart(2, '0');
-                var min = String(d.getMinutes()).padStart(2, '0');
-                el.textContent = y + '-' + m + '-' + day + ' ' + h + ':' + min;
-            }})();
-        </script>
+        <div class="summary"><p><strong>Generated:</strong> {run_time_local} <span style="color:#78909c">(run time {display_runtime}s)</span></p><p><strong>Total Unmet Demand:</strong> <span style="color: {'red' if total_unmet > 0 else 'green'}">{total_unmet:,.0f} tons</span></p><p><strong>Status:</strong> Complete</p></div>
 """
 
     # Pre-serialize all figures using orjson (5-8x faster than default)
