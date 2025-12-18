@@ -314,6 +314,37 @@
 
         <div class="card mb-4">
             <div class="card-header">
+                <h5 class="mb-0">Model Setup</h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-3 align-items-center">
+                    <div class="col-md-4">
+                        <button type="button" class="btn btn-primary w-100" id="runDataPrepBtn">
+                            <span id="runDataPrepBtnText">Run Data Prep</span>
+                            <span id="runDataPrepSpinner" class="spinner-border spinner-border-sm ms-2 d-none"></span>
+                        </button>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="d-flex align-items-center gap-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" role="switch" id="prepareInputsToggle" style="width: 50px; height: 26px;">
+                                <label class="form-check-label ms-2" for="prepareInputsToggle" style="color: #a0aec0; font-size: 14px;">Mode</label>
+                            </div>
+                            <span id="prepareInputsLabel" class="text-muted" style="font-size: 14px; min-width: 140px;">Generate Data</span>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <small class="text-muted">Output: <span id="dataPrepOutputLabel" style="color: #4fc3f7;">Generate Data</span></small>
+                    </div>
+                </div>
+                <div id="dataPrepOutputCard" class="mt-3" style="display: none;">
+                    <pre class="output-log" id="dataPrepLog" style="max-height: 200px;"></pre>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header">
                 <h5 class="mb-0">Simulation Settings</h5>
             </div>
             <div class="card-body">
@@ -986,6 +1017,104 @@
                 btn.disabled = false;
                 document.getElementById('runSingleBtn').disabled = false;
                 btnText.textContent = 'Run Full Simulation';
+                spinner.classList.add('d-none');
+            }
+        });
+
+        // Model Setup - Toggle and Data Prep
+        const prepareInputsToggle = document.getElementById('prepareInputsToggle');
+        const dataPrepOutputLabel = document.getElementById('dataPrepOutputLabel');
+        
+        function updateOutputLabel(isOn) {
+            const label = isOn ? 'Generate Data' : 'Generate Network Map';
+            dataPrepOutputLabel.textContent = label;
+        }
+        
+        // Load initial state
+        fetch('/api/viz-config')
+            .then(r => r.json())
+            .then(data => {
+                prepareInputsToggle.checked = data.prepare_inputs;
+                updateOutputLabel(data.prepare_inputs);
+            })
+            .catch(() => {
+                prepareInputsToggle.checked = true;
+                updateOutputLabel(true);
+            });
+        
+        // Toggle change handler
+        prepareInputsToggle.addEventListener('change', async function() {
+            const isOn = this.checked;
+            updateOutputLabel(isOn);
+            
+            try {
+                await fetch('/api/viz-config', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({prepare_inputs: isOn})
+                });
+            } catch (err) {
+                console.error('Failed to update viz config:', err);
+            }
+        });
+        
+        // Run Data Prep button
+        document.getElementById('runDataPrepBtn').addEventListener('click', async function() {
+            const btn = this;
+            const btnText = document.getElementById('runDataPrepBtnText');
+            const spinner = document.getElementById('runDataPrepSpinner');
+            const outputCard = document.getElementById('dataPrepOutputCard');
+            const outputLog = document.getElementById('dataPrepLog');
+            
+            // Reset UI
+            outputLog.textContent = '';
+            outputCard.style.display = 'block';
+            btn.disabled = true;
+            btnText.textContent = 'Running...';
+            spinner.classList.remove('d-none');
+            
+            try {
+                const es = new EventSource('/stream-data-prep');
+                
+                es.onmessage = (ev) => {
+                    if (ev.data) {
+                        outputLog.textContent += ev.data + '\n';
+                        outputLog.scrollTop = outputLog.scrollHeight;
+                    }
+                };
+                
+                es.addEventListener('start', (ev) => {
+                    outputLog.textContent += ev.data + '\n';
+                });
+                
+                es.addEventListener('done', (ev) => {
+                    try { es.close(); } catch (e) {}
+                    
+                    let result = {};
+                    try { result = JSON.parse(ev.data); } catch (e) {}
+                    
+                    if (result.success) {
+                        outputLog.textContent += '\nData prep completed successfully!\n';
+                    } else {
+                        outputLog.textContent += '\nData prep failed with exit code: ' + result.exit_code + '\n';
+                    }
+                    
+                    btn.disabled = false;
+                    btnText.textContent = 'Run Data Prep';
+                    spinner.classList.add('d-none');
+                });
+                
+                es.addEventListener('error', () => {
+                    outputLog.textContent += 'Stream error.\n';
+                    btn.disabled = false;
+                    btnText.textContent = 'Run Data Prep';
+                    spinner.classList.add('d-none');
+                });
+                
+            } catch (err) {
+                outputLog.textContent += 'Error: ' + err.message + '\n';
+                btn.disabled = false;
+                btnText.textContent = 'Run Data Prep';
                 spinner.classList.add('d-none');
             }
         });

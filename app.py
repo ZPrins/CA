@@ -4,6 +4,7 @@ import os
 import json
 import subprocess
 import tempfile
+import re
 from pathlib import Path
 import pandas as pd
 
@@ -18,6 +19,7 @@ from sim_run_multi import (
     run_multi_simulation,
     stream_multi_simulation
 )
+import supply_chain_viz_config
 
 app = Flask(__name__)
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
@@ -281,6 +283,110 @@ def stream_multi_simulation_route():
         }
         return Response(stream_with_context(sse_wrapper()), mimetype='text/event-stream', headers=headers)
         
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+VIZ_CONFIG_FILE = 'supply_chain_viz_config.py'
+
+
+def get_prepare_inputs_value():
+    """Read prepare_inputs value from config file."""
+    try:
+        with open(VIZ_CONFIG_FILE, 'r') as f:
+            content = f.read()
+        match = re.search(r'prepare_inputs:\s*bool\s*=\s*(True|False)', content)
+        if match:
+            return match.group(1) == 'True'
+    except Exception:
+        pass
+    return True
+
+
+def set_prepare_inputs_value(value: bool):
+    """Update prepare_inputs value in config file."""
+    try:
+        with open(VIZ_CONFIG_FILE, 'r') as f:
+            content = f.read()
+        new_value = 'True' if value else 'False'
+        new_content = re.sub(
+            r'(prepare_inputs:\s*bool\s*=\s*)(True|False)',
+            f'\\g<1>{new_value}',
+            content
+        )
+        with open(VIZ_CONFIG_FILE, 'w') as f:
+            f.write(new_content)
+        return True
+    except Exception as e:
+        print(f"Error updating prepare_inputs: {e}")
+        return False
+
+
+@app.route('/api/viz-config')
+def get_viz_config():
+    """Get visualization config settings."""
+    return jsonify({
+        'prepare_inputs': get_prepare_inputs_value()
+    })
+
+
+@app.route('/api/viz-config', methods=['POST'])
+def update_viz_config():
+    """Update visualization config settings."""
+    try:
+        data = request.get_json() or {}
+        if 'prepare_inputs' in data:
+            success = set_prepare_inputs_value(data['prepare_inputs'])
+            return jsonify({'success': success})
+        return jsonify({'success': False, 'error': 'No valid setting provided'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/stream-data-prep')
+def stream_data_prep():
+    """SSE endpoint that runs supply_chain_viz.py and streams output."""
+    try:
+        proc = subprocess.Popen(
+            ['python', 'supply_chain_viz.py'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
+        running_processes.append(proc)
+
+        def sse_lines():
+            try:
+                yield 'event: start\ndata: Data prep started\n\n'
+                
+                if proc.stdout is not None:
+                    for line in proc.stdout:
+                        msg = line.rstrip('\r\n')
+                        if msg:
+                            yield f'data: {msg}\n\n'
+                
+                proc.wait()
+                
+                payload = {
+                    'success': proc.returncode == 0,
+                    'exit_code': proc.returncode
+                }
+                yield 'event: done\ndata: ' + json.dumps(payload) + '\n\n'
+            finally:
+                try:
+                    if proc.poll() is None:
+                        proc.terminate()
+                    if proc in running_processes:
+                        running_processes.remove(proc)
+                except Exception:
+                    pass
+
+        headers = {
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+        }
+        return Response(stream_with_context(sse_lines()), mimetype='text/event-stream', headers=headers)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
