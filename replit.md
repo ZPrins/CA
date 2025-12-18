@@ -85,11 +85,12 @@ The generated HTML report (`sim_outputs_plots_all.html`) includes:
   - Fleet utilization and state over time
   - **Route Summary**: Stacked bar chart showing average time by status (Loading, In Transit, Waiting for Berth, Unloading) with trip counts on right axis
 
-### Variability Distributions Report
-A separate HTML report (`sim_outputs_variability.html`) showing distribution curves for all stochastic elements:
-- **Breakdown Duration**: Lognormal distribution (mean ~3h, σ=0.8) with theoretical PDF, sample histogram, and key statistics
-- **Unplanned Downtime by Equipment**: Bar chart showing configured downtime percentages per equipment
-- **Opening Stock Distribution**: Uniform distribution ranges for each store (when random opening is enabled)
+### Variability Analysis Report
+A separate HTML report (`sim_outputs_variability.html`) showing actual simulation data for stochastic elements:
+- **Breakdown Events**: Histogram of actual breakdown durations from the simulation run, with event count, average/max duration, and total downtime
+- **Configured Downtime Targets**: Reference table showing target unplanned downtime percentage per equipment
+- **Opening Stock by Store**: Bar chart of actual opening stock values used in the simulation run vs capacity
+- Light theme styling consistent with main report
 - Link from main report summary for easy navigation
 
 ## External Dependencies
@@ -115,6 +116,10 @@ A separate HTML report (`sim_outputs_variability.html`) showing distribution cur
 
 ## Recent Changes
 
+- Redesigned Variability Analysis report to show actual simulation data:
+  - Breakdown events histogram from logged BreakdownStart events
+  - Opening stock values now captured via _actual_opening attribute on StoreConfig
+  - Light theme styling matching main report
 - Added Route Summary chart with stacked bars showing average time per status and trip counts
 - Implemented countdown timer on Run Simulation button based on previous run time
 - Added styled progress badges (orange/purple/green) for simulation status
