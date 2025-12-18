@@ -149,11 +149,11 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     
                     log_func(
                         process="Downtime",
-                        event="Breakdown",
+                        event="BreakdownStart",
                         location=unit.location,
                         equipment=unit.equipment,
                         product=None,
-                        qty=None,
+                        qty=breakdown_remaining,
                         from_store=None,
                         from_level=None,
                         to_store=None,
