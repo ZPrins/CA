@@ -1087,7 +1087,7 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         <div class="header-top">
             <h1>Cement Australia Supply Chain Simulation</h1>
             <div><button class="run-btn" id="runBtn" onclick="runSimulation()">Run Single Simulation</button><span id="status"></span></div>
-            <a href="/outputs/sim_outputs_variability.html" style="color:#4fc3f7; text-decoration:none; font-size:0.85em;">View Modeled Variability &rarr;</a>
+            <a href="/outputs/sim_outputs_variability.html" style="color:#4fc3f7; text-decoration:none; font-size:0.85em;">View Modelled Variability &rarr;</a>
         </div>
         <div class="filter-bar">
             <span class="filter-label">Categories:</span>
