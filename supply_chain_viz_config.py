@@ -23,7 +23,7 @@ class Config:
     # Input/Output
     in_path: str | Path = "Model Inputs.xlsx"  # Excel or CSV. Excel defaults to sheet 'Network' unless overridden
     sheet: Optional[str | int] = None           # None uses 'Network' for Excel, 0 for CSV N/A
-    out_html: str | Path = "my_supply_chain.html"
+    out_html: str | Path = "Network_Map.html"
     open_after: bool = True                     # Open the generated HTML in your default browser
 
     # Data filter

@@ -348,8 +348,8 @@ def update_viz_config():
 @app.route('/network-map')
 def network_map():
     """Serve the network map HTML file."""
-    if os.path.exists('my_supply_chain.html'):
-        return send_from_directory('.', 'my_supply_chain.html')
+    if os.path.exists('Network_Map.html'):
+        return send_from_directory('.', 'Network_Map.html')
     return "Network map not found. Run Generate Outputs first.", 404
 
 
@@ -371,8 +371,8 @@ def download_generated_inputs():
 
 @app.route('/download/network-map')
 def download_network_map():
-    """Download my_supply_chain.html network map file."""
-    network_map_file = 'my_supply_chain.html'
+    """Download Network_Map.html network map file."""
+    network_map_file = 'Network_Map.html'
     if os.path.exists(network_map_file):
         return send_from_directory('.', network_map_file, as_attachment=True)
     return "File not found", 404
@@ -401,7 +401,7 @@ def get_file_info(filename):
     file_map = {
         'model-inputs': MODEL_INPUTS_FILE,
         'generated-inputs': GENERATED_INPUTS_FILE,
-        'network-map': 'my_supply_chain.html'
+        'network-map': 'Network_Map.html'
     }
     
     filepath = file_map.get(filename)

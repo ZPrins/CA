@@ -2697,7 +2697,7 @@ def _load_config(config_path: Optional[str | Path] = None):
                 "    generated_inputs_path: str = 'generated_model_inputs.xlsx'\n"
                 "    use_generated_inputs: bool = True\n"
                 "    sheet: str | int | None = None\n"
-                "    out_html: str = 'my_supply_chain.html'\n"
+                "    out_html: str = 'Network_Map.html'\n"
                 "    open_after: bool = True\n"
                 "    product_class: str | None = None\n"
                 "    height: str = '90vh'\n"
@@ -2747,7 +2747,7 @@ def main(argv=None) -> int:
         return 1
 
     in_path = Path(getattr(config, 'in_path', 'Model Inputs.xlsx'))
-    out_html = Path(getattr(config, 'out_html', 'my_supply_chain.html'))
+    out_html = Path(getattr(config, 'out_html', 'Network_Map.html'))
     gen_path = Path(getattr(config, 'generated_inputs_path', 'generated_model_inputs.xlsx'))
     use_generated = bool(getattr(config, 'use_generated_inputs', True))
 
