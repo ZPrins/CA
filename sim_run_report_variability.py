@@ -353,8 +353,8 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
                 xaxis_title='Duration (hours)',
                 yaxis_title='Probability Density',
                 template='plotly_white',
-                height=220,
-                margin=dict(l=45, r=20, t=25, b=45),
+                height=260,
+                margin=dict(l=60, r=20, t=25, b=55),
                 font=dict(size=10),
                 showlegend=False,
                 bargap=0.1
@@ -474,8 +474,8 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
                 xaxis_title='Wait Time (hours)',
                 yaxis_title='Probability Density',
                 template='plotly_white',
-                height=220,
-                margin=dict(l=45, r=20, t=25, b=45),
+                height=260,
+                margin=dict(l=60, r=20, t=25, b=55),
                 font=dict(size=10),
                 showlegend=False,
                 bargap=0.1
@@ -565,8 +565,8 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
                 xaxis_title='Opening Stock (kT)',
                 yaxis_title='Probability Density',
                 template='plotly_white',
-                height=200,
-                margin=dict(l=45, r=20, t=25, b=45),
+                height=240,
+                margin=dict(l=60, r=20, t=25, b=55),
                 font=dict(size=10),
                 showlegend=False
             )
