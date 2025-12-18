@@ -267,6 +267,17 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
     </style>
 </head>
 <body>
+    <script>
+        // Force Plotly to recalculate chart dimensions after page loads
+        window.addEventListener('load', function() {{
+            setTimeout(function() {{
+                window.dispatchEvent(new Event('resize'));
+            }}, 100);
+            setTimeout(function() {{
+                window.dispatchEvent(new Event('resize'));
+            }}, 500);
+        }});
+    </script>
     <div class="container">
         <a href="/outputs/sim_outputs_plots_all.html" class="back-link">&larr; Back to Interactive Report</a>
         <h1>Variability Analysis</h1>
