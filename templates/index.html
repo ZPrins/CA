@@ -350,7 +350,7 @@
                             <div class="form-check form-switch mb-0">
                                 <input class="form-check-input" type="checkbox" role="switch" id="prepareInputsToggle" style="width: 50px; height: 26px;">
                             </div>
-                            <span class="text-muted" style="font-size: 14px;">Output: <span id="dataPrepOutputLabel" style="color: #4fc3f7;">Generate Data</span></span>
+                            <span class="text-muted" style="font-size: 14px;">Output: <span id="dataPrepOutputLabel" style="color: #4fc3f7;">Generate Model Inputs</span></span>
                         </div>
                     </div>
                     <div class="col-md-4 text-end">
@@ -1085,7 +1085,7 @@
         const dataPrepOutputLabel = document.getElementById('dataPrepOutputLabel');
         
         function updateOutputLabel(isOn) {
-            const label = isOn ? 'Generate Data' : 'Generate Network Map';
+            const label = isOn ? 'Generate Model Inputs' : 'Generate Network Map';
             dataPrepOutputLabel.textContent = label;
         }
         
