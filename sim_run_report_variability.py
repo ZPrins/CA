@@ -208,15 +208,17 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
             margin-bottom: 16px;
             line-height: 1.5;
         }}
-        .plot-container {{
+        .chart-card {{
             background: #f8fafc;
             border-radius: 8px;
             padding: 12px;
-            margin-bottom: 16px;
+            padding-bottom: 20px;
             border: 1px solid #e2e8f0;
+            overflow: visible;
         }}
-        .plot-container .plotly-graph-div {{
+        .chart-card .plotly-graph-div {{
             width: 100% !important;
+            overflow: visible !important;
         }}
         .plot-title {{
             font-weight: 600;
@@ -259,12 +261,7 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
             gap: 24px;
             overflow: visible;
         }}
-        .plot-container {{
-            overflow: visible;
-            padding-bottom: 10px;
-        }}
         .js-plotly-plot {{ width: 100% !important; overflow: visible !important; }}
-        .js-plotly-plot .plot-container {{ width: 100% !important; overflow: visible !important; }}
         .js-plotly-plot .main-svg {{ overflow: visible !important; }}
     </style>
 </head>
@@ -372,7 +369,7 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
             chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
             
             html_parts.append(f'''
-                <div class="plot-container">
+                <div class="chart-card">
                     <div class="plot-title">{equip} <span style="color:#64748b;font-weight:normal">({n_events} events, avg {eq_avg:.1f}h, max {eq_max:.0f}h)</span></div>
                     {chart_html}
                 </div>
@@ -493,7 +490,7 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
             chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
             
             html_parts.append(f'''
-                <div class="plot-container">
+                <div class="chart-card">
                     <div class="plot-title">{berth} <span style="color:#64748b;font-weight:normal">({n_events} events, avg {berth_avg:.1f}h, max {berth_max:.1f}h)</span></div>
                     {chart_html}
                 </div>
@@ -583,7 +580,7 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
             chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
             
             html_parts.append(f'''
-                <div class="plot-container">
+                <div class="chart-card">
                     <div class="plot-title">{store['store_key']} <span style="color:#64748b;font-weight:normal">(Range: {low:.1f} - {high:.1f} kT, Actual: {actual:.1f} kT)</span></div>
                     {chart_html}
                 </div>
