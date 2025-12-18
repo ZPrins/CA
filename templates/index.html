@@ -320,7 +320,7 @@
                 <div class="row g-3 align-items-center">
                     <div class="col-md-3">
                         <button type="button" class="btn btn-primary w-100" id="runDataPrepBtn">
-                            <span id="runDataPrepBtnText">Generate Output</span>
+                            <span id="runDataPrepBtnText">Generate Outputs</span>
                             <span id="runDataPrepSpinner" class="spinner-border spinner-border-sm ms-2 d-none"></span>
                         </button>
                     </div>
@@ -1142,7 +1142,14 @@
                         else if (diffSec < 3600) ago = Math.floor(diffSec / 60) + ' minutes ago';
                         else if (diffSec < 86400) ago = Math.floor(diffSec / 3600) + ' hours ago';
                         else ago = Math.floor(diffSec / 86400) + ' days ago';
-                        el.textContent = 'Last updated: ' + data.mtime_iso + ' (' + ago + ')';
+                        const localDate = new Date(mtime);
+                        const localTimeStr = localDate.getFullYear() + '-' + 
+                            String(localDate.getMonth() + 1).padStart(2, '0') + '-' + 
+                            String(localDate.getDate()).padStart(2, '0') + ' ' + 
+                            String(localDate.getHours()).padStart(2, '0') + ':' + 
+                            String(localDate.getMinutes()).padStart(2, '0') + ':' + 
+                            String(localDate.getSeconds()).padStart(2, '0');
+                        el.textContent = 'Last updated: ' + localTimeStr + ' (' + ago + ')';
                     } else {
                         el.textContent = 'File not generated yet';
                     }
@@ -1198,21 +1205,21 @@
                     }
                     
                     btn.disabled = false;
-                    btnText.textContent = 'Generate Output';
+                    btnText.textContent = 'Generate Outputs';
                     spinner.classList.add('d-none');
                 });
                 
                 es.addEventListener('error', () => {
                     outputLog.textContent += 'Stream error.\n';
                     btn.disabled = false;
-                    btnText.textContent = 'Generate Output';
+                    btnText.textContent = 'Generate Outputs';
                     spinner.classList.add('d-none');
                 });
                 
             } catch (err) {
                 outputLog.textContent += 'Error: ' + err.message + '\n';
                 btn.disabled = false;
-                btnText.textContent = 'Generate Output';
+                btnText.textContent = 'Generate Outputs';
                 spinner.classList.add('d-none');
             }
         });
