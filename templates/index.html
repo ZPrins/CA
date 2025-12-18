@@ -140,6 +140,15 @@
             color: #fff;
         }
         .btn-success-custom:disabled { opacity: 0.5; transform: none; }
+        @keyframes glowPulse {
+            0% { text-shadow: 0 0 5px #4fc3f7, 0 0 10px #4fc3f7; color: #4fc3f7; }
+            50% { text-shadow: 0 0 20px #4fc3f7, 0 0 30px #4fc3f7, 0 0 40px #4fc3f7; color: #81d4fa; }
+            100% { text-shadow: 0 0 5px #4fc3f7, 0 0 10px #4fc3f7; color: #4fc3f7; }
+        }
+        .timestamp-updated {
+            animation: glowPulse 1.5s ease-in-out 3;
+            color: #4fc3f7 !important;
+        }
         .btn-outline-light {
             border: 1px solid rgba(255,255,255,0.2);
             color: #b0bec5;
@@ -1139,7 +1148,7 @@
                 if (result.success) {
                     statusEl.textContent = 'File replaced successfully!';
                     statusEl.style.color = '#66bb6a';
-                    updateFileTimestamp('model-inputs', 'modelInputsTimestamp', 'File not found');
+                    updateFileTimestamp('model-inputs', 'modelInputsTimestamp', 'File not found', true);
                     setTimeout(() => { statusEl.textContent = ''; }, 3000);
                 } else {
                     statusEl.textContent = 'Error: ' + (result.error || 'Upload failed');
@@ -1172,8 +1181,8 @@
             return 'Last updated: ' + localTimeStr + ' (' + ago + ')';
         }
         
-        // Update file timestamps
-        function updateFileTimestamp(apiPath, elementId, notFoundMsg) {
+        // Update file timestamps with optional glow animation
+        function updateFileTimestamp(apiPath, elementId, notFoundMsg, animate = false) {
             fetch('/api/file-info/' + apiPath)
                 .then(r => r.json())
                 .then(data => {
@@ -1182,6 +1191,12 @@
                         el.textContent = formatTimestamp(data.mtime * 1000);
                     } else {
                         el.textContent = notFoundMsg || 'File not found';
+                    }
+                    if (animate) {
+                        el.classList.remove('timestamp-updated');
+                        void el.offsetWidth;
+                        el.classList.add('timestamp-updated');
+                        setTimeout(() => el.classList.remove('timestamp-updated'), 4500);
                     }
                 })
                 .catch(() => {
@@ -1236,8 +1251,8 @@
                     
                     if (result.success) {
                         outputLog.textContent += '\nData prep completed successfully!\n';
-                        updateGeneratedInputsTimestamp();
-                        updateFileTimestamp('network-map', 'networkMapTimestamp', 'Not generated yet');
+                        updateFileTimestamp('generated-inputs', 'generatedInputsTimestamp', 'File not generated yet', true);
+                        updateFileTimestamp('network-map', 'networkMapTimestamp', 'Not generated yet', true);
                     } else {
                         outputLog.textContent += '\nData prep failed with exit code: ' + result.exit_code + '\n';
                     }
