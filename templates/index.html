@@ -320,7 +320,7 @@
                 <div class="row g-3 align-items-center">
                     <div class="col-md-3">
                         <button type="button" class="btn btn-primary w-100" id="runDataPrepBtn">
-                            <span id="runDataPrepBtnText">Run Data Prep</span>
+                            <span id="runDataPrepBtnText">Generate Output</span>
                             <span id="runDataPrepSpinner" class="spinner-border spinner-border-sm ms-2 d-none"></span>
                         </button>
                     </div>
@@ -1198,21 +1198,21 @@
                     }
                     
                     btn.disabled = false;
-                    btnText.textContent = 'Run Data Prep';
+                    btnText.textContent = 'Generate Output';
                     spinner.classList.add('d-none');
                 });
                 
                 es.addEventListener('error', () => {
                     outputLog.textContent += 'Stream error.\n';
                     btn.disabled = false;
-                    btnText.textContent = 'Run Data Prep';
+                    btnText.textContent = 'Generate Output';
                     spinner.classList.add('d-none');
                 });
                 
             } catch (err) {
                 outputLog.textContent += 'Error: ' + err.message + '\n';
                 btn.disabled = false;
-                btnText.textContent = 'Run Data Prep';
+                btnText.textContent = 'Generate Output';
                 spinner.classList.add('d-none');
             }
         });
