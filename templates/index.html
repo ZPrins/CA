@@ -356,7 +356,8 @@
                                     <input type="file" id="uploadModelInputs" accept=".xlsx" style="display: none;">
                                 </label>
                             </div>
-                            <small id="modelInputsStatus" class="text-muted d-block mt-2" style="font-size: 11px;"></small>
+                            <small id="modelInputsTimestamp" class="text-muted d-block mt-2" style="font-size: 11px;">Last updated: --</small>
+                            <small id="modelInputsStatus" class="text-muted d-block" style="font-size: 11px;"></small>
                         </div>
                     </div>
                     <div class="col-md-6">
@@ -1114,6 +1115,7 @@
                 if (result.success) {
                     statusEl.textContent = 'File replaced successfully!';
                     statusEl.style.color = '#66bb6a';
+                    updateFileTimestamp('model-inputs', 'modelInputsTimestamp', 'File not found');
                     setTimeout(() => { statusEl.textContent = ''; }, 3000);
                 } else {
                     statusEl.textContent = 'Error: ' + (result.error || 'Upload failed');
@@ -1127,40 +1129,50 @@
             e.target.value = '';
         });
         
-        // Update generated inputs timestamp
-        function updateGeneratedInputsTimestamp() {
-            fetch('/api/file-info/generated-inputs')
+        // Format timestamp with relative time
+        function formatTimestamp(mtime) {
+            const now = Date.now();
+            const diffSec = Math.floor((now - mtime) / 1000);
+            let ago;
+            if (diffSec < 60) ago = diffSec + ' seconds ago';
+            else if (diffSec < 3600) ago = Math.floor(diffSec / 60) + ' minutes ago';
+            else if (diffSec < 86400) ago = Math.floor(diffSec / 3600) + ' hours ago';
+            else ago = Math.floor(diffSec / 86400) + ' days ago';
+            const localDate = new Date(mtime);
+            const localTimeStr = localDate.getFullYear() + '-' + 
+                String(localDate.getMonth() + 1).padStart(2, '0') + '-' + 
+                String(localDate.getDate()).padStart(2, '0') + ' ' + 
+                String(localDate.getHours()).padStart(2, '0') + ':' + 
+                String(localDate.getMinutes()).padStart(2, '0') + ':' + 
+                String(localDate.getSeconds()).padStart(2, '0');
+            return 'Last updated: ' + localTimeStr + ' (' + ago + ')';
+        }
+        
+        // Update file timestamps
+        function updateFileTimestamp(apiPath, elementId, notFoundMsg) {
+            fetch('/api/file-info/' + apiPath)
                 .then(r => r.json())
                 .then(data => {
-                    const el = document.getElementById('generatedInputsTimestamp');
+                    const el = document.getElementById(elementId);
                     if (data.exists) {
-                        const mtime = data.mtime * 1000;
-                        const now = Date.now();
-                        const diffSec = Math.floor((now - mtime) / 1000);
-                        let ago;
-                        if (diffSec < 60) ago = diffSec + ' seconds ago';
-                        else if (diffSec < 3600) ago = Math.floor(diffSec / 60) + ' minutes ago';
-                        else if (diffSec < 86400) ago = Math.floor(diffSec / 3600) + ' hours ago';
-                        else ago = Math.floor(diffSec / 86400) + ' days ago';
-                        const localDate = new Date(mtime);
-                        const localTimeStr = localDate.getFullYear() + '-' + 
-                            String(localDate.getMonth() + 1).padStart(2, '0') + '-' + 
-                            String(localDate.getDate()).padStart(2, '0') + ' ' + 
-                            String(localDate.getHours()).padStart(2, '0') + ':' + 
-                            String(localDate.getMinutes()).padStart(2, '0') + ':' + 
-                            String(localDate.getSeconds()).padStart(2, '0');
-                        el.textContent = 'Last updated: ' + localTimeStr + ' (' + ago + ')';
+                        el.textContent = formatTimestamp(data.mtime * 1000);
                     } else {
-                        el.textContent = 'File not generated yet';
+                        el.textContent = notFoundMsg || 'File not found';
                     }
                 })
                 .catch(() => {
-                    document.getElementById('generatedInputsTimestamp').textContent = 'Last updated: --';
+                    document.getElementById(elementId).textContent = 'Last updated: --';
                 });
         }
         
-        // Load timestamp on page load
-        updateGeneratedInputsTimestamp();
+        // Load timestamps on page load
+        updateFileTimestamp('model-inputs', 'modelInputsTimestamp', 'File not found');
+        updateFileTimestamp('generated-inputs', 'generatedInputsTimestamp', 'File not generated yet');
+        
+        // Alias for backward compatibility
+        function updateGeneratedInputsTimestamp() {
+            updateFileTimestamp('generated-inputs', 'generatedInputsTimestamp', 'File not generated yet');
+        }
         
         // Run Data Prep button
         document.getElementById('runDataPrepBtn').addEventListener('click', async function() {
