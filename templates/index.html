@@ -345,18 +345,19 @@
                             <span id="runDataPrepSpinner" class="spinner-border spinner-border-sm ms-2 d-none"></span>
                         </button>
                     </div>
-                    <div class="col-md-4">
-                        <div class="d-flex align-items-center gap-4">
-                            <div class="form-check form-switch">
+                    <div class="col-md-4 d-flex align-items-center">
+                        <div class="d-flex align-items-center gap-3">
+                            <div class="form-check form-switch mb-0">
                                 <input class="form-check-input" type="checkbox" role="switch" id="prepareInputsToggle" style="width: 50px; height: 26px;">
-                                <label class="form-check-label ms-2" for="prepareInputsToggle" style="color: #a0aec0; font-size: 14px;">Mode</label>
                             </div>
                             <span class="text-muted" style="font-size: 14px;">Output: <span id="dataPrepOutputLabel" style="color: #4fc3f7;">Generate Data</span></span>
                         </div>
                     </div>
-                    <div class="col-md-4 text-end">
-                        <a href="/network-map" target="_blank" class="btn btn-success-custom">View Network Map</a>
-                        <small id="networkMapTimestamp" class="text-muted d-block mt-2" style="font-size: 11px;">Last updated: --</small>
+                    <div class="col-md-4 d-flex align-items-center justify-content-end">
+                        <div class="text-end">
+                            <a href="/network-map" target="_blank" class="btn btn-success-custom">View Network Map</a>
+                            <small id="networkMapTimestamp" class="text-muted d-block mt-2" style="font-size: 11px;">Last updated: --</small>
+                        </div>
                     </div>
                 </div>
                 <div id="dataPrepOutputCard" class="mt-3" style="display: none;">
