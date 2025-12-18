@@ -517,6 +517,31 @@
                             </div>
                         </div>
                     </div>
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseBerths">
+                                Ship Berths
+                            </button>
+                        </h2>
+                        <div id="collapseBerths" class="accordion-collapse collapse" data-bs-parent="#paramAccordion">
+                            <div class="accordion-body">
+                                <div class="table-container">
+                                    <table class="param-table" id="berthsTable">
+                                        <thead>
+                                            <tr>
+                                                <th>Location</th>
+                                                <th># Berths</th>
+                                                <th>Prob Occupied %</th>
+                                                <th>Pilot In (hrs)</th>
+                                                <th>Pilot Out (hrs)</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="berthsTableBody"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -707,6 +732,23 @@
             });
         }
         
+        // Populate Ship Berths table
+        function populateBerthsTable() {
+            const tbody = document.getElementById('berthsTableBody');
+            tbody.innerHTML = '';
+            (modelParams.ship_berths || []).forEach((row, idx) => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><input type="text" value="${row['Location'] || ''}" readonly></td>
+                    <td>${editableInput('# Berths', idx, row['# Berths'] || 0, 'ship_berths')}</td>
+                    <td>${editableInput('Probability Berth Occupied %', idx, row['Probability Berth Occupied %'] || 0, 'ship_berths', '0.1')}</td>
+                    <td>${editableInput('Pilot In (Hours)', idx, row['Pilot In (Hours)'] || 0, 'ship_berths', '0.1')}</td>
+                    <td>${editableInput('Pilot Out (Hours)', idx, row['Pilot Out (Hours)'] || 0, 'ship_berths', '0.1')}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+        
         // Update model params when inputs change
         document.addEventListener('input', function(e) {
             if (e.target.matches('input.editable[data-field]')) {
@@ -717,6 +759,8 @@
                     modelParams.store[idx][field] = parseFloat(e.target.value) || 0;
                 } else if (table === 'move_ship') {
                     modelParams.move_ship[idx][field] = parseFloat(e.target.value) || 0;
+                } else if (table === 'ship_berths') {
+                    modelParams.ship_berths[idx][field] = parseFloat(e.target.value) || 0;
                 }
                 updateChangedState(e.target);
             }
@@ -745,6 +789,7 @@
         // Initialize tables
         populateStoreTable();
         populateShipTable();
+        populateBerthsTable();
 
         // Get simulation settings
         function getSimSettings() {

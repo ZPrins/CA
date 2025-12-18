@@ -33,9 +33,10 @@ INPUT_FILE = 'generated_model_inputs.xlsx'
 
 
 def load_model_params():
-    """Load Store and Move_Ship parameters from Excel for UI editing."""
+    """Load Store, Move_Ship, and SHIP_BERTHS parameters from Excel for UI editing."""
     store_data = []
     move_ship_data = []
+    ship_berths_data = []
     
     if os.path.exists(INPUT_FILE):
         try:
@@ -46,7 +47,6 @@ def load_model_params():
                 if sheet_name.lower() == 'store':
                     df = xls[sheet_name].dropna(how='all')
                     df.columns = [str(c).strip() for c in df.columns]
-                    # Filter out unnamed columns and convert NaN to empty string
                     df = df[[c for c in df.columns if not c.startswith('Unnamed')]]
                     store_data = df.fillna('').to_dict('records')
                     break
@@ -56,15 +56,23 @@ def load_model_params():
                 if sheet_name.lower() == 'move_ship':
                     df = xls[sheet_name].dropna(how='all')
                     df.columns = [str(c).strip() for c in df.columns]
-                    # Filter out unnamed columns and convert NaN to empty string
                     df = df[[c for c in df.columns if not c.startswith('Unnamed')]]
                     move_ship_data = df.fillna('').to_dict('records')
+                    break
+            
+            # Load SHIP_BERTHS sheet
+            for sheet_name in xls.keys():
+                if sheet_name.lower() == 'ship_berths':
+                    df = xls[sheet_name].dropna(how='all')
+                    df.columns = [str(c).strip() for c in df.columns]
+                    df = df[[c for c in df.columns if not c.startswith('Unnamed')]]
+                    ship_berths_data = df.fillna('').to_dict('records')
                     break
                     
         except Exception as e:
             print(f"Error loading model params: {e}")
     
-    return {'store': store_data, 'move_ship': move_ship_data}
+    return {'store': store_data, 'move_ship': move_ship_data, 'ship_berths': ship_berths_data}
 
 
 @app.route('/')
