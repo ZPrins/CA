@@ -27,6 +27,7 @@ from sim_run_report_csv import write_csv_outputs
 from sim_run_report_plot import plot_results
 from sim_run_report_codegen import generate_standalone
 from sim_run_report_data import build_report_frames
+from sim_run_report_variability import collect_variability_metadata, generate_variability_report
 
 TEMP_OVERRIDES_FILE = 'temp_model_overrides.json'
 
@@ -306,6 +307,13 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
         generate_standalone(settings, stores_cfg, makes, moves, demands, out_dir)
         model_elapsed = int(time.time() - model_start)
         log(f"Standalone model generated ({model_elapsed}s)")
+        
+        # Generate variability report
+        var_start = time.time()
+        variability = collect_variability_metadata(stores_cfg, makes, settings)
+        generate_variability_report(variability, out_dir)
+        var_elapsed = int(time.time() - var_start)
+        log(f"Variability distributions report generated ({var_elapsed}s)")
 
     # --- MOVEMENT SUMMARY ---
     df_log = pd.DataFrame(sim.action_log) if sim.action_log else pd.DataFrame()

@@ -72,8 +72,10 @@ def _generate_lognormal_pdf(mean_hours: float, sigma: float, x_range: np.ndarray
     return pdf
 
 
-def _generate_lognormal_samples(mean_hours: float, sigma: float, n_samples: int = 1000) -> np.ndarray:
+def _generate_lognormal_samples(mean_hours: float, sigma: float, n_samples: int = 1000, random_seed: int = None) -> np.ndarray:
     """Generate sample values from lognormal distribution."""
+    if random_seed is not None:
+        np.random.seed(random_seed)
     mu = math.log(mean_hours) - (sigma ** 2) / 2
     samples = np.random.lognormal(mu, sigma, n_samples)
     return np.maximum(1, np.round(samples))
@@ -217,8 +219,9 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
     x_vals = np.linspace(0.1, 20, 200)
     y_vals = _generate_lognormal_pdf(mean_hours, sigma, x_vals)
     
-    # Generate sample histogram
-    samples = _generate_lognormal_samples(mean_hours, sigma, 5000)
+    # Generate sample histogram (use random seed for reproducibility if provided)
+    random_seed = variability['settings'].get('random_seed')
+    samples = _generate_lognormal_samples(mean_hours, sigma, 5000, random_seed)
     
     fig_breakdown = go.Figure()
     

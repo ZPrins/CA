@@ -1115,7 +1115,7 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
         </div>
     </div>
     <div class="content">
-        <div class="summary"><p><strong>Generated:</strong> {run_time_local} <span style="color:#78909c">(run time {display_runtime}s)</span></p><p><strong>Total Unmet Demand:</strong> <span style="color: {'red' if total_unmet > 0 else 'green'}">{total_unmet:,.0f} tons</span></p><p><strong>Status:</strong> Complete</p></div>
+        <div class="summary"><p><strong>Generated:</strong> {run_time_local} <span style="color:#78909c">(run time {display_runtime}s)</span></p><p><strong>Total Unmet Demand:</strong> <span style="color: {'red' if total_unmet > 0 else 'green'}">{total_unmet:,.0f} tons</span></p><p><strong>Status:</strong> Complete &nbsp;|&nbsp; <a href="sim_outputs_variability.html" style="color:#4fc3f7; text-decoration:none;">View Variability Distributions &rarr;</a></p></div>
 """
 
     # Pre-serialize all figures using orjson (5-8x faster than default)
