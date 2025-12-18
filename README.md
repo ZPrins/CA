@@ -141,5 +141,31 @@ If either condition is not met, the process waits and retries. This avoids block
 
 ---
 
+## Docker
+This project is packaged for Docker. You can build and run the entire application (including the web UI) in a container.
+
+### 1. Build the Docker Image
+You can use the provided scripts to (re)build the Docker image after making changes to the project.
+
+**Windows (PowerShell):**
+```powershell
+.\build_docker.ps1
+```
+
+**macOS/Linux/Git Bash:**
+```bash
+chmod +x build_docker.sh
+./build_docker.sh
+```
+
+### 2. Run the Docker Container
+Once built, run the container:
+```bash
+docker run -p 5000:5000 simulation-app
+```
+The application will be available at `http://localhost:5000`.
+
+---
+
 ## License / attribution
 Internal model for Cement Australia logistics. Built with SimPy and Plotly. See `requirements.txt` for third‑party packages.
