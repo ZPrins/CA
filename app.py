@@ -288,6 +288,8 @@ def stream_multi_simulation_route():
 
 
 VIZ_CONFIG_FILE = 'supply_chain_viz_config.py'
+MODEL_INPUTS_FILE = 'Model Inputs.xlsx'
+GENERATED_INPUTS_FILE = 'generated_model_inputs.xlsx'
 
 
 def get_prepare_inputs_value():
@@ -341,6 +343,59 @@ def update_viz_config():
         return jsonify({'success': False, 'error': 'No valid setting provided'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/download/model-inputs')
+def download_model_inputs():
+    """Download Model Inputs.xlsx file."""
+    if os.path.exists(MODEL_INPUTS_FILE):
+        return send_from_directory('.', MODEL_INPUTS_FILE, as_attachment=True)
+    return "File not found", 404
+
+
+@app.route('/download/generated-inputs')
+def download_generated_inputs():
+    """Download generated_model_inputs.xlsx file."""
+    if os.path.exists(GENERATED_INPUTS_FILE):
+        return send_from_directory('.', GENERATED_INPUTS_FILE, as_attachment=True)
+    return "File not found", 404
+
+
+@app.route('/upload/model-inputs', methods=['POST'])
+def upload_model_inputs():
+    """Upload and replace Model Inputs.xlsx file."""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'success': False, 'error': 'No file provided'})
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'success': False, 'error': 'No file selected'})
+        
+        file.save(MODEL_INPUTS_FILE)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/file-info/<filename>')
+def get_file_info(filename):
+    """Get file modification time."""
+    file_map = {
+        'model-inputs': MODEL_INPUTS_FILE,
+        'generated-inputs': GENERATED_INPUTS_FILE
+    }
+    
+    filepath = file_map.get(filename)
+    if not filepath or not os.path.exists(filepath):
+        return jsonify({'exists': False})
+    
+    mtime = os.path.getmtime(filepath)
+    return jsonify({
+        'exists': True,
+        'mtime': mtime,
+        'mtime_iso': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(mtime))
+    })
 
 
 @app.route('/stream-data-prep')
