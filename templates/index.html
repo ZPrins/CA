@@ -1251,8 +1251,12 @@
                     
                     if (result.success) {
                         outputLog.textContent += '\nData prep completed successfully!\n';
-                        updateFileTimestamp('generated-inputs', 'generatedInputsTimestamp', 'File not generated yet', true);
-                        updateFileTimestamp('network-map', 'networkMapTimestamp', 'Not generated yet', true);
+                        const isPrepareInputs = document.getElementById('prepareInputsToggle').checked;
+                        if (isPrepareInputs) {
+                            updateFileTimestamp('generated-inputs', 'generatedInputsTimestamp', 'File not generated yet', true);
+                        } else {
+                            updateFileTimestamp('network-map', 'networkMapTimestamp', 'Not generated yet', true);
+                        }
                     } else {
                         outputLog.textContent += '\nData prep failed with exit code: ' + result.exit_code + '\n';
                     }
