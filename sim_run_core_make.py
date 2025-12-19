@@ -296,6 +296,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
             partial_reason_input = False
             taken = 0.0
             needed = qty * cand.consumption_pct
+            from_store_level = None  # Capture level IMMEDIATELY after get
             if from_store_key:
                 # Re-check level IMMEDIATELY before get to avoid race condition blocking
                 actual_available = stores[from_store_key].level
@@ -303,9 +304,12 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                 if taken > EPS and actual_available >= taken:
                     # Safe to get - store has enough material
                     yield stores[from_store_key].get(taken)
+                    # Capture level IMMEDIATELY after get (before timeout allows other processes)
+                    from_store_level = stores[from_store_key].level
                 else:
                     # Not enough material - skip get, set taken to 0
                     taken = 0.0
+                    from_store_level = stores[from_store_key].level
                 # Scale output if input was short
                 if needed > EPS and taken < needed - EPS:
                     if taken > EPS:
@@ -333,6 +337,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
             # Use SimPy event pattern to avoid indefinite blocking:
             # If put() doesn't trigger immediately, cancel it and rollback input
             put_succeeded = False
+            to_store_level = None  # Capture level IMMEDIATELY after put
             if allowed > EPS:
                 current_level = stores[to_store_key].level
                 actual_space = cap - current_level
@@ -345,24 +350,47 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                             yield put_event
                             put_succeeded = True
                             allowed = safe_amount
+                            # Capture level IMMEDIATELY after put
+                            to_store_level = stores[to_store_key].level
                         else:
                             # Event would block - cancel it and rollback input
                             put_event.cancel()
                             # Rollback: return consumed input to store (non-blocking)
+                            rollback_failed = False
                             if taken > EPS and from_store_key:
                                 rollback_event = stores[from_store_key].put(taken)
                                 if rollback_event.triggered:
                                     yield rollback_event
+                                    # Update from_store_level after rollback
+                                    from_store_level = stores[from_store_key].level
                                 else:
-                                    # Rollback blocked (shouldn't happen) - cancel it
+                                    # Rollback blocked - cancel it and log the lost material
                                     rollback_event.cancel()
+                                    rollback_failed = True
+                                    # Log ConsumeMAT for the lost material (consumed but not returned)
+                                    from_store_level = stores[from_store_key].level
+                                    log_func(
+                                        process="Make",
+                                        event="ConsumeMAT",
+                                        location=unit.location,
+                                        equipment=unit.equipment,
+                                        product=cand.product,
+                                        qty=-taken,  # Material was consumed and lost
+                                        store_key=from_store_key,
+                                        level=from_store_level,
+                                        route_id=None,
+                                        override_day=production_start_day,
+                                        override_time_h=log_time
+                                    )
                             allowed = 0.0
+                            to_store_level = stores[to_store_key].level
                 else:
                     allowed = 0.0
-            
-            # Get final levels for logging
-            from_store_level = stores[from_store_key].level if from_store_key else None
-            to_store_level = stores[to_store_key].level
+                    to_store_level = stores[to_store_key].level
+            else:
+                # No space available - set allowed to 0 so we log ProduceBlocked
+                allowed = 0.0
+                to_store_level = stores[to_store_key].level
 
             # 5. Decide event type and qty to log
             if allowed <= 1e-9:
