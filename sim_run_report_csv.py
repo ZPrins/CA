@@ -21,7 +21,7 @@ def write_csv_outputs(sim, out_dir: Path, report_data: dict = None):
     if report_data and "df_log" in report_data and not report_data["df_log"].empty:
         df_log = report_data["df_log"].copy()
         cols = [
-            "day", "time_h",
+            "day", "time_h", "time_d",
             "process", "event",
             "location", "equipment", "product", "qty",
             "from_store", "from_level",
@@ -33,14 +33,16 @@ def write_csv_outputs(sim, out_dir: Path, report_data: dict = None):
     elif sim.action_log:
         df_log = pd.DataFrame(sim.action_log)
         cols = [
-            "day", "time_h",
+            "day", "time_h", "time_d",
             "process", "event",
             "location", "equipment", "product", "qty",
             "from_store", "from_level",
             "to_store", "to_level",
             "route_id", "vessel_id", "ship_state"
         ]
-        df_log["day"] = (pd.to_numeric(df_log["time_h"], errors='coerce') / 24).astype(int) + 1
+        df_log["time_h"] = pd.to_numeric(df_log["time_h"], errors='coerce')
+        df_log["time_d"] = pd.to_numeric(df_log.get("time_d", df_log["time_h"] // 24), errors='coerce').fillna(0).astype(int)
+        df_log["day"] = df_log["time_d"].astype(int) + 1
         final_cols = [c for c in cols if c in df_log.columns]
         df_log[final_cols].to_csv(out_dir / "sim_outputs_sim_log.csv", index=False)
 

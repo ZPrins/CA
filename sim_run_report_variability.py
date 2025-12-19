@@ -13,9 +13,8 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
-from sim_run_types import StoreConfig, MakeUnit
+from sim_run_types import StoreConfig
 
 
 def collect_variability_data(sim, store_configs: list, makes: list, settings: dict) -> dict:
@@ -85,7 +84,7 @@ def collect_variability_data(sim, store_configs: list, makes: list, settings: di
         breakdown_rows = df_log[(df_log['process'] == 'Downtime') & (df_log['event'] == 'Breakdown')]
         if not breakdown_rows.empty:
             for equip in breakdown_rows['equipment'].unique():
-                equip_rows = breakdown_rows[breakdown_rows['equipment'] == equip].sort_values('time_h')
+                equip_rows = breakdown_rows[breakdown_rows['equipment'] == equip].sort_values(by='time_h')
                 times = equip_rows['time_h'].tolist()
                 
                 if equip not in variability['breakdown_by_equipment']:
@@ -108,13 +107,13 @@ def collect_variability_data(sim, store_configs: list, makes: list, settings: di
     # Parse ship state changes to extract berth waiting times
     # Track time spent in WAITING_FOR_BERTH state per vessel
     if 'ship_state' in df_log.columns and 'vessel_id' in df_log.columns:
-        ship_rows = df_log[df_log['process'] == 'ShipState'].sort_values(['vessel_id', 'time_h'])
-        
+        ship_rows = df_log[df_log['process'] == 'ShipState'].sort_values(by=['vessel_id', 'time_h'])
+
         if not ship_rows.empty:
             for vessel_id in ship_rows['vessel_id'].dropna().unique():
-                vessel_rows = ship_rows[ship_rows['vessel_id'] == vessel_id].sort_values('time_h').reset_index(drop=True)
-                rows_list = vessel_rows.to_dict('records')
-                
+                vessel_rows = ship_rows[ship_rows['vessel_id'] == vessel_id].sort_values(by='time_h').reset_index(drop=True)
+                rows_list = vessel_rows.to_dict(orient='records')
+
                 for i, row in enumerate(rows_list):
                     state = str(row.get('ship_state', '')).upper()
                     
@@ -219,7 +218,7 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
             width: 100% !important;
         }}
         .chart-card .js-plotly-plot {{
-            min-height: 280px;
+            width: 100% !important; overflow: hidden !important;
         }}
         .plot-title {{
             font-weight: 600;
@@ -258,31 +257,17 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
         }}
         .store-grid {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
             gap: 24px;
             overflow: visible;
         }}
-        .js-plotly-plot {{ width: 100% !important; overflow: visible !important; }}
-        .js-plotly-plot .main-svg {{ overflow: visible !important; }}
+        .js-plotly-plot {{ width: 100% !important; overflow: hidden !important; }}
+        /* Removed main-svg overflow override to avoid bleed into adjacent cells */
+        /* .js-plotly-plot .main-svg {{ overflow: visible !important; }} */
     </style>
 </head>
 <body>
-    <script>
-        // Force Plotly to recalculate chart dimensions immediately
-        document.addEventListener('DOMContentLoaded', function() {{
-            window.dispatchEvent(new Event('resize'));
-            requestAnimationFrame(function() {{
-                window.dispatchEvent(new Event('resize'));
-                // Also directly resize all Plotly charts
-                var plots = document.querySelectorAll('.js-plotly-plot');
-                plots.forEach(function(plot) {{
-                    if (window.Plotly && plot) {{
-                        Plotly.Plots.resize(plot);
-                    }}
-                }});
-            }});
-        }});
-    </script>
+    <!-- Removed forced Plotly resize script; charts will use responsive config -->
     <div class="container">
         <a href="/outputs/sim_outputs_plots_all.html" class="back-link">&larr; Back to Interactive Report</a>
         <h1>Variability Analysis</h1>
@@ -305,6 +290,7 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
                 Each chart shows the <strong>probability density function (PDF)</strong> of breakdown durations 
                 for a specific piece of equipment. The shape reveals whether breakdowns tend to be short, long, 
                 or widely variable for each unit.
+                Note: <em>Density heights</em> integrate to 1 over bin widths; summing bar heights directly depends on bin width.
             </div>
             <div class="stats-grid">
                 <div class="stat-card">
@@ -338,53 +324,67 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
             fig = go.Figure()
             
             if n_events >= 2:
-                # Use np.histogram with density=True for proper PDF (area = 1)
+                # Use true density for PDF and add CDF overlay
                 n_bins = min(15, max(5, n_events // 3))
-                counts, bin_edges = np.histogram(durations, bins=n_bins, density=True)
+                density_vals, bin_edges = np.histogram(durations, bins=n_bins, density=True)
                 bin_centers = ((bin_edges[:-1] + bin_edges[1:]) / 2).tolist()
                 bin_width = float(bin_edges[1] - bin_edges[0])
-                counts_list = counts.tolist()
-                
+
                 fig.add_trace(go.Bar(
                     x=bin_centers,
-                    y=counts_list,
+                    y=density_vals.tolist(),
                     width=bin_width * 0.85,
-                    marker_color=color,
+                    marker=dict(color=color),
                     opacity=0.85,
-                    name='Density'
+                    name='PDF (density)'
+                ))
+
+                # CDF overlay (line)
+                sorted_vals = np.sort(np.array(durations, dtype=float))
+                cdf_y = np.arange(1, n_events + 1) / n_events
+                fig.add_trace(go.Scatter(
+                    x=sorted_vals.tolist(),
+                    y=cdf_y.tolist(),
+                    mode='lines',
+                    line=dict(color='#0ea5e9', width=2),
+                    name='CDF',
+                    yaxis='y2'
                 ))
                 
-                # Add vertical line for mean
+                # Mean line
                 fig.add_vline(x=eq_avg, line_dash="dash", line_color="#1e293b",
                              annotation_text=f"Mean: {eq_avg:.1f}h", annotation_position="top right")
             else:
                 # Single event - show as marker with annotation
                 fig.add_trace(go.Scatter(
                     x=[durations[0]],
-                    y=[0.5],
+                    y=[1.0],
                     mode='markers+text',
                     marker=dict(color=color, size=15, symbol='diamond'),
                     text=[f'{durations[0]:.1f}h'],
                     textposition='top center',
                     name='Single Event'
                 ))
-                fig.add_annotation(x=durations[0], y=0.25, text="(1 event)", showarrow=False, font=dict(size=9, color="#64748b"))
-            
+                fig.add_annotation(x=durations[0], y=0.5, text="(1 event)", showarrow=False, font=dict(size=9, color="#64748b"))
+
             fig.update_layout(
                 xaxis_title='Duration (hours)',
-                yaxis_title='Probability Density',
+                yaxis_title='Density',
                 template='plotly_white',
-                height=280,
-                margin=dict(l=65, r=25, t=30, b=65),
+                height=320,
+                margin=dict(l=70, r=30, t=30, b=110),
                 font=dict(size=11),
-                showlegend=False,
-                bargap=0.1
+                showlegend=True,
+                legend=dict(orientation='h', x=0.5, y=-0.28, xanchor='center', yanchor='top', traceorder='normal'),
+                bargap=0.1,
+                yaxis2=dict(title='Cumulative Probability', overlaying='y', side='right', range=[0,1], showgrid=False),
+                autosize=True
             )
             fig.update_xaxes(autorange=True)
             fig.update_yaxes(autorange=True)
             
-            chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
-            
+            chart_html = fig.to_html(full_html=False, include_plotlyjs=False, config={'responsive': True})
+
             html_parts.append(f'''
                 <div class="chart-card">
                     <div class="plot-title">{equip} <span style="color:#64748b;font-weight:normal">({n_events} events, avg {eq_avg:.1f}h, max {eq_max:.0f}h)</span></div>
@@ -427,6 +427,7 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
             <div class="section-desc">
                 Each chart shows the <strong>probability density function (PDF)</strong> of waiting times
                 at a specific berth/port. Longer wait times indicate port congestion or capacity constraints.
+                Note: <em>Density heights</em> integrate to 1 over bin widths; summing bar heights directly depends on bin width.
             </div>
             <div class="stats-grid">
                 <div class="stat-card">
@@ -460,20 +461,31 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
             fig = go.Figure()
             
             if n_events >= 2:
-                # Use np.histogram with density=True for proper PDF (area = 1)
+                # Use true density for PDF and add CDF overlay
                 n_bins = min(15, max(5, n_events // 3))
-                counts, bin_edges = np.histogram(wait_times, bins=n_bins, density=True)
-                bin_centers = ((bin_edges[:-1] + bin_edges[1:]) / 2).tolist()
+                density_vals, bin_edges = np.histogram(wait_times, bins=n_bins, density=True)
+                bin_centers = ((bin_edges[:-1] + bin_edges[1]) / 2).tolist()
                 bin_width = float(bin_edges[1] - bin_edges[0])
-                counts_list = counts.tolist()
-                
+
                 fig.add_trace(go.Bar(
                     x=bin_centers,
-                    y=counts_list,
+                    y=density_vals.tolist(),
                     width=bin_width * 0.85,
-                    marker_color=color,
+                    marker=dict(color=color),
                     opacity=0.85,
-                    name='Density'
+                    name='PDF (density)'
+                ))
+
+                # CDF overlay (line)
+                sorted_vals = np.sort(np.array(wait_times, dtype=float))
+                cdf_y = np.arange(1, n_events + 1) / n_events
+                fig.add_trace(go.Scatter(
+                    x=sorted_vals.tolist(),
+                    y=cdf_y.tolist(),
+                    mode='lines',
+                    line=dict(color='#0ea5e9', width=2),
+                    name='CDF',
+                    yaxis='y2'
                 ))
                 
                 fig.add_vline(x=berth_avg, line_dash="dash", line_color="#1e293b",
@@ -482,30 +494,33 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
                 # Single event - show as marker with annotation
                 fig.add_trace(go.Scatter(
                     x=[wait_times[0]],
-                    y=[0.5],
+                    y=[1.0],
                     mode='markers+text',
                     marker=dict(color=color, size=15, symbol='diamond'),
                     text=[f'{wait_times[0]:.1f}h'],
                     textposition='top center',
                     name='Single Event'
                 ))
-                fig.add_annotation(x=wait_times[0], y=0.25, text="(1 event)", showarrow=False, font=dict(size=9, color="#64748b"))
-            
+                fig.add_annotation(x=wait_times[0], y=0.5, text="(1 event)", showarrow=False, font=dict(size=9, color="#64748b"))
+
             fig.update_layout(
                 xaxis_title='Wait Time (hours)',
-                yaxis_title='Probability Density',
+                yaxis_title='Density',
                 template='plotly_white',
-                height=280,
-                margin=dict(l=65, r=25, t=30, b=65),
+                height=320,
+                margin=dict(l=70, r=30, t=30, b=110),
                 font=dict(size=11),
-                showlegend=False,
-                bargap=0.1
+                showlegend=True,
+                legend=dict(orientation='h', x=0.5, y=-0.28, xanchor='center', yanchor='top', traceorder='normal'),
+                bargap=0.1,
+                yaxis2=dict(title='Cumulative Probability', overlaying='y', side='right', range=[0,1], showgrid=False),
+                autosize=True
             )
             fig.update_xaxes(autorange=True)
             fig.update_yaxes(autorange=True)
             
-            chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
-            
+            chart_html = fig.to_html(full_html=False, include_plotlyjs=False, config={'responsive': True})
+
             html_parts.append(f'''
                 <div class="chart-card">
                     <div class="plot-title">{berth} <span style="color:#64748b;font-weight:normal">({n_events} events, avg {berth_avg:.1f}h, max {berth_max:.1f}h)</span></div>
@@ -568,7 +583,32 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
                 mode='lines'
             ))
             
-            # Mark actual value
+            # Uniform CDF overlay (secondary axis)
+            if range_width > 0:
+                x_cdf = [low, high]
+                y_cdf = [0.0, 1.0]
+                fig.add_trace(go.Scatter(
+                    x=x_cdf,
+                    y=y_cdf,
+                    mode='lines',
+                    line=dict(color='#0ea5e9', width=2, dash='solid'),
+                    name='Uniform CDF',
+                    yaxis='y2'
+                ))
+
+                # Optional: actual value on CDF
+                cdf_actual = (actual - low) / range_width if (low <= actual <= high) else None
+                if cdf_actual is not None:
+                    fig.add_trace(go.Scatter(
+                        x=[actual],
+                        y=[cdf_actual],
+                        mode='markers',
+                        marker=dict(color='#0ea5e9', size=10, symbol='circle-open'),
+                        name='Actual on CDF',
+                        yaxis='y2'
+                    ))
+
+            # Mark actual value on PDF region
             fig.add_trace(go.Scatter(
                 x=[actual],
                 y=[pdf_height / 2],
@@ -577,25 +617,27 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
                 name=f'Actual: {actual:.1f} kT'
             ))
             
-            # Add capacity reference line
-            if capacity <= high * 1.5:
-                fig.add_vline(x=capacity, line_dash="dot", line_color="#64748b",
-                             annotation_text="Capacity", annotation_position="top")
-            
+            # Add capacity reference line (always show for consistency)
+            fig.add_vline(x=capacity, line_dash="dot", line_color="#64748b",
+                         annotation_text="Capacity", annotation_position="top")
+
             fig.update_layout(
                 xaxis_title='Opening Stock (kT)',
                 yaxis_title='Probability Density',
                 template='plotly_white',
-                height=280,
-                margin=dict(l=65, r=25, t=30, b=65),
+                height=320,
+                margin=dict(l=70, r=30, t=30, b=110),
                 font=dict(size=11),
-                showlegend=False
+                showlegend=True,
+                legend=dict(orientation='h', x=0.5, y=-0.28, xanchor='center', yanchor='top', traceorder='normal'),
+                yaxis2=dict(title='Cumulative Probability', overlaying='y', side='right', range=[0,1], showgrid=False),
+                autosize=True
             )
             fig.update_xaxes(autorange=True)
             fig.update_yaxes(autorange=True)
             
-            chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
-            
+            chart_html = fig.to_html(full_html=False, include_plotlyjs=False, config={'responsive': True})
+
             html_parts.append(f'''
                 <div class="chart-card">
                     <div class="plot-title">{store['store_key']} <span style="color:#64748b;font-weight:normal">(Range: {low:.1f} - {high:.1f} kT, Actual: {actual:.1f} kT)</span></div>
@@ -625,6 +667,21 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
     html_parts.append('''
     </div>
 </body>
+<script>
+// Ensure charts size correctly on first render without a page reload
+document.addEventListener('DOMContentLoaded', function() {
+  try {
+    var plots = document.querySelectorAll('.js-plotly-plot');
+    plots.forEach(function(plot) {
+      if (window.Plotly && plot) {
+        Plotly.Plots.resize(plot);
+      }
+    });
+  } catch (e) {
+    // no-op
+  }
+});
+</script>
 </html>
 ''')
     

@@ -31,9 +31,11 @@ def build_report_frames(sim, makes=None):
     # 2. Action Log DataFrame
     if sim.action_log:
         df_log = pd.DataFrame(sim.action_log)
-        df_log["day"] = (pd.to_numeric(df_log["time_h"], errors="coerce") / 24.0).astype(int) + 1
+        df_log["time_h"] = pd.to_numeric(df_log["time_h"], errors="coerce")
+        df_log["time_d"] = pd.to_numeric(df_log.get("time_d", df_log["time_h"] // 24), errors="coerce").fillna(0).astype(int)
+        df_log["day"] = df_log["time_d"].astype(int) + 1
         if "qty_t" not in df_log.columns and "qty" in df_log.columns:
-            df_log["qty_t"] = pd.to_numeric(df_log["qty"], errors="coerce").fillna(0)
+            df_log["qty_t"] = pd.to_numeric(df_log["qty"], errors="coerce").fillna(0.0).astype(float)
         result["df_log"] = df_log
     else:
         result["df_log"] = pd.DataFrame()
@@ -52,7 +54,7 @@ def build_report_frames(sim, makes=None):
             else:
                 subset["store_key"] = subset.get("from_store")
             if "qty_t" not in subset.columns and "qty" in subset.columns:
-                subset["qty_t"] = pd.to_numeric(subset["qty"], errors="coerce").fillna(0)
+                subset["qty_t"] = pd.to_numeric(subset["qty"], errors="coerce").fillna(0.0).astype(float)
             subset = subset.dropna(subset=["store_key"])
             if subset.empty:
                 return
@@ -72,9 +74,10 @@ def build_report_frames(sim, makes=None):
         aggregate_flow((df_log["event"].isin(["Unload", "ShipUnload"])) & (df_log["equipment"] == "Ship"), "Ship", "in")
         aggregate_flow((df_log["event"] == "Load") & (df_log["equipment"] == "Train"), "Train", "out")
         aggregate_flow((df_log["event"].isin(["Load", "ShipLoad"])) & (df_log["equipment"] == "Ship"), "Ship", "out")
-        aggregate_flow((df_log["event"] == "Produce"), "Production", "in")
-        aggregate_flow((df_log["event"] == "Produce"), "Consumption", "out")
-    
+        # Include partial production as production/consumption
+        aggregate_flow((df_log["event"].isin(["Produce", "ProducePartial"]) ), "Production", "in")
+        aggregate_flow((df_log["event"].isin(["Produce", "ProducePartial"]) ), "Consumption", "out")
+
     result["flows"] = flows
     
     # 4. Downtime aggregation
@@ -100,7 +103,7 @@ def build_report_frames(sim, makes=None):
     
     if not result["df_log"].empty:
         df_log = result["df_log"]
-        production_events = df_log[(df_log["process"] == "Make") & (df_log["event"] == "Produce")]
+        production_events = df_log[(df_log["process"] == "Make") & (df_log["event"].isin(["Produce", "ProducePartial"]))]
         if not production_events.empty:
             for _, row in production_events.iterrows():
                 loc = row.get("location", "")
@@ -125,9 +128,23 @@ def build_report_frames(sim, makes=None):
                     downtime_by_equipment[unit_key] = {}
                 if d not in downtime_by_equipment[unit_key]:
                     downtime_by_equipment[unit_key][d] = {"Maintenance": 0, "Breakdown": 0}
-                if event_type in downtime_by_equipment[unit_key][d]:
-                    downtime_by_equipment[unit_key][d][event_type] += hours
-    
+
+                # Map event types to aggregation keys
+                key = event_type
+                if event_type in ("Maintenance", "MaintenanceStart"):
+                    key = "Maintenance"
+                elif event_type in ("Breakdown", "BreakdownStart"):
+                    key = "Breakdown"
+
+                if key in downtime_by_equipment[unit_key][d]:
+                    # For per-hour events (Maintenance, Breakdown), count 1 hour each
+                    # For consolidated events (MaintenanceStart, BreakdownStart), use qty as total hours
+                    if event_type in ("MaintenanceStart", "BreakdownStart"):
+                        downtime_by_equipment[unit_key][d][key] += hours
+                    else:
+                        downtime_by_equipment[unit_key][d][key] += 1  # per-hour events count as 1 hour each
+
+
     result["downtime_by_equipment"] = downtime_by_equipment
     result["equipment_to_stores"] = equipment_to_stores
     

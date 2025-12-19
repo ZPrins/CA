@@ -155,9 +155,12 @@ def extract_kpis_from_sim(sim):
         # Process action log
         if sim.action_log:
             df_log = pd.DataFrame(sim.action_log)
-            
-            # Total production
-            prod = df_log[(df_log['process'] == 'Make') & (df_log['event'] == 'Produce')]
+            df_log["time_h"] = pd.to_numeric(df_log["time_h"], errors="coerce")
+            df_log["time_d"] = pd.to_numeric(df_log.get("time_d", df_log["time_h"] // 24), errors="coerce").fillna(0).astype(int)
+            df_log["day"] = df_log["time_d"].astype(int) + 1
+
+            # Total production: include ProducePartial
+            prod = df_log[(df_log['process'] == 'Make') & (df_log['event'].isin(['Produce','ProducePartial']))]
             if not prod.empty and 'qty' in prod.columns:
                 kpis['total_production'] = prod['qty'].astype(float).sum()
             

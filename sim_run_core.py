@@ -33,16 +33,15 @@ class SupplyChainSimulation:
         self.inventory_snapshots: List[dict] = []
         self.demand_rate_map: Dict[str, float] = {}
         self.port_berths: Dict[str, simpy.Resource] = {}
+        self.pending_maintenance_windows: List[dict] = []  # for flushing at end
 
     def log(self, event: str, **details):
-        # If override_day is provided, use it to set time_h to start of that day
+        # If override_day is provided, use it only for the day bucket; keep true hourly time_h
         override_day = details.pop('override_day', None)
-        if override_day is not None:
-            # Convert day to hour at start of that day for consistent day calculation
-            time_h = (override_day - 1) * 24
-        else:
-            time_h = self.env.now
-        self.action_log.append({"event": event, "time_h": time_h, **details})
+        override_time_h = details.pop('override_time_h', None)
+        time_h = override_time_h if override_time_h is not None else self.env.now
+        time_d = (override_day - 1) if override_day is not None else int(time_h // 24)
+        self.action_log.append({"event": event, "time_h": time_h, "time_d": time_d, **details})
 
     def snapshot(self):
         for key, cont in self.stores.items():

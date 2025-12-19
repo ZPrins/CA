@@ -111,7 +111,9 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
 
         if sim.action_log:
             df_log = pd.DataFrame(sim.action_log)
-            df_log["day"] = (pd.to_numeric(df_log["time_h"], errors="coerce") / 24.0).astype(int) + 1
+            df_log["time_h"] = pd.to_numeric(df_log["time_h"], errors="coerce")
+            df_log["time_d"] = pd.to_numeric(df_log.get("time_d", df_log["time_h"] // 24), errors="coerce").fillna(0).astype(int)
+            df_log["day"] = df_log["time_d"].astype(int) + 1
             if "qty_t" not in df_log.columns and "qty" in df_log.columns:
                 df_log["qty_t"] = pd.to_numeric(df_log["qty"], errors="coerce").fillna(0)
         else:
