@@ -127,7 +127,7 @@ class SupplyChainSimulation:
         )
 
     def run(self, stores_cfg, makes, moves, demands):
-        _build_stores(self.env, self.stores, stores_cfg, self.settings)
+        _build_stores(self.env, self.stores, stores_cfg, self.settings, self.log)
 
         make_groups = defaultdict(list)
         for unit in makes:

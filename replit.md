@@ -125,6 +125,7 @@ A separate HTML report (`sim_outputs_variability.html`) showing probability dens
   - Train: load time, travel time, unload time, return time
   - Ship: load time per hold, travel time, unload time
   - All time_h values in logs are now integers (1-hour increments)
+- Added opening balance logging: Store process logs OpeningBalance event at time_h=0 for each store with qty and to_level showing initial inventory
 - Redesigned Variability Analysis report with probability density graphs:
   - Per-equipment breakdown duration PDFs (individual histogram for each equipment)
   - Berth waiting time PDF from ship state logs (WAITING_FOR_BERTH tracking)
