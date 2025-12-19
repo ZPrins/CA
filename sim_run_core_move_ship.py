@@ -23,6 +23,7 @@ Execution:
 from __future__ import annotations
 from enum import Enum
 from typing import Callable, Dict, List, Tuple, Optional, Any
+import math
 import simpy
 
 from sim_run_types import TransportRoute
@@ -321,7 +322,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                             if cont.level >= payload_per_hold:
                                 yield cont.get(payload_per_hold)
                                 from_level = cont.level
-                                yield env.timeout(time_per_hold)
+                                yield env.timeout(math.ceil(time_per_hold))
                                 total_loaded_this_stop += payload_per_hold
                             elif total_loaded_this_stop > 0:
                                 waited = 0.0
@@ -331,7 +332,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                 if cont.level >= payload_per_hold:
                                     yield cont.get(payload_per_hold)
                                     from_level = cont.level
-                                    yield env.timeout(time_per_hold)
+                                    yield env.timeout(math.ceil(time_per_hold))
                                     total_loaded_this_stop += payload_per_hold
                                 else:
                                     break
@@ -379,7 +380,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                 state = ShipState.IDLE
                 log_state_change(state)
                 cargo = {}
-                yield env.timeout(0.01)
+                yield env.timeout(1)
                 continue
             
             step = chosen_itinerary[itinerary_idx]
@@ -398,7 +399,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                     total_time = travel_hours + pilot_out + pilot_in
                     
                     if total_time > 0:
-                        yield env.timeout(total_time)
+                        yield env.timeout(math.ceil(total_time))
                     
                     current_location = to_loc
                 
@@ -437,7 +438,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                 state = ShipState.IDLE
                 log_state_change(state)
                 cargo = {}
-                yield env.timeout(0.01)
+                yield env.timeout(1)
                 continue
             
             step = chosen_itinerary[itinerary_idx]
@@ -471,7 +472,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                     
                     if qty_to_unload > 1e-6:
                         unload_time = qty_to_unload / max(unload_rate, 1.0)
-                        yield env.timeout(unload_time)
+                        yield env.timeout(math.ceil(unload_time))
                         
                         yield cont.put(qty_to_unload)
                         to_level = cont.level

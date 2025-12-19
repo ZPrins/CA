@@ -121,6 +121,10 @@ A separate HTML report (`sim_outputs_variability.html`) showing probability dens
   - Solution: Check if put event triggers immediately; if not, cancel it and rollback input consumption
   - All equipment now log 8759-8760 hours (100% coverage) instead of 88-97%
 - Added early exit when all production candidates have zero output space (logs ProduceBlocked, continues)
+- Enforced integer time stepping by rounding up all activity durations using math.ceil():
+  - Train: load time, travel time, unload time, return time
+  - Ship: load time per hold, travel time, unload time
+  - All time_h values in logs are now integers (1-hour increments)
 - Redesigned Variability Analysis report with probability density graphs:
   - Per-equipment breakdown duration PDFs (individual histogram for each equipment)
   - Berth waiting time PDF from ship state logs (WAITING_FOR_BERTH tracking)

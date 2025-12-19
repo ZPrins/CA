@@ -1,6 +1,7 @@
 # sim_run_core_move_train.py
 from __future__ import annotations
 from typing import Callable, Dict
+import math
 import simpy
 
 from sim_run_types import TransportRoute
@@ -76,7 +77,7 @@ def transporter(env, route: TransportRoute,
         yield origin_cont.get(take)
         origin_bal = origin_cont.level  # Snapshot level after take
 
-        yield env.timeout(take / max(route.load_rate_tph, 1e-6))
+        yield env.timeout(math.ceil(take / max(route.load_rate_tph, 1e-6)))
 
         log_func(
             process="Move",
@@ -93,10 +94,10 @@ def transporter(env, route: TransportRoute,
         )
 
         # 4. TRAVEL
-        yield env.timeout(route.to_min / 60.0 if route.to_min > 0 else 0)
+        yield env.timeout(math.ceil(route.to_min / 60.0) if route.to_min > 0 else 0)
 
         # 5. UNLOAD (Put & Log)
-        yield env.timeout(take / max(route.unload_rate_tph, 1e-6))
+        yield env.timeout(math.ceil(take / max(route.unload_rate_tph, 1e-6)))
 
         yield dest_cont.put(take)
         dest_bal = dest_cont.level  # Snapshot level after put
@@ -116,4 +117,4 @@ def transporter(env, route: TransportRoute,
         )
 
         # 6. RETURN
-        yield env.timeout(route.back_min / 60.0 if route.back_min > 0 else 0)
+        yield env.timeout(math.ceil(route.back_min / 60.0) if route.back_min > 0 else 0)
