@@ -111,10 +111,8 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                 equipment=unit.equipment,
                 product=None,
                 qty=None,
-                from_store=None,
-                from_level=None,
-                to_store=None,
-                to_level=None,
+                store_key=None,
+                level=None,
                 route_id=None,
                 override_day=log_day,
                 override_time_h=log_time
@@ -145,10 +143,8 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                 equipment=unit.equipment,
                 product=None,
                 qty=None,
-                from_store=None,
-                from_level=None,
-                to_store=None,
-                to_level=None,
+                store_key=None,
+                level=None,
                 route_id=None,
                 override_day=log_day,
                 override_time_h=log_time
@@ -178,10 +174,8 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                         equipment=unit.equipment,
                         product=None,
                         qty=planned,
-                        from_store=None,
-                        from_level=None,
-                        to_store=None,
-                        to_level=None,
+                        store_key=None,
+                        level=None,
                         route_id=None,
                         override_day=log_day,
                         override_time_h=log_time
@@ -237,10 +231,8 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     equipment=unit.equipment,
                     product=None,
                     qty=0,
-                    from_store=None,
-                    from_level=None,
-                    to_store=None,
-                    to_level=None,
+                    store_key=None,
+                    level=None,
                     route_id=None,
                     override_day=log_day,
                     override_time_h=log_time
@@ -284,10 +276,8 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     equipment=unit.equipment,
                     product=cand.product,
                     qty=0.0,
-                    from_store=None,
-                    from_level=None,
-                    to_store=to_store_key,
-                    to_level=stores[to_store_key].level if to_store_key and to_store_key in stores else None,
+                    store_key=to_store_key,
+                    level=stores[to_store_key].level if to_store_key and to_store_key in stores else None,
                     route_id=None,
                     override_day=log_day,
                     override_time_h=log_time
@@ -303,7 +293,6 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
 
             # 1. Consume (Input Side) - from SINGLE selected store (may be None)
             # Only consume if we have output space (already verified above)
-            from_store_bal = None
             partial_reason_input = False
             taken = 0.0
             needed = qty * cand.consumption_pct
@@ -317,7 +306,6 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                 else:
                     # Not enough material - skip get, set taken to 0
                     taken = 0.0
-                from_store_bal = stores[from_store_key].level if from_store_key else None
                 # Scale output if input was short
                 if needed > EPS and taken < needed - EPS:
                     if taken > EPS:
@@ -369,11 +357,12 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                                     # Rollback blocked (shouldn't happen) - cancel it
                                     rollback_event.cancel()
                             allowed = 0.0
-                    else:
-                        allowed = 0.0
                 else:
                     allowed = 0.0
-            to_store_bal = stores[to_store_key].level
+            
+            # Get final levels for logging
+            from_store_level = stores[from_store_key].level if from_store_key else None
+            to_store_level = stores[to_store_key].level
 
             # 5. Decide event type and qty to log
             if allowed <= 1e-9:
@@ -385,10 +374,8 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     equipment=unit.equipment,
                     product=cand.product,
                     qty=0.0,
-                    from_store=from_store_key,
-                    from_level=from_store_bal,
-                    to_store=to_store_key,
-                    to_level=to_store_bal,
+                    store_key=to_store_key,
+                    level=to_store_level,
                     route_id=None,
                     override_day=production_start_day,
                     override_time_h=log_time
@@ -397,6 +384,39 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                 ev = "Produce"
                 if partial_reason_input or partial_reason_output or abs(allowed - full_qty) > 1e-6:
                     ev = "ProducePartial"
+                
+                # DOUBLE-ENTRY LOGGING: Log ConsumeMAT for input consumption
+                if from_store_key and taken > EPS:
+                    log_func(
+                        process="Make",
+                        event="ConsumeMAT",
+                        location=unit.location,
+                        equipment=unit.equipment,
+                        product=cand.product,
+                        qty=-taken,  # Negative for consumption
+                        store_key=from_store_key,
+                        level=from_store_level,
+                        route_id=None,
+                        override_day=production_start_day,
+                        override_time_h=log_time
+                    )
+                
+                # DOUBLE-ENTRY LOGGING: Log ReplenishMAT for output production
+                log_func(
+                    process="Make",
+                    event="ReplenishMAT",
+                    location=unit.location,
+                    equipment=unit.equipment,
+                    product=cand.product,
+                    qty=allowed,  # Positive for replenishment
+                    store_key=to_store_key,
+                    level=to_store_level,
+                    route_id=None,
+                    override_day=production_start_day,
+                    override_time_h=log_time
+                )
+                
+                # Also log the production event for downtime/production tracking
                 log_func(
                     process="Make",
                     event=ev,
@@ -404,10 +424,8 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     equipment=unit.equipment,
                     product=cand.product,
                     qty=allowed,
-                    from_store=from_store_key,
-                    from_level=from_store_bal,
-                    to_store=to_store_key,
-                    to_level=to_store_bal,
+                    store_key=to_store_key,
+                    level=to_store_level,
                     route_id=None,
                     override_day=production_start_day,
                     override_time_h=log_time

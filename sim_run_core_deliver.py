@@ -16,9 +16,11 @@ def consumer(env, store, demand_key: str, demand_rate: float,
             parts = demand_key.split('|')
             prod = parts[0]
             loc = parts[1]
+            equip = parts[2] if len(parts) > 2 else None
         except:
             prod = "Unknown"
             loc = "Unknown"
+            equip = None
 
         n_full = int(remaining_need // truck_load) if truck_load > 0 else 0
 
@@ -27,6 +29,19 @@ def consumer(env, store, demand_key: str, demand_rate: float,
             take = min(float(store.level), truck_load)
             if take > 0:
                 yield store.get(take)
+                # DOUBLE-ENTRY LOGGING: ConsumeMAT for demand consumption
+                log_func(
+                    process="Deliver",
+                    event="ConsumeMAT",
+                    location=loc,
+                    equipment="Truck",
+                    product=prod,
+                    qty=-take,  # Negative for consumption
+                    store_key=demand_key,
+                    level=store.level,
+                    route_id=None
+                )
+                # Also log Demand event for demand tracking
                 log_func(
                     process="Deliver",
                     event="Demand",
@@ -34,10 +49,8 @@ def consumer(env, store, demand_key: str, demand_rate: float,
                     equipment="Truck",
                     product=prod,
                     qty=take,
-                    from_store=demand_key,
-                    from_level=store.level,
-                    to_store=None,
-                    to_level=None,
+                    store_key=demand_key,
+                    level=store.level,
                     route_id=None
                 )
 
@@ -50,6 +63,19 @@ def consumer(env, store, demand_key: str, demand_rate: float,
             take = min(float(store.level), remainder)
             if take > 0:
                 yield store.get(take)
+                # DOUBLE-ENTRY LOGGING: ConsumeMAT for demand consumption
+                log_func(
+                    process="Deliver",
+                    event="ConsumeMAT",
+                    location=loc,
+                    equipment="Truck",
+                    product=prod,
+                    qty=-take,  # Negative for consumption
+                    store_key=demand_key,
+                    level=store.level,
+                    route_id=None
+                )
+                # Also log Demand event for demand tracking
                 log_func(
                     process="Deliver",
                     event="Demand",
@@ -57,10 +83,8 @@ def consumer(env, store, demand_key: str, demand_rate: float,
                     equipment="Truck",
                     product=prod,
                     qty=take,
-                    from_store=demand_key,
-                    from_level=store.level,
-                    to_store=None,
-                    to_level=None,
+                    store_key=demand_key,
+                    level=store.level,
                     route_id=None
                 )
 

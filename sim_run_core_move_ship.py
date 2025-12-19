@@ -215,10 +215,8 @@ def transporter(env: simpy.Environment, route: TransportRoute,
             equipment="Ship",
             product=None,
             qty=None,
-            from_store=None,
-            from_level=None,
-            to_store=None,
-            to_level=None,
+            store_key=None,
+            level=None,
             route_id=current_route_id or route_group,
             vessel_id=vessel_id,
             ship_state=new_state.value
@@ -342,6 +340,19 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                         if total_loaded_this_stop > 0:
                             cargo[product] = cargo.get(product, 0.0) + total_loaded_this_stop
                             
+                            # DOUBLE-ENTRY LOGGING: ConsumeMAT for loading from origin
+                            log_func(
+                                process="Move",
+                                event="ConsumeMAT",
+                                location=location,
+                                equipment="Ship",
+                                product=product,
+                                qty=-total_loaded_this_stop,  # Negative for consumption
+                                store_key=store_key,
+                                level=from_level,
+                                route_id=current_route_id or route_group
+                            )
+                            # Also log Load event for transport tracking
                             log_func(
                                 process="Move",
                                 event="Load",
@@ -349,10 +360,8 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                 equipment="Ship",
                                 product=product,
                                 qty=total_loaded_this_stop,
-                                from_store=store_key,
-                                from_level=from_level,
-                                to_store=None,
-                                to_level=None,
+                                store_key=store_key,
+                                level=from_level,
                                 route_id=current_route_id or route_group
                             )
                 
@@ -479,6 +488,19 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                         
                         cargo[product] = carried - qty_to_unload
                         
+                        # DOUBLE-ENTRY LOGGING: ReplenishMAT for unloading to destination
+                        log_func(
+                            process="Move",
+                            event="ReplenishMAT",
+                            location=unload_location,
+                            equipment="Ship",
+                            product=product,
+                            qty=qty_to_unload,  # Positive for replenishment
+                            store_key=store_key,
+                            level=to_level,
+                            route_id=current_route_id or route_group
+                        )
+                        # Also log Unload event for transport tracking
                         log_func(
                             process="Move",
                             event="Unload",
@@ -486,10 +508,8 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                             equipment="Ship",
                             product=product,
                             qty=qty_to_unload,
-                            from_store=None,
-                            from_level=None,
-                            to_store=store_key,
-                            to_level=to_level,
+                            store_key=store_key,
+                            level=to_level,
                             route_id=current_route_id or route_group
                         )
                 
@@ -509,10 +529,8 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                 equipment="Ship",
                 product=None,
                 qty=0,
-                from_store=None,
-                from_level=None,
-                to_store=None,
-                to_level=None,
+                store_key=None,
+                level=None,
                 route_id=route_group
             )
             state = ShipState.IDLE

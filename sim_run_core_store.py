@@ -22,16 +22,15 @@ def build_stores(env: simpy.Environment, stores_dict: dict, store_configs: List[
             parts = cfg.key.split('|')
             product = parts[0] if len(parts) > 0 else None
             location = parts[1] if len(parts) > 1 else None
+            equipment = parts[2] if len(parts) > 2 else None
             log_func(
                 process="Store",
                 event="OpeningBalance",
                 location=location,
-                equipment=None,
+                equipment=equipment,
                 product=product,
                 qty=opening,
-                from_store=None,
-                from_level=None,
-                to_store=cfg.key,
-                to_level=opening,
+                store_key=cfg.key,
+                level=opening,
                 route_id=None
             )

@@ -79,6 +79,20 @@ def transporter(env, route: TransportRoute,
 
         yield env.timeout(math.ceil(take / max(route.load_rate_tph, 1e-6)))
 
+        # DOUBLE-ENTRY LOGGING: ConsumeMAT for loading from origin
+        log_func(
+            process="Move",
+            event="ConsumeMAT",
+            location=route.origin_location,
+            equipment="Train",
+            product=route.product,
+            qty=-take,  # Negative for consumption
+            store_key=origin_key,
+            level=origin_bal,
+            route_id=route_id_str
+        )
+        
+        # Also log the Load event for transport tracking
         log_func(
             process="Move",
             event="Load",
@@ -86,10 +100,8 @@ def transporter(env, route: TransportRoute,
             equipment="Train",
             product=route.product,
             qty=take,
-            from_store=origin_key,
-            from_level=origin_bal,
-            to_store=None,  # On Train
-            to_level=None,
+            store_key=origin_key,
+            level=origin_bal,
             route_id=route_id_str
         )
 
@@ -102,6 +114,20 @@ def transporter(env, route: TransportRoute,
         yield dest_cont.put(take)
         dest_bal = dest_cont.level  # Snapshot level after put
 
+        # DOUBLE-ENTRY LOGGING: ReplenishMAT for unloading to destination
+        log_func(
+            process="Move",
+            event="ReplenishMAT",
+            location=route.dest_location,
+            equipment="Train",
+            product=route.product,
+            qty=take,  # Positive for replenishment
+            store_key=dest_key,
+            level=dest_bal,
+            route_id=route_id_str
+        )
+        
+        # Also log the Unload event for transport tracking
         log_func(
             process="Move",
             event="Unload",
@@ -109,10 +135,8 @@ def transporter(env, route: TransportRoute,
             equipment="Train",
             product=route.product,
             qty=take,
-            from_store=None,  # Off Train
-            from_level=None,
-            to_store=dest_key,
-            to_level=dest_bal,
+            store_key=dest_key,
+            level=dest_bal,
             route_id=route_id_str
         )
 
