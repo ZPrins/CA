@@ -17,14 +17,15 @@ def write_csv_outputs(sim, out_dir: Path, report_data: dict = None):
         df_snap = pd.DataFrame(sim.inventory_snapshots)
         df_snap.to_csv(out_dir / "sim_outputs_inventory_daily.csv", index=False)
 
-    # 2. Standardized Action Log (with new double-entry columns)
+    # 2. Standardized Action Log
     if report_data and "df_log" in report_data and not report_data["df_log"].empty:
         df_log = report_data["df_log"].copy()
         cols = [
             "day", "time_h", "time_d",
             "process", "event",
             "location", "equipment", "product", "qty",
-            "store_key", "level",
+            "from_store", "from_level",
+            "to_store", "to_level",
             "route_id", "vessel_id", "ship_state"
         ]
         final_cols = [c for c in cols if c in df_log.columns]
@@ -35,7 +36,8 @@ def write_csv_outputs(sim, out_dir: Path, report_data: dict = None):
             "day", "time_h", "time_d",
             "process", "event",
             "location", "equipment", "product", "qty",
-            "store_key", "level",
+            "from_store", "from_level",
+            "to_store", "to_level",
             "route_id", "vessel_id", "ship_state"
         ]
         df_log["time_h"] = pd.to_numeric(df_log["time_h"], errors='coerce')

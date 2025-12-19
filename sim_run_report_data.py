@@ -40,7 +40,7 @@ def build_report_frames(sim, makes=None):
     else:
         result["df_log"] = pd.DataFrame()
     
-    # 3. Flows aggregation using new double-entry format
+    # 3. Flows aggregation
     flows = {}
     if not result["df_log"].empty:
         df_log = result["df_log"]
@@ -49,9 +49,10 @@ def build_report_frames(sim, makes=None):
             subset = df_log[mask].copy()
             if subset.empty:
                 return
-            # Use store_key for the new format
-            if "store_key" not in subset.columns:
-                return
+            if direction == 'in':
+                subset["store_key"] = subset.get("to_store")
+            else:
+                subset["store_key"] = subset.get("from_store")
             if "qty_t" not in subset.columns and "qty" in subset.columns:
                 subset["qty_t"] = pd.to_numeric(subset["qty"], errors="coerce").fillna(0.0).astype(float)
             subset = subset.dropna(subset=["store_key"])
@@ -61,7 +62,7 @@ def build_report_frames(sim, makes=None):
             for _, row in grouped.iterrows():
                 sk = row["store_key"]
                 d = int(row["day"])
-                q = abs(row["qty_t"])  # Use absolute value since ConsumeMAT is negative
+                q = row["qty_t"]
                 if sk not in flows:
                     flows[sk] = {}
                 if d not in flows[sk]:
@@ -69,17 +70,13 @@ def build_report_frames(sim, makes=None):
                 key = f"{equipment_type}_{direction}"
                 flows[sk][d][key] = flows[sk][d].get(key, 0) + q
         
-        # Train flows - use ConsumeMAT/ReplenishMAT for material tracking
-        aggregate_flow((df_log["event"] == "ReplenishMAT") & (df_log["equipment"] == "Train"), "Train", "in")
-        aggregate_flow((df_log["event"] == "ConsumeMAT") & (df_log["equipment"] == "Train"), "Train", "out")
-        
-        # Ship flows
-        aggregate_flow((df_log["event"] == "ReplenishMAT") & (df_log["equipment"] == "Ship"), "Ship", "in")
-        aggregate_flow((df_log["event"] == "ConsumeMAT") & (df_log["equipment"] == "Ship"), "Ship", "out")
-        
-        # Production flows - use ReplenishMAT (output) and ConsumeMAT (input)
-        aggregate_flow((df_log["event"] == "ReplenishMAT") & (df_log["process"] == "Make"), "Production", "in")
-        aggregate_flow((df_log["event"] == "ConsumeMAT") & (df_log["process"] == "Make"), "Consumption", "out")
+        aggregate_flow((df_log["event"] == "Unload") & (df_log["equipment"] == "Train"), "Train", "in")
+        aggregate_flow((df_log["event"].isin(["Unload", "ShipUnload"])) & (df_log["equipment"] == "Ship"), "Ship", "in")
+        aggregate_flow((df_log["event"] == "Load") & (df_log["equipment"] == "Train"), "Train", "out")
+        aggregate_flow((df_log["event"].isin(["Load", "ShipLoad"])) & (df_log["equipment"] == "Ship"), "Ship", "out")
+        # Include partial production as production/consumption
+        aggregate_flow((df_log["event"].isin(["Produce", "ProducePartial"]) ), "Production", "in")
+        aggregate_flow((df_log["event"].isin(["Produce", "ProducePartial"]) ), "Consumption", "out")
 
     result["flows"] = flows
     
@@ -106,18 +103,17 @@ def build_report_frames(sim, makes=None):
     
     if not result["df_log"].empty:
         df_log = result["df_log"]
-        # Use ReplenishMAT events for production-to-store mapping
-        production_events = df_log[(df_log["process"] == "Make") & (df_log["event"] == "ReplenishMAT")]
+        production_events = df_log[(df_log["process"] == "Make") & (df_log["event"].isin(["Produce", "ProducePartial"]))]
         if not production_events.empty:
             for _, row in production_events.iterrows():
                 loc = row.get("location", "")
                 equip = row.get("equipment", "")
-                store_key = row.get("store_key", "")
-                if loc and equip and store_key:
+                to_store = row.get("to_store", "")
+                if loc and equip and to_store:
                     unit_key = f"{loc}|{equip}"
                     if unit_key not in equipment_to_stores:
                         equipment_to_stores[unit_key] = set()
-                    equipment_to_stores[unit_key].add(store_key)
+                    equipment_to_stores[unit_key].add(to_store)
         
         downtime_events = df_log[df_log["process"] == "Downtime"]
         if not downtime_events.empty:
