@@ -256,21 +256,43 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
             # This ensures multi-product equipment (e.g., VRM with CL→GP and GBFS→SG paths)
             # switches to an alternative product when the primary output is full
 
+            EPS = 1e-6
             candidates_with_space = [(i, c, in_k, out_k, in_l, out_s)
                                      for i, (c, in_k, out_k, in_l, out_s) in enumerate(eligible)
-                                     if out_s > 1e-6]
+                                     if out_s > EPS]
 
             if candidates_with_space:
                 # Pick from candidates that have positive output space
                 best_idx, _, _, _, _, best_space = max(candidates_with_space, key=lambda x: x[5])
             else:
-                # All candidates have zero or negative space - pick least-full for ProduceBlocked logging
+                # All candidates have zero or negative space - skip input consumption, log ProduceBlocked
+                # Pick the candidate with most space (least negative) for logging
                 best_idx = 0
-                best_space = -1.0
+                best_space = float('-inf')
                 for i, (c, in_key, out_key, _in_lvl, out_sp) in enumerate(eligible):
                     if out_sp > best_space:
                         best_space = out_sp
                         best_idx = i
+                
+                # All outputs blocked - DO NOT consume input, just log blocked and continue
+                cand, _, to_store_key, _, _ = eligible[best_idx]
+                yield env.timeout(unit.step_hours)
+                log_func(
+                    process="Make",
+                    event="ProduceBlocked",
+                    location=unit.location,
+                    equipment=unit.equipment,
+                    product=cand.product,
+                    qty=0.0,
+                    from_store=None,
+                    from_level=None,
+                    to_store=to_store_key,
+                    to_level=stores[to_store_key].level if to_store_key and to_store_key in stores else None,
+                    route_id=None,
+                    override_day=log_day,
+                    override_time_h=log_time
+                )
+                continue
 
             cand, from_store_key, to_store_key, in_level, out_space_planned = eligible[best_idx]
             full_qty = cand.rate_tph * unit.step_hours
@@ -280,19 +302,28 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
             production_start_day = log_day
 
             # 1. Consume (Input Side) - from SINGLE selected store (may be None)
+            # Only consume if we have output space (already verified above)
             from_store_bal = None
             partial_reason_input = False
             taken = 0.0
             needed = qty * cand.consumption_pct
             if from_store_key:
-                available = stores[from_store_key].level
-                taken = min(available, needed)
-                if taken > 0:
+                # Re-check level IMMEDIATELY before get to avoid race condition blocking
+                actual_available = stores[from_store_key].level
+                taken = min(actual_available, needed)
+                if taken > EPS and actual_available >= taken:
+                    # Safe to get - store has enough material
                     yield stores[from_store_key].get(taken)
+                else:
+                    # Not enough material - skip get, set taken to 0
+                    taken = 0.0
                 from_store_bal = stores[from_store_key].level if from_store_key else None
                 # Scale output if input was short
-                if needed > 1e-9 and taken < needed:
-                    qty *= (taken / needed)
+                if needed > EPS and taken < needed - EPS:
+                    if taken > EPS:
+                        qty *= (taken / needed)
+                    else:
+                        qty = 0.0
                     partial_reason_input = True
             else:
                 # No input required
@@ -303,15 +334,45 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
             yield env.timeout(unit.step_hours)
 
             # 3. Determine available output space at end of hour
-            to_store_bal_before = stores[to_store_key].level
+            EPS = 1e-6
             cap = stores[to_store_key].capacity
-            space_now = max(0.0, cap - to_store_bal_before)
+            actual_level = stores[to_store_key].level
+            space_now = max(0.0, cap - actual_level)
             allowed = min(qty, space_now)
-            partial_reason_output = allowed + 1e-9 < qty
+            partial_reason_output = allowed + EPS < qty
 
-            # 4. Put allowed quantity (if any)
-            if allowed > 0:
-                yield stores[to_store_key].put(allowed)
+            # 4. Put allowed quantity (if any) - non-blocking pattern
+            # Use SimPy event pattern to avoid indefinite blocking:
+            # If put() doesn't trigger immediately, cancel it and rollback input
+            put_succeeded = False
+            if allowed > EPS:
+                current_level = stores[to_store_key].level
+                actual_space = cap - current_level
+                if actual_space > EPS:
+                    safe_amount = min(allowed, actual_space)
+                    if safe_amount > EPS:
+                        put_event = stores[to_store_key].put(safe_amount)
+                        # Check if event triggers immediately (no blocking)
+                        if put_event.triggered:
+                            yield put_event
+                            put_succeeded = True
+                            allowed = safe_amount
+                        else:
+                            # Event would block - cancel it and rollback input
+                            put_event.cancel()
+                            # Rollback: return consumed input to store (non-blocking)
+                            if taken > EPS and from_store_key:
+                                rollback_event = stores[from_store_key].put(taken)
+                                if rollback_event.triggered:
+                                    yield rollback_event
+                                else:
+                                    # Rollback blocked (shouldn't happen) - cancel it
+                                    rollback_event.cancel()
+                            allowed = 0.0
+                    else:
+                        allowed = 0.0
+                else:
+                    allowed = 0.0
             to_store_bal = stores[to_store_key].level
 
             # 5. Decide event type and qty to log

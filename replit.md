@@ -116,6 +116,11 @@ A separate HTML report (`sim_outputs_variability.html`) showing probability dens
 
 ## Recent Changes
 
+- Fixed VRM blocking issue in make process using non-blocking SimPy pattern:
+  - Root cause: Container.put() would block when output store filled between space check and put
+  - Solution: Check if put event triggers immediately; if not, cancel it and rollback input consumption
+  - All equipment now log 8759-8760 hours (100% coverage) instead of 88-97%
+- Added early exit when all production candidates have zero output space (logs ProduceBlocked, continues)
 - Redesigned Variability Analysis report with probability density graphs:
   - Per-equipment breakdown duration PDFs (individual histogram for each equipment)
   - Berth waiting time PDF from ship state logs (WAITING_FOR_BERTH tracking)
