@@ -11,10 +11,14 @@ def transporter(env, route: TransportRoute,
                 stores: Dict[str, simpy.Container],
                 log_func: Callable,
                 require_full: bool = True,
-                debug_full: bool = False):
+                debug_full: bool = False,
+                sim=None):
     route_id_str = f"{route.origin_location}->{route.dest_location}"
 
     while True:
+        # Before starting a new trip, sync to hour boundary if we finished a trip mid-hour
+        # or if we are just starting. Actually, Step 2 will sync us.
+
         # 1. Validation
         if route.payload_t <= 0 or route.load_rate_tph <= 0 or route.unload_rate_tph <= 0:
             yield env.timeout(1)
@@ -24,6 +28,10 @@ def transporter(env, route: TransportRoute,
         origin_key = None
         dest_cont = None
         dest_key = None
+
+        # Wait for Step 2: Reduce the Inventory by the "Train Load" Qty
+        # Step 2 is now handled just before .get() to be closer to the action
+        # and avoid blocking if no inventory is available yet.
 
         # 2. Select Source/Dest
         if require_full:
@@ -43,12 +51,40 @@ def transporter(env, route: TransportRoute,
 
             if origin_cont is None or dest_cont is None:
                 # Either no origin had enough stock, or no destination had enough space yet.
-                yield env.timeout(1)
+                log_func(
+                    process="Move",
+                    event="Idle",
+                    location=route.origin_location,
+                    equipment="Train",
+                    product=route.product,
+                    qty=0,
+                    from_store=None,
+                    to_store=None,
+                    route_id=route_id_str
+                )
+                if sim:
+                    yield sim.wait_for_step(7)
+                else:
+                    yield env.timeout(1)
                 continue
 
             # Final re-check immediately before securing inventory to reduce race-condition issues
             if origin_cont.level + 1e-6 < route.payload_t or ((dest_cont.capacity - dest_cont.level) + 1e-6 < route.payload_t):
-                yield env.timeout(1)
+                log_func(
+                    process="Move",
+                    event="Idle",
+                    location=route.origin_location,
+                    equipment="Train",
+                    product=route.product,
+                    qty=0,
+                    from_store=None,
+                    to_store=None,
+                    route_id=route_id_str
+                )
+                if sim:
+                    yield sim.wait_for_step(7)
+                else:
+                    yield env.timeout(1)
                 continue
 
             take = float(route.payload_t)
@@ -60,7 +96,21 @@ def transporter(env, route: TransportRoute,
                     origin_key, origin_cont = ok, oc
                     break
             if origin_cont is None:
-                yield env.timeout(1)
+                log_func(
+                    process="Move",
+                    event="Idle",
+                    location=route.origin_location,
+                    equipment="Train",
+                    product=route.product,
+                    qty=0,
+                    from_store=None,
+                    to_store=None,
+                    route_id=route_id_str
+                )
+                if sim:
+                    yield sim.wait_for_step(7)
+                else:
+                    yield env.timeout(1)
                 continue
 
             dest_key = route.dest_stores[0]
@@ -70,15 +120,32 @@ def transporter(env, route: TransportRoute,
             take = min(max(0.0, route.payload_t), origin_stock)
 
             if take <= 1e-6:
-                yield env.timeout(1)
+                log_func(
+                    process="Move",
+                    event="Idle",
+                    location=route.origin_location,
+                    equipment="Train",
+                    product=route.product,
+                    qty=0,
+                    from_store=None,
+                    to_store=None,
+                    route_id=route_id_str
+                )
+                if sim:
+                    yield sim.wait_for_step(7)
+                else:
+                    yield env.timeout(1)
                 continue
 
         # 3. LOAD (Secure & Log)
+        # Wait for Step 2: Reduce the Inventory by the "Train Load" Qty
+        if sim:
+            yield sim.wait_for_step(2)
+
         yield origin_cont.get(take)
-        origin_bal = origin_cont.level  # Snapshot level after take
+        origin_bal = float(origin_cont.level)  # Snapshot level after take
 
-        yield env.timeout(math.ceil(take / max(route.load_rate_tph, 1e-6)))
-
+        # Log LOAD immediately after getting from store, before the timeout
         log_func(
             process="Move",
             event="Load",
@@ -93,8 +160,14 @@ def transporter(env, route: TransportRoute,
             route_id=route_id_str
         )
 
+        yield env.timeout(math.ceil(take / max(route.load_rate_tph, 1e-6)))
+
         # 4. TRAVEL
         yield env.timeout(math.ceil(route.to_min / 60.0) if route.to_min > 0 else 0)
+
+        # Wait for Step 6: Increase inventory by the "Train Offload" Qty
+        if sim:
+            yield sim.wait_for_step(6)
 
         # 5. UNLOAD (Put & Log)
         yield env.timeout(math.ceil(take / max(route.unload_rate_tph, 1e-6)))

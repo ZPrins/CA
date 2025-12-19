@@ -34,16 +34,69 @@ class SupplyChainSimulation:
         self.demand_rate_map: Dict[str, float] = {}
         self.port_berths: Dict[str, simpy.Resource] = {}
         self.pending_maintenance_windows: List[dict] = []  # for flushing at end
+        
+        # 7-step sequence events per hour
+        self.step_events: Dict[int, simpy.Event] = {i: self.env.event() for i in range(1, 8)}
+
+    def wait_for_step(self, step_num: int):
+        """Wait for a specific step in the current hour's sequence."""
+        return self.step_events[step_num]
+
+    def master_clock(self):
+        """Orchestrates the 7 steps per hour."""
+        while True:
+            # At the start of each hour, trigger steps 1-7 in sequence
+            for i in range(1, 8):
+                # Trigger the current step event
+                self.step_events[i].succeed()
+                # Replace it IMMEDIATELY with a new untriggered event for the next hour
+                # This ensures any process that catches this step and loops back to wait
+                # for the same step will wait for the NEXT hour, preventing infinite loops.
+                self.step_events[i] = self.env.event()
+                
+                # We yield a tiny timeout to let all processes waiting on this event to run
+                # Using a very small timeout > 0 ensures they actually execute in order
+                yield self.env.timeout(1e-9)
+            
+            # After all 7 steps are triggered, wait for the next hour
+            # We also advance the internal time by the processing step (default 1.0)
+            # This makes the steps effectively sub-hour markers.
+            yield self.env.timeout(1.0 - (7 * 1e-9))
 
     def log(self, event: str, **details):
         # If override_day is provided, use it only for the day bucket; keep true hourly time_h
-        override_day = details.pop('override_day', None)
-        override_time_h = details.pop('override_time_h', None)
+        override_day = details.get('override_day', None)
+        override_time_h = details.get('override_time_h', None)
         time_h = override_time_h if override_time_h is not None else self.env.now
         time_d = (override_day - 1) if override_day is not None else int(time_h // 24)
-        self.action_log.append({"event": event, "time_h": time_h, "time_d": time_d, **details})
+        day = time_d + 1
+        
+        # Log as a tuple with fixed structure for performance
+        # order: day, time_h, time_d, process, event, location, equipment, product, qty, qty_in, 
+        #        from_store, from_level, to_store, to_level, route_id, vessel_id, ship_state
+        self.action_log.append((
+            day,
+            time_h,
+            time_d,
+            details.get('process'),
+            event,
+            details.get('location'),
+            details.get('equipment'),
+            details.get('product'),
+            details.get('qty'),
+            details.get('qty_in'),
+            details.get('from_store'),
+            details.get('from_level'),
+            details.get('to_store'),
+            details.get('to_level'),
+            details.get('route_id'),
+            details.get('vessel_id'),
+            details.get('ship_state')
+        ))
 
     def snapshot(self):
+        now = self.env.now
+        day = int(now // 24)
         for key, cont in self.stores.items():
             parts = key.split("|")
             pc = parts[0] if len(parts) > 0 else ""
@@ -51,18 +104,11 @@ class SupplyChainSimulation:
             eq = parts[2] if len(parts) > 2 else ""
             inp = parts[3] if len(parts) > 3 else ""
             fill = cont.level / cont.capacity if cont.capacity > 0 else 1.0
-            self.inventory_snapshots.append({
-                "day": int(self.env.now // 24),  # 0-indexed day for snapshots
-                "time_h": self.env.now,
-                "product_class": pc,
-                "location": loc,
-                "equipment": eq,
-                "input": inp,
-                "store_key": key,
-                "level": cont.level,
-                "capacity": cont.capacity,
-                "fill_pct": fill,
-            })
+            
+            # Snapshots as tuples: day, time_h, product_class, location, equipment, input, store_key, level, capacity, fill_pct
+            self.inventory_snapshots.append((
+                day, now, pc, loc, eq, inp, key, cont.level, cont.capacity, fill
+            ))
 
     def choose_output(self, rule: str, candidates: List[ProductionCandidate]):
         best_idx = 0
@@ -82,7 +128,8 @@ class SupplyChainSimulation:
             unit,
             self.stores,
             self.log,
-            self.choose_output
+            self.choose_output,
+            sim=self
         )
 
     def transporter(self, route: TransportRoute, vessel_id: int = 1):
@@ -100,7 +147,8 @@ class SupplyChainSimulation:
                 vessel_id=vessel_id,
                 sole_supplier_stores=getattr(self, 'sole_supplier_stores', None),
                 production_rates=getattr(self, 'production_rate_map', None),
-                store_capacities=getattr(self, 'store_capacity_map', None)
+                store_capacities=getattr(self, 'store_capacity_map', None),
+                sim=self
             )
         else:  # TRAIN
             yield from _transporter_train(
@@ -109,7 +157,8 @@ class SupplyChainSimulation:
                 self.stores,
                 self.log,
                 require_full=self.settings.get("require_full_payload", True),
-                debug_full=self.settings.get("debug_full_payload", False)
+                debug_full=self.settings.get("debug_full_payload", False),
+                sim=self
             )
 
     def consumer(self, demand: Demand):
@@ -123,11 +172,15 @@ class SupplyChainSimulation:
             truck_load,
             step_h,
             self.log,
-            self.unmet
+            self.unmet,
+            sim=self
         )
 
     def run(self, stores_cfg, makes, moves, demands):
         _build_stores(self.env, self.stores, stores_cfg, self.settings, self.log)
+        
+        # Start the master clock for ordered execution
+        self.env.process(self.master_clock())
 
         make_groups = defaultdict(list)
         for unit in makes:

@@ -79,10 +79,17 @@ def _select_best_output_store(stores: Dict[str, simpy.Container],
     return (best_key, best_space) if best_key else None
 
 
+def current_day_in_maintenance(env, maintenance_days: Set[int]) -> bool:
+    """Check if current simulation day is a maintenance day."""
+    current_day = int(env.now / 24) % 365 + 1
+    return current_day in maintenance_days
+
+
 def producer(env, resource: simpy.Resource, unit: MakeUnit,
              stores: Dict[str, simpy.Container],
              log_func: Callable,
-             choose_output_func: Callable[[str, List[ProductionCandidate]], int]):
+             choose_output_func: Callable[[str, List[ProductionCandidate]], int],
+             sim=None):
     
     maintenance_days: Set[int] = set(unit.maintenance_days) if unit.maintenance_days else set()
     downtime_pct: float = unit.unplanned_downtime_pct or 0.0
@@ -95,22 +102,21 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
     maintenance_window_hours = 0  # accumulate hours for continuous window
 
     while True:
-        # Calculate time markers ONCE at loop start, before any yields
+        # Calculate time markers for the NEXT hour we want to simulate
         current_time = env.now
-        log_time = current_time + unit.step_hours  # represent the hour being consumed
+        log_time = current_time + unit.step_hours
+        # Recalculate current_day to avoid staleness after resource waits
         current_day = int(current_time / 24) % 365 + 1
         log_day = int(log_time / 24) % 365 + 1
-        next_day = current_day + 1
 
         if current_day in maintenance_days:
-            # Log maintenance hour to maintain continuous time_h sequence
             log_func(
                 process="Downtime",
                 event="Maintenance",
                 location=unit.location,
                 equipment=unit.equipment,
                 product=None,
-                qty=None,
+                qty=1.0,
                 from_store=None,
                 from_level=None,
                 to_store=None,
@@ -119,32 +125,22 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                 override_day=log_day,
                 override_time_h=log_time
             )
-            # Track window for potential consolidation in reports
-            if maintenance_window_start is None:
-                maintenance_window_start = log_time
-                maintenance_window_hours = unit.step_hours
+            if sim:
+                yield sim.wait_for_step(7)
             else:
-                maintenance_window_hours += unit.step_hours
-
-            yield env.timeout(unit.step_hours)
+                yield env.timeout(unit.step_hours)
             continue
-        else:
-            # End of maintenance window - reset tracking (logging already done per-hour)
-            if maintenance_window_start is not None:
-                maintenance_window_start = None
-                maintenance_window_hours = 0
 
         available_hours_seen += unit.step_hours
         
         if breakdown_remaining > 0:
-            # Log breakdown continuation hour to maintain continuous time_h sequence
             log_func(
                 process="Downtime",
                 event="Breakdown",
                 location=unit.location,
                 equipment=unit.equipment,
                 product=None,
-                qty=None,
+                qty=1.0,
                 from_store=None,
                 from_level=None,
                 to_store=None,
@@ -155,7 +151,10 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
             )
             downtime_consumed += unit.step_hours
             breakdown_remaining -= 1
-            yield env.timeout(unit.step_hours)
+            if sim:
+                yield sim.wait_for_step(7)
+            else:
+                yield env.timeout(unit.step_hours)
             continue
         
         if downtime_pct > 0:
@@ -177,7 +176,8 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                         location=unit.location,
                         equipment=unit.equipment,
                         product=None,
-                        qty=planned,
+                        qty=1.0,
+                        duration_planned=planned,
                         from_store=None,
                         from_level=None,
                         to_store=None,
@@ -188,12 +188,42 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     )
                     downtime_consumed += unit.step_hours
                     breakdown_remaining = max(0, planned - 1)
-                    yield env.timeout(unit.step_hours)
+                    if sim:
+                        yield sim.wait_for_step(7)
+                    else:
+                        yield env.timeout(unit.step_hours)
                     continue
         
+        # Try to acquire resource WITHOUT indefinite blocking that hides time gaps
+        # If resource not available, log 'ResourceWait' and try again next hour
         with resource.request() as req:
-            yield req
+            # Check if resource is available immediately
+            yield env.any_of([req, env.timeout(0)])
             
+            if not req.triggered:
+                # Resource is busy - log a wait hour
+                log_func(
+                    process="Make",
+                    event="ResourceWait",
+                    location=unit.location,
+                    equipment=unit.equipment,
+                    product=None,
+                    qty=0,
+                    from_store=None,
+                    from_level=None,
+                    to_store=None,
+                    to_level=None,
+                    route_id=None,
+                    override_day=log_day,
+                    override_time_h=log_time
+                )
+                if sim:
+                    yield sim.wait_for_step(7)
+                else:
+                    yield env.timeout(unit.step_hours)
+                continue
+
+            # Resource acquired - proceed with production
             qty_base = unit.candidates[0].rate_tph * unit.step_hours if unit.candidates else 0
             
             # Build list of eligible candidates with best input/output stores selected
@@ -245,7 +275,10 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     override_day=log_day,
                     override_time_h=log_time
                 )
-                yield env.timeout(unit.step_hours)
+                if sim:
+                    yield sim.wait_for_step(7)
+                else:
+                    yield env.timeout(unit.step_hours)
                 continue
 
             # Select best candidate:
@@ -276,7 +309,10 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                 
                 # All outputs blocked - DO NOT consume input, just log blocked and continue
                 cand, _, to_store_key, _, _ = eligible[best_idx]
-                yield env.timeout(unit.step_hours)
+                if sim:
+                    yield sim.wait_for_step(7)
+                else:
+                    yield env.timeout(unit.step_hours)
                 log_func(
                     process="Make",
                     event="ProduceBlocked",
@@ -303,21 +339,30 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
 
             # 1. Consume (Input Side) - from SINGLE selected store (may be None)
             # Only consume if we have output space (already verified above)
+            
+            # Wait for Step 4: Reduce inventory by the "Production" consumption Qty
+            if sim:
+                yield sim.wait_for_step(4)
+
             from_store_bal = None
             partial_reason_input = False
             taken = 0.0
             needed = qty * cand.consumption_pct
             if from_store_key:
-                # Re-check level IMMEDIATELY before get to avoid race condition blocking
-                actual_available = stores[from_store_key].level
+                # Snapshot BEFORE get
+                pre_get_level = float(stores[from_store_key].level)
+                actual_available = pre_get_level
                 taken = min(actual_available, needed)
-                if taken > EPS and actual_available >= taken:
+                if taken > EPS:
                     # Safe to get - store has enough material
                     yield stores[from_store_key].get(taken)
+                    # Snapshot level IMMEDIATELY after consumption
+                    from_store_bal = float(stores[from_store_key].level)
                 else:
                     # Not enough material - skip get, set taken to 0
                     taken = 0.0
-                from_store_bal = stores[from_store_key].level if from_store_key else None
+                    from_store_bal = float(pre_get_level)
+                
                 # Scale output if input was short
                 if needed > EPS and taken < needed - EPS:
                     if taken > EPS:
@@ -331,7 +376,8 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                 needed = 0.0
 
             # 2. Process Time
-            yield env.timeout(unit.step_hours)
+            if not sim:
+                yield env.timeout(unit.step_hours)
 
             # 3. Determine available output space at end of hour
             EPS = 1e-6
@@ -341,10 +387,14 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
             allowed = min(qty, space_now)
             partial_reason_output = allowed + EPS < qty
 
+            # Wait for Step 5: Increase inventory by the "Production" output Qty
+            if sim:
+                yield sim.wait_for_step(5)
+
             # 4. Put allowed quantity (if any) - non-blocking pattern
-            # Use SimPy event pattern to avoid indefinite blocking:
-            # If put() doesn't trigger immediately, cancel it and rollback input
             put_succeeded = False
+            to_store_bal = stores[to_store_key].level
+            
             if allowed > EPS:
                 current_level = stores[to_store_key].level
                 actual_space = cap - current_level
@@ -352,30 +402,35 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     safe_amount = min(allowed, actual_space)
                     if safe_amount > EPS:
                         put_event = stores[to_store_key].put(safe_amount)
-                        # Check if event triggers immediately (no blocking)
                         if put_event.triggered:
                             yield put_event
-                            put_succeeded = True
+                            to_store_bal = float(stores[to_store_key].level)
                             allowed = safe_amount
+                            
+                            if allowed < qty - EPS and from_store_key and cand.consumption_pct > 0:
+                                effective_factor = taken / qty if qty > 0 else 0
+                                excess_input = (qty - allowed) * effective_factor
+                                if excess_input > EPS:
+                                    yield stores[from_store_key].put(excess_input)
+                                    from_store_bal = float(stores[from_store_key].level)
                         else:
-                            # Event would block - cancel it and rollback input
                             put_event.cancel()
-                            # Rollback: return consumed input to store (non-blocking)
                             if taken > EPS and from_store_key:
-                                rollback_event = stores[from_store_key].put(taken)
-                                if rollback_event.triggered:
-                                    yield rollback_event
-                                else:
-                                    # Rollback blocked (shouldn't happen) - cancel it
-                                    rollback_event.cancel()
+                                yield stores[from_store_key].put(taken)
+                                from_store_bal = float(stores[from_store_key].level)
                             allowed = 0.0
                     else:
                         allowed = 0.0
                 else:
+                    if taken > EPS and from_store_key:
+                        yield stores[from_store_key].put(taken)
+                        from_store_bal = float(stores[from_store_key].level)
                     allowed = 0.0
-            to_store_bal = stores[to_store_key].level
-
-            # 5. Decide event type and qty to log
+            else:
+                if taken > EPS and from_store_key:
+                    yield stores[from_store_key].put(taken)
+                    from_store_bal = float(stores[from_store_key].level)
+                allowed = 0.0
             if allowed <= 1e-9:
                 # Blocked by output capacity (no space at end of hour)
                 log_func(
@@ -385,6 +440,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     equipment=unit.equipment,
                     product=cand.product,
                     qty=0.0,
+                    qty_in=0.0, # All input rolled back
                     from_store=from_store_key,
                     from_level=from_store_bal,
                     to_store=to_store_key,
@@ -397,6 +453,11 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                 ev = "Produce"
                 if partial_reason_input or partial_reason_output or abs(allowed - full_qty) > 1e-6:
                     ev = "ProducePartial"
+                
+                # The actual amount of input consumed (net after rollbacks)
+                # is allowed * (taken/qty)
+                net_input = allowed * (taken / qty) if qty > 0 else 0.0
+                
                 log_func(
                     process="Make",
                     event=ev,
@@ -404,6 +465,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     equipment=unit.equipment,
                     product=cand.product,
                     qty=allowed,
+                    qty_in=net_input,
                     from_store=from_store_key,
                     from_level=from_store_bal,
                     to_store=to_store_key,
@@ -412,3 +474,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     override_day=production_start_day,
                     override_time_h=log_time
                 )
+
+            # Wait for Step 7: End of the hour cycle
+            if sim:
+                yield sim.wait_for_step(7)

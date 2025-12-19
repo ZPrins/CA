@@ -1,22 +1,36 @@
 import pandas as pd
+import duckdb
 
 
 def build_report_frames(sim, makes=None):
     """
     Build all report dataframes once from simulation data.
     Returns a dict with precomputed DataFrames for CSV and plot generation.
+    Uses duckdb for high-performance aggregations.
     """
     makes = makes or []
     result = {}
     
     # 1. Inventory DataFrame
     if sim.inventory_snapshots:
-        df_inv = pd.DataFrame(sim.inventory_snapshots)
-        df_inv["time_h"] = pd.to_numeric(df_inv["time_h"], errors="coerce")
-        df_inv = df_inv.dropna(subset=["time_h"])
-        df_inv["day"] = pd.to_numeric(df_inv["day"], errors="coerce").fillna(0).astype(int)
-        df_inv = df_inv.sort_values(["store_key", "day"])
-        df_inv = df_inv.groupby(["store_key", "day"]).last().reset_index()
+        # Use tuples directly for fast DataFrame creation
+        cols_inv = ["day", "time_h", "product_class", "location", "equipment", "input", "store_key", "level", "capacity", "fill_pct"]
+        df_snapshots = pd.DataFrame.from_records(sim.inventory_snapshots, columns=cols_inv)
+        
+        # Use duckdb to process snapshots quickly
+        df_inv = duckdb.query("""
+            SELECT 
+                store_key, 
+                CAST(day AS INTEGER) as day,
+                LAST(level) as level,
+                LAST(capacity) as capacity,
+                LAST(time_h) as time_h
+            FROM df_snapshots
+            WHERE time_h IS NOT NULL
+            GROUP BY store_key, day
+            ORDER BY store_key, day
+        """).df()
+        
         df_inv["level"] = df_inv["level"].round(0).astype(int)
         
         try:
@@ -30,12 +44,14 @@ def build_report_frames(sim, makes=None):
     
     # 2. Action Log DataFrame
     if sim.action_log:
-        df_log = pd.DataFrame(sim.action_log)
-        df_log["time_h"] = pd.to_numeric(df_log["time_h"], errors="coerce")
-        df_log["time_d"] = pd.to_numeric(df_log.get("time_d", df_log["time_h"] // 24), errors="coerce").fillna(0).astype(int)
-        df_log["day"] = df_log["time_d"].astype(int) + 1
-        if "qty_t" not in df_log.columns and "qty" in df_log.columns:
-            df_log["qty_t"] = pd.to_numeric(df_log["qty"], errors="coerce").fillna(0.0).astype(float)
+        cols_log = [
+            "day", "time_h", "time_d", "process", "event", "location", "equipment", "product", 
+            "qty", "qty_in", "from_store", "from_level", "to_store", "to_level", "route_id", "vessel_id", "ship_state"
+        ]
+        df_log = pd.DataFrame.from_records(sim.action_log, columns=cols_log)
+        
+        # Ensure qty_t is available for flows
+        df_log["qty_t"] = pd.to_numeric(df_log["qty"], errors='coerce').fillna(0.0)
         result["df_log"] = df_log
     else:
         result["df_log"] = pd.DataFrame()
@@ -45,38 +61,26 @@ def build_report_frames(sim, makes=None):
     if not result["df_log"].empty:
         df_log = result["df_log"]
         
-        def aggregate_flow(mask, equipment_type, direction):
-            subset = df_log[mask].copy()
-            if subset.empty:
-                return
-            if direction == 'in':
-                subset["store_key"] = subset.get("to_store")
-            else:
-                subset["store_key"] = subset.get("from_store")
-            if "qty_t" not in subset.columns and "qty" in subset.columns:
-                subset["qty_t"] = pd.to_numeric(subset["qty"], errors="coerce").fillna(0.0).astype(float)
-            subset = subset.dropna(subset=["store_key"])
-            if subset.empty:
-                return
-            grouped = subset.groupby(["store_key", "day"])["qty_t"].sum().reset_index()
-            for _, row in grouped.iterrows():
-                sk = row["store_key"]
-                d = int(row["day"])
-                q = row["qty_t"]
-                if sk not in flows:
-                    flows[sk] = {}
-                if d not in flows[sk]:
-                    flows[sk][d] = {}
-                key = f"{equipment_type}_{direction}"
-                flows[sk][d][key] = flows[sk][d].get(key, 0) + q
+        # Use DuckDB to aggregate all flows at once
+        flow_agg = duckdb.query("""
+            SELECT 'Train' as equip, 'in' as dir, to_store as sk, day, SUM(qty_t) as q FROM df_log WHERE event = 'Unload' AND equipment = 'Train' AND to_store IS NOT NULL GROUP BY 1,2,3,4
+            UNION ALL
+            SELECT 'Ship' as equip, 'in' as dir, to_store as sk, day, SUM(qty_t) as q FROM df_log WHERE event IN ('Unload', 'ShipUnload') AND equipment = 'Ship' AND to_store IS NOT NULL GROUP BY 1,2,3,4
+            UNION ALL
+            SELECT 'Train' as equip, 'out' as dir, from_store as sk, day, SUM(qty_t) as q FROM df_log WHERE event = 'Load' AND equipment = 'Train' AND from_store IS NOT NULL GROUP BY 1,2,3,4
+            UNION ALL
+            SELECT 'Ship' as equip, 'out' as dir, from_store as sk, day, SUM(qty_t) as q FROM df_log WHERE event IN ('Load', 'ShipLoad') AND equipment = 'Ship' AND from_store IS NOT NULL GROUP BY 1,2,3,4
+            UNION ALL
+            SELECT 'Production' as equip, 'in' as dir, to_store as sk, day, SUM(qty_t) as q FROM df_log WHERE event IN ('Produce', 'ProducePartial') AND to_store IS NOT NULL GROUP BY 1,2,3,4
+            UNION ALL
+            SELECT 'Consumption' as equip, 'out' as dir, from_store as sk, day, SUM(qty_t) as q FROM df_log WHERE event IN ('Produce', 'ProducePartial') AND from_store IS NOT NULL GROUP BY 1,2,3,4
+        """).df()
         
-        aggregate_flow((df_log["event"] == "Unload") & (df_log["equipment"] == "Train"), "Train", "in")
-        aggregate_flow((df_log["event"].isin(["Unload", "ShipUnload"])) & (df_log["equipment"] == "Ship"), "Ship", "in")
-        aggregate_flow((df_log["event"] == "Load") & (df_log["equipment"] == "Train"), "Train", "out")
-        aggregate_flow((df_log["event"].isin(["Load", "ShipLoad"])) & (df_log["equipment"] == "Ship"), "Ship", "out")
-        # Include partial production as production/consumption
-        aggregate_flow((df_log["event"].isin(["Produce", "ProducePartial"]) ), "Production", "in")
-        aggregate_flow((df_log["event"].isin(["Produce", "ProducePartial"]) ), "Consumption", "out")
+        for _, row in flow_agg.iterrows():
+            sk, d, q, equip, direction = row['sk'], int(row['day']), row['q'], row['equip'], row['dir']
+            if sk not in flows: flows[sk] = {}
+            if d not in flows[sk]: flows[sk][d] = {}
+            flows[sk][d][f"{equip}_{direction}"] = q
 
     result["flows"] = flows
     
@@ -85,65 +89,45 @@ def build_report_frames(sim, makes=None):
     equipment_to_stores = {}
     
     for make_unit in makes:
-        loc = getattr(make_unit, 'location', '')
-        equip = getattr(make_unit, 'equipment', '')
+        loc, equip = getattr(make_unit, 'location', ''), getattr(make_unit, 'equipment', '')
         if loc and equip:
             unit_key = f"{loc}|{equip}"
-            if unit_key not in equipment_to_stores:
-                equipment_to_stores[unit_key] = set()
-            candidates = getattr(make_unit, 'candidates', []) or []
-            for cand in candidates:
-                out_key = getattr(cand, 'out_store_key', None)
-                if out_key:
-                    equipment_to_stores[unit_key].add(out_key)
-                out_keys = getattr(cand, 'out_store_keys', []) or []
-                for ok in out_keys:
-                    if ok:
-                        equipment_to_stores[unit_key].add(ok)
+            if unit_key not in equipment_to_stores: equipment_to_stores[unit_key] = set()
+            for cand in (getattr(make_unit, 'candidates', []) or []):
+                for ok in ([getattr(cand, 'out_store_key', None)] + (getattr(cand, 'out_store_keys', []) or [])):
+                    if ok: equipment_to_stores[unit_key].add(ok)
     
     if not result["df_log"].empty:
         df_log = result["df_log"]
-        production_events = df_log[(df_log["process"] == "Make") & (df_log["event"].isin(["Produce", "ProducePartial"]))]
-        if not production_events.empty:
-            for _, row in production_events.iterrows():
-                loc = row.get("location", "")
-                equip = row.get("equipment", "")
-                to_store = row.get("to_store", "")
-                if loc and equip and to_store:
-                    unit_key = f"{loc}|{equip}"
-                    if unit_key not in equipment_to_stores:
-                        equipment_to_stores[unit_key] = set()
-                    equipment_to_stores[unit_key].add(to_store)
+        # Fast equipment_to_stores update from log
+        prod_map = duckdb.query("""
+            SELECT DISTINCT location, equipment, to_store 
+            FROM df_log 
+            WHERE process = 'Make' AND event IN ('Produce', 'ProducePartial') 
+              AND location IS NOT NULL AND equipment IS NOT NULL AND to_store IS NOT NULL
+        """).df()
+        for _, row in prod_map.iterrows():
+            uk = f"{row['location']}|{row['equipment']}"
+            if uk not in equipment_to_stores: equipment_to_stores[uk] = set()
+            equipment_to_stores[uk].add(row['to_store'])
+
+        # Aggregated downtime
+        dt_agg = duckdb.query("""
+            SELECT 
+                location, equipment, day,
+                SUM(CASE WHEN event IN ('Maintenance', 'MaintenanceStart') THEN COALESCE(qty, 1.0) ELSE 0 END) as Maintenance,
+                SUM(CASE WHEN event IN ('Breakdown', 'BreakdownStart') THEN COALESCE(qty, 1.0) ELSE 0 END) as Breakdown,
+                SUM(CASE WHEN event = 'ResourceWait' THEN COALESCE(qty, 1.0) ELSE 0 END) as ResourceWait,
+                SUM(CASE WHEN event = 'ProduceBlocked' THEN COALESCE(qty, 1.0) ELSE 0 END) as Blocked,
+                SUM(CASE WHEN event = 'Idle' THEN COALESCE(qty, 1.0) ELSE 0 END) as Idle
+            FROM df_log
+            WHERE process IN ('Downtime', 'Make', 'Move')
+            GROUP BY 1, 2, 3
+        """).df()
         
-        downtime_events = df_log[df_log["process"] == "Downtime"]
-        if not downtime_events.empty:
-            for _, row in downtime_events.iterrows():
-                loc = row.get("location", "Unknown")
-                equip = row.get("equipment", "Unknown")
-                d = int(row["day"])
-                event_type = row.get("event", "Unknown")
-                hours = float(row.get("qty", 0) or 0)
-                unit_key = f"{loc}|{equip}"
-                if unit_key not in downtime_by_equipment:
-                    downtime_by_equipment[unit_key] = {}
-                if d not in downtime_by_equipment[unit_key]:
-                    downtime_by_equipment[unit_key][d] = {"Maintenance": 0, "Breakdown": 0}
-
-                # Map event types to aggregation keys
-                key = event_type
-                if event_type in ("Maintenance", "MaintenanceStart"):
-                    key = "Maintenance"
-                elif event_type in ("Breakdown", "BreakdownStart"):
-                    key = "Breakdown"
-
-                if key in downtime_by_equipment[unit_key][d]:
-                    # For per-hour events (Maintenance, Breakdown), count 1 hour each
-                    # For consolidated events (MaintenanceStart, BreakdownStart), use qty as total hours
-                    if event_type in ("MaintenanceStart", "BreakdownStart"):
-                        downtime_by_equipment[unit_key][d][key] += hours
-                    else:
-                        downtime_by_equipment[unit_key][d][key] += 1  # per-hour events count as 1 hour each
-
+        for uk, group in dt_agg.groupby(['location', 'equipment']):
+            unit_key = f"{uk[0]}|{uk[1]}"
+            downtime_by_equipment[unit_key] = group.set_index('day')[['Maintenance', 'Breakdown', 'ResourceWait', 'Blocked', 'Idle']].to_dict('index')
 
     result["downtime_by_equipment"] = downtime_by_equipment
     result["equipment_to_stores"] = equipment_to_stores
@@ -151,18 +135,12 @@ def build_report_frames(sim, makes=None):
     store_to_equipment = {}
     for unit_key, stores in equipment_to_stores.items():
         for store_key in stores:
-            if store_key not in store_to_equipment:
-                store_to_equipment[store_key] = set()
+            if store_key not in store_to_equipment: store_to_equipment[store_key] = set()
             store_to_equipment[store_key].add(unit_key)
     result["store_to_equipment"] = store_to_equipment
     
     # 5. Store levels and unmet demand
-    ending = []
-    for key, cont in sim.stores.items():
-        ending.append({"Store": key, "Level": round(cont.level, 1), "Capacity": cont.capacity})
-    result["df_store_levels"] = pd.DataFrame(ending)
-    
-    unmet_rows = [{"Key": k, "Unmet": round(float(v), 2)} for k, v in sim.unmet.items()]
-    result["df_unmet"] = pd.DataFrame(unmet_rows)
+    result["df_store_levels"] = pd.DataFrame([{"Store": k, "Level": round(c.level, 1), "Capacity": c.capacity} for k, c in sim.stores.items()])
+    result["df_unmet"] = pd.DataFrame([{"Key": k, "Unmet": round(float(v), 2)} for k, v in sim.unmet.items()])
     
     return result

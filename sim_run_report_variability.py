@@ -17,13 +17,18 @@ import plotly.graph_objects as go
 from sim_run_types import StoreConfig
 
 
-def collect_variability_data(sim, store_configs: list, makes: list, settings: dict) -> dict:
+def collect_variability_data(sim, store_configs: list, makes: list, settings: dict, df_log: pd.DataFrame = None) -> dict:
     """
     Collect actual variability data from the simulation run.
     
     Returns dict with actual simulation data for variability analysis.
     """
-    df_log = pd.DataFrame(sim.action_log) if sim.action_log else pd.DataFrame()
+    if df_log is None:
+        cols_log = [
+            "day", "time_h", "time_d", "process", "event", "location", "equipment", "product", 
+            "qty", "qty_in", "from_store", "from_level", "to_store", "to_level", "route_id", "vessel_id", "ship_state"
+        ]
+        df_log = pd.DataFrame.from_records(sim.action_log, columns=cols_log) if sim.action_log else pd.DataFrame()
     
     variability = {
         'settings': {
@@ -64,45 +69,35 @@ def collect_variability_data(sim, store_configs: list, makes: list, settings: di
         return variability
     
     # Parse breakdown events - group by equipment for per-equipment PDFs
-    breakdown_start_rows = df_log[(df_log['process'] == 'Downtime') & (df_log['event'] == 'BreakdownStart')]
+    all_breakdown_rows = df_log[(df_log['process'] == 'Downtime') & (df_log['event'].isin(['BreakdownStart', 'Breakdown']))]
     
-    if not breakdown_start_rows.empty:
-        for _, row in breakdown_start_rows.iterrows():
-            equip = row['equipment']
-            duration = row['qty'] if pd.notna(row['qty']) and row['qty'] > 0 else 1
-            
-            variability['breakdown_events'].append({
-                'equipment': equip,
-                'start_time': row['time_h'],
-                'duration_hours': float(duration)
-            })
+    if not all_breakdown_rows.empty:
+        for equip in all_breakdown_rows['equipment'].unique():
+            equip_rows = all_breakdown_rows[all_breakdown_rows['equipment'] == equip].sort_values(by='time_h')
+            times = equip_rows['time_h'].tolist()
             
             if equip not in variability['breakdown_by_equipment']:
                 variability['breakdown_by_equipment'][equip] = []
-            variability['breakdown_by_equipment'][equip].append(float(duration))
-    else:
-        breakdown_rows = df_log[(df_log['process'] == 'Downtime') & (df_log['event'] == 'Breakdown')]
-        if not breakdown_rows.empty:
-            for equip in breakdown_rows['equipment'].unique():
-                equip_rows = breakdown_rows[breakdown_rows['equipment'] == equip].sort_values(by='time_h')
-                times = equip_rows['time_h'].tolist()
+            
+            if not times:
+                continue
                 
-                if equip not in variability['breakdown_by_equipment']:
-                    variability['breakdown_by_equipment'][equip] = []
-                
-                i = 0
-                while i < len(times):
-                    duration = 1
-                    while i + 1 < len(times) and times[i + 1] - times[i] <= 1.5:
-                        duration += 1
-                        i += 1
-                    variability['breakdown_events'].append({
-                        'equipment': equip,
-                        'start_time': times[i - duration + 1] if duration > 1 else times[i],
-                        'duration_hours': float(duration)
-                    })
-                    variability['breakdown_by_equipment'][equip].append(float(duration))
+            i = 0
+            while i < len(times):
+                start_time = times[i]
+                duration = 1
+                # Group consecutive hours (within 1.5h to allow for small floating point differences or sub-hour steps if any)
+                while i + 1 < len(times) and times[i+1] - times[i] <= 1.5:
+                    duration += 1
                     i += 1
+                
+                variability['breakdown_events'].append({
+                    'equipment': equip,
+                    'start_time': start_time,
+                    'duration_hours': float(duration)
+                })
+                variability['breakdown_by_equipment'][equip].append(float(duration))
+                i += 1
     
     # Parse ship state changes to extract berth waiting times
     # Track time spent in WAITING_FOR_BERTH state per vessel
@@ -139,6 +134,8 @@ def collect_variability_data(sim, store_configs: list, makes: list, settings: di
     return variability
 
 
+import orjson
+
 def generate_variability_report(variability: dict, out_dir: Path) -> Path:
     """
     Generate an HTML report with probability density graphs for variability analysis.
@@ -148,6 +145,8 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     
     html_parts = []
+    chart_ids = []
+    chart_data_list = []
     
     html_parts.append(f'''<!DOCTYPE html>
 <html>
@@ -214,11 +213,9 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
             border: 1px solid #e2e8f0;
             min-height: 320px;
         }}
-        .chart-card .plotly-graph-div {{
-            width: 100% !important;
-        }}
-        .chart-card .js-plotly-plot {{
-            width: 100% !important; overflow: hidden !important;
+        .plotly-chart {{
+            width: 100%;
+            height: 320px;
         }}
         .plot-title {{
             font-weight: 600;
@@ -249,25 +246,15 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
             background: #f8fafc;
             border-radius: 8px;
         }}
-        .equipment-grid {{
+        .equipment-grid, .store-grid {{
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
             gap: 24px;
             overflow: visible;
         }}
-        .store-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
-            gap: 24px;
-            overflow: visible;
-        }}
-        .js-plotly-plot {{ width: 100% !important; overflow: hidden !important; }}
-        /* Removed main-svg overflow override to avoid bleed into adjacent cells */
-        /* .js-plotly-plot .main-svg {{ overflow: visible !important; }} */
     </style>
 </head>
 <body>
-    <!-- Removed forced Plotly resize script; charts will use responsive config -->
     <div class="container">
         <a href="/outputs/sim_outputs_plots_all.html" class="back-link">&larr; Back to Interactive Report</a>
         <h1>Variability Analysis</h1>
@@ -383,12 +370,14 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
             fig.update_xaxes(autorange=True)
             fig.update_yaxes(autorange=True)
             
-            chart_html = fig.to_html(full_html=False, include_plotlyjs=False, config={'responsive': True})
+            chart_id = f"chart_{len(chart_ids)}"
+            chart_ids.append(chart_id)
+            chart_data_list.append(fig.to_dict())
 
             html_parts.append(f'''
                 <div class="chart-card">
                     <div class="plot-title">{equip} <span style="color:#64748b;font-weight:normal">({n_events} events, avg {eq_avg:.1f}h, max {eq_max:.0f}h)</span></div>
-                    {chart_html}
+                    <div id="{chart_id}" class="plotly-chart"></div>
                 </div>
 ''')
         
@@ -519,12 +508,14 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
             fig.update_xaxes(autorange=True)
             fig.update_yaxes(autorange=True)
             
-            chart_html = fig.to_html(full_html=False, include_plotlyjs=False, config={'responsive': True})
+            chart_id = f"chart_{len(chart_ids)}"
+            chart_ids.append(chart_id)
+            chart_data_list.append(fig.to_dict())
 
             html_parts.append(f'''
                 <div class="chart-card">
                     <div class="plot-title">{berth} <span style="color:#64748b;font-weight:normal">({n_events} events, avg {berth_avg:.1f}h, max {berth_max:.1f}h)</span></div>
-                    {chart_html}
+                    <div id="{chart_id}" class="plotly-chart"></div>
                 </div>
 ''')
         
@@ -636,12 +627,14 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
             fig.update_xaxes(autorange=True)
             fig.update_yaxes(autorange=True)
             
-            chart_html = fig.to_html(full_html=False, include_plotlyjs=False, config={'responsive': True})
+            chart_id = f"chart_{len(chart_ids)}"
+            chart_ids.append(chart_id)
+            chart_data_list.append(fig.to_dict())
 
             html_parts.append(f'''
                 <div class="chart-card">
                     <div class="plot-title">{store['store_key']} <span style="color:#64748b;font-weight:normal">(Range: {low:.1f} - {high:.1f} kT, Actual: {actual:.1f} kT)</span></div>
-                    {chart_html}
+                    <div id="{chart_id}" class="plotly-chart"></div>
                 </div>
 ''')
         
@@ -664,24 +657,27 @@ def generate_variability_report(variability: dict, out_dir: Path) -> Path:
         </div>
 ''')
     
-    html_parts.append('''
+    # Add Javascript to render charts
+    def default_handler(obj):
+        if hasattr(obj, "tolist"):
+            return obj.tolist()
+        if hasattr(obj, "item"):
+            return obj.item()
+        raise TypeError
+        
+    html_parts.append(f'''
     </div>
+    <script>
+    const chartData = {orjson.dumps(chart_data_list, default=default_handler).decode('utf-8')};
+    const chartIds = {orjson.dumps(chart_ids).decode('utf-8')};
+    
+    document.addEventListener('DOMContentLoaded', function() {{
+        chartIds.forEach((id, index) => {{
+            Plotly.newPlot(id, chartData[index].data, chartData[index].layout, {{responsive: true, displayModeBar: false}});
+        }});
+    }});
+    </script>
 </body>
-<script>
-// Ensure charts size correctly on first render without a page reload
-document.addEventListener('DOMContentLoaded', function() {
-  try {
-    var plots = document.querySelectorAll('.js-plotly-plot');
-    plots.forEach(function(plot) {
-      if (window.Plotly && plot) {
-        Plotly.Plots.resize(plot);
-      }
-    });
-  } catch (e) {
-    // no-op
-  }
-});
-</script>
 </html>
 ''')
     

@@ -5,8 +5,12 @@ from typing import Callable, Dict
 
 def consumer(env, store, demand_key: str, demand_rate: float,
              truck_load: float, step_h: float,
-             log_func: Callable, unmet_dict: Dict[str, float]):
+             log_func: Callable, unmet_dict: Dict[str, float], sim=None):
     while True:
+        # Wait for Step 1: Reduce the Inventory by the "Deliver" Qty
+        if sim:
+            yield sim.wait_for_step(1)
+        
         per_step = float(demand_rate) * step_h
         remaining_need = round(per_step, 2)
         unmet_total = 0.0
@@ -27,6 +31,7 @@ def consumer(env, store, demand_key: str, demand_rate: float,
             take = min(float(store.level), truck_load)
             if take > 0:
                 yield store.get(take)
+                level_after = store.level
                 log_func(
                     process="Deliver",
                     event="Demand",
@@ -35,7 +40,7 @@ def consumer(env, store, demand_key: str, demand_rate: float,
                     product=prod,
                     qty=take,
                     from_store=demand_key,
-                    from_level=store.level,
+                    from_level=level_after,
                     to_store=None,
                     to_level=None,
                     route_id=None
@@ -50,6 +55,7 @@ def consumer(env, store, demand_key: str, demand_rate: float,
             take = min(float(store.level), remainder)
             if take > 0:
                 yield store.get(take)
+                level_after = store.level
                 log_func(
                     process="Deliver",
                     event="Demand",
@@ -58,7 +64,7 @@ def consumer(env, store, demand_key: str, demand_rate: float,
                     product=prod,
                     qty=take,
                     from_store=demand_key,
-                    from_level=store.level,
+                    from_level=level_after,
                     to_store=None,
                     to_level=None,
                     route_id=None
@@ -71,4 +77,5 @@ def consumer(env, store, demand_key: str, demand_rate: float,
         if unmet_total > 0:
             unmet_dict[demand_key] = round(unmet_dict.get(demand_key, 0.0) + unmet_total, 2)
 
-        yield env.timeout(step_h)
+        if not sim:
+            yield env.timeout(step_h)

@@ -154,15 +154,16 @@ def extract_kpis_from_sim(sim):
         
         # Process action log
         if sim.action_log:
-            df_log = pd.DataFrame(sim.action_log)
-            df_log["time_h"] = pd.to_numeric(df_log["time_h"], errors="coerce")
-            df_log["time_d"] = pd.to_numeric(df_log.get("time_d", df_log["time_h"] // 24), errors="coerce").fillna(0).astype(int)
-            df_log["day"] = df_log["time_d"].astype(int) + 1
-
+            cols_log = [
+                "day", "time_h", "time_d", "process", "event", "location", "equipment", "product", 
+                "qty", "qty_in", "from_store", "from_level", "to_store", "to_level", "route_id", "vessel_id", "ship_state"
+            ]
+            df_log = pd.DataFrame.from_records(sim.action_log, columns=cols_log)
+            
             # Total production: include ProducePartial
             prod = df_log[(df_log['process'] == 'Make') & (df_log['event'].isin(['Produce','ProducePartial']))]
             if not prod.empty and 'qty' in prod.columns:
-                kpis['total_production'] = prod['qty'].astype(float).sum()
+                kpis['total_production'] = pd.to_numeric(prod['qty'], errors='coerce').sum()
             
             # Ship trips (unloads = completed trips)
             ship_moves = df_log[(df_log['process'] == 'Move') & (df_log['equipment'] == 'Ship') & (df_log['event'] == 'Unload')]
@@ -174,9 +175,10 @@ def extract_kpis_from_sim(sim):
         
         # Average inventory utilization from snapshots
         if sim.inventory_snapshots:
-            df_inv = pd.DataFrame(sim.inventory_snapshots)
+            cols_inv = ["day", "time_h", "product_class", "location", "equipment", "input", "store_key", "level", "capacity", "fill_pct"]
+            df_inv = pd.DataFrame.from_records(sim.inventory_snapshots, columns=cols_inv)
             if 'level' in df_inv.columns and 'capacity' in df_inv.columns:
-                df_inv['pct'] = (df_inv['level'] / df_inv['capacity']) * 100
+                df_inv['pct'] = (pd.to_numeric(df_inv['level'], errors='coerce') / pd.to_numeric(df_inv['capacity'], errors='coerce')) * 100
                 kpis['avg_inventory_pct'] = df_inv['pct'].mean()
                 
     except Exception as e:
@@ -313,14 +315,24 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
         
         # Generate variability report with actual simulation data
         var_start = time.time()
-        variability = collect_variability_data(sim, stores_cfg, makes, settings)
+        variability = collect_variability_data(sim, stores_cfg, makes, settings, df_log=report_data.get("df_log"))
         generate_variability_report(variability, out_dir)
         var_elapsed = int(time.time() - var_start)
         log(f"Variability analysis report generated ({var_elapsed}s)")
 
     # --- MOVEMENT SUMMARY ---
-    df_log = pd.DataFrame(sim.action_log) if sim.action_log else pd.DataFrame()
-    if not df_log.empty:
+    df_log = report_data.get("df_log") if artifacts == 'full' else None
+    if df_log is None and sim.action_log:
+        cols_log = [
+            "day", "time_h", "time_d", "process", "event", "location", "equipment", "product", 
+            "qty", "qty_in", "from_store", "from_level", "to_store", "to_level", "route_id", "vessel_id", "ship_state"
+        ]
+        df_log = pd.DataFrame.from_records(sim.action_log, columns=cols_log)
+        # Ensure numeric for summing
+        df_log['qty'] = pd.to_numeric(df_log['qty'], errors='coerce').fillna(0)
+
+    if df_log is not None and not df_log.empty:
+        # Movement summary logic
         n_ship_loads = len(df_log[(df_log['event'] == 'Load') & (df_log['equipment'] == 'Ship')])
         n_train_loads = len(df_log[(df_log['event'] == 'Load') & (df_log['equipment'] == 'Train')])
         ship_tons = df_log[(df_log['event'] == 'Load') & (df_log['equipment'] == 'Ship')]['qty'].sum()

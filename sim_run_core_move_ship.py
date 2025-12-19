@@ -166,7 +166,8 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                 vessel_id: int = 1,
                 sole_supplier_stores: Optional[set] = None,
                 production_rates: Optional[Dict[str, float]] = None,
-                store_capacities: Optional[Dict[str, float]] = None):
+                store_capacities: Optional[Dict[str, float]] = None,
+                sim=None):
     """
     Main ship vessel process. This is called once per vessel by the simulation core.
     Follows the state machine: IDLE -> LOADING -> IN_TRANSIT -> WAITING_FOR_BERTH -> UNLOADING -> IDLE
@@ -272,7 +273,22 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                     best_it = it
             
             if best_it is None:
-                yield env.timeout(1)
+                log_func(
+                    process="Move",
+                    event="Idle",
+                    location=current_location,
+                    equipment="Ship",
+                    product=None,
+                    qty=0,
+                    from_store=None,
+                    to_store=None,
+                    route_id=current_route_id or route_group,
+                    vessel_id=vessel_id
+                )
+                if sim:
+                    yield sim.wait_for_step(7)
+                else:
+                    yield env.timeout(1)
                 continue
             
             chosen_itinerary = best_it
@@ -293,6 +309,9 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                 log_state_change(state)
                 continue
             
+            # Wait for Step 3: Reduce inventory by the "Ship Load" Qty
+            # (Step 3 is now handled inside the berth request to be closer to the action)
+
             step = chosen_itinerary[itinerary_idx]
             kind = step.get('kind')
             
@@ -305,6 +324,21 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                     berth = _get_berth(env, port_berths, berth_info, location)
                     
                     with berth.request() as req:
+                        # Log waiting for berth if it's not immediate
+                        if not req.triggered:
+                            log_func(
+                                process="Move",
+                                event="Idle",
+                                location=location,
+                                equipment="Ship",
+                                product=product,
+                                qty=0,
+                                from_store=None,
+                                to_store=None,
+                                route_id=current_route_id or route_group,
+                                vessel_id=vessel_id
+                            )
+                        
                         yield req
                         
                         cont = stores[store_key]
@@ -318,20 +352,72 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                         time_per_hold = payload_per_hold / max(load_rate, 1.0)
                         max_wait_hours = 24.0
                         
+                        initial_from_level = float(cont.level)
                         for hold_num in range(holds_remaining):
+                            # Wait for Step 3: Reduce inventory by the "Ship Load" Qty
+                            if sim:
+                                yield sim.wait_for_step(3)
+
                             if cont.level >= payload_per_hold:
                                 yield cont.get(payload_per_hold)
-                                from_level = cont.level
+                                current_level = float(cont.level)
+                                log_func(
+                                    process="Move",
+                                    event="Load",
+                                    location=location,
+                                    equipment="Ship",
+                                    product=product,
+                                    qty=payload_per_hold,
+                                    from_store=store_key,
+                                    from_level=current_level,
+                                    to_store=None,
+                                    to_level=None,
+                                    route_id=current_route_id or route_group,
+                                    vessel_id=vessel_id
+                                )
                                 yield env.timeout(math.ceil(time_per_hold))
                                 total_loaded_this_stop += payload_per_hold
                             elif total_loaded_this_stop > 0:
                                 waited = 0.0
                                 while cont.level < payload_per_hold and waited < max_wait_hours:
-                                    yield env.timeout(1.0)
+                                    log_func(
+                                        process="Move",
+                                        event="Idle",
+                                        location=location,
+                                        equipment="Ship",
+                                        product=product,
+                                        qty=0,
+                                        from_store=store_key,
+                                        to_store=None,
+                                        route_id=current_route_id or route_group,
+                                        vessel_id=vessel_id
+                                    )
+                                    if sim:
+                                        yield sim.wait_for_step(7)
+                                    else:
+                                        yield env.timeout(1.0)
                                     waited += 1.0
                                 if cont.level >= payload_per_hold:
+                                    # Wait for Step 3: Reduce inventory by the "Ship Load" Qty
+                                    if sim:
+                                        yield sim.wait_for_step(3)
+                                    
                                     yield cont.get(payload_per_hold)
-                                    from_level = cont.level
+                                    current_level = float(cont.level)
+                                    log_func(
+                                        process="Move",
+                                        event="Load",
+                                        location=location,
+                                        equipment="Ship",
+                                        product=product,
+                                        qty=payload_per_hold,
+                                        from_store=store_key,
+                                        from_level=current_level,
+                                        to_store=None,
+                                        to_level=None,
+                                        route_id=current_route_id or route_group,
+                                        vessel_id=vessel_id
+                                    )
                                     yield env.timeout(math.ceil(time_per_hold))
                                     total_loaded_this_stop += payload_per_hold
                                 else:
@@ -341,20 +427,6 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                         
                         if total_loaded_this_stop > 0:
                             cargo[product] = cargo.get(product, 0.0) + total_loaded_this_stop
-                            
-                            log_func(
-                                process="Move",
-                                event="Load",
-                                location=location,
-                                equipment="Ship",
-                                product=product,
-                                qty=total_loaded_this_stop,
-                                from_store=store_key,
-                                from_level=from_level,
-                                to_store=None,
-                                to_level=None,
-                                route_id=current_route_id or route_group
-                            )
                 
                 itinerary_idx += 1
             
@@ -370,7 +442,10 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                         if s.get('kind') == 'load':
                             itinerary_idx = i
                             break
-                    yield env.timeout(1)
+                    if sim:
+                        yield sim.wait_for_step(7)
+                    else:
+                        yield env.timeout(1)
             else:
                 itinerary_idx += 1
         
@@ -380,7 +455,10 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                 state = ShipState.IDLE
                 log_state_change(state)
                 cargo = {}
-                yield env.timeout(1)
+                if sim:
+                    yield sim.wait_for_step(7)
+                else:
+                    yield env.timeout(1)
                 continue
             
             step = chosen_itinerary[itinerary_idx]
@@ -438,9 +516,15 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                 state = ShipState.IDLE
                 log_state_change(state)
                 cargo = {}
-                yield env.timeout(1)
+                if sim:
+                    yield sim.wait_for_step(7)
+                else:
+                    yield env.timeout(1)
                 continue
             
+            # Wait for Step 7: Increase inventory by the "Ship Offload" Qty
+            # (Step 7 is now handled inside the berth request to be closer to the action)
+
             step = chosen_itinerary[itinerary_idx]
             kind = step.get('kind')
             
@@ -463,7 +547,10 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                         room = float(cont.capacity - cont.level)
                         if room >= carried - 1e-6:
                             break
-                        yield env.timeout(1.0)
+                        if sim:
+                            yield sim.wait_for_step(7)
+                        else:
+                            yield env.timeout(1.0)
                         wait_hours += 1
                     
                     # After waiting, unload what we can (should be full if room became available)
@@ -474,8 +561,12 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                         unload_time = qty_to_unload / max(unload_rate, 1.0)
                         yield env.timeout(math.ceil(unload_time))
                         
+                        # Wait for Step 7: Increase inventory by the "Ship Offload" Qty
+                        if sim:
+                            yield sim.wait_for_step(7)
+
                         yield cont.put(qty_to_unload)
-                        to_level = cont.level
+                        to_level = float(cont.level)
                         
                         cargo[product] = carried - qty_to_unload
                         
@@ -490,7 +581,8 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                             from_level=None,
                             to_store=store_key,
                             to_level=to_level,
-                            route_id=current_route_id or route_group
+                            route_id=current_route_id or route_group,
+                            vessel_id=vessel_id
                         )
                 
                 itinerary_idx += 1
@@ -516,4 +608,8 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                 route_id=route_group
             )
             state = ShipState.IDLE
-            yield env.timeout(24)
+            if sim:
+                for _ in range(24):
+                    yield sim.wait_for_step(7)
+            else:
+                yield env.timeout(24)

@@ -1,6 +1,7 @@
 # sim_run_report_plot.py
 from typing import List, Tuple
 import pandas as pd
+import duckdb
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pathlib import Path
@@ -258,16 +259,15 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
                         store_downtime[day]["Breakdown"] += events.get("Breakdown", 0)
             
             if store_downtime:
+                shapes = []
                 # Maintenance days - merge consecutive days into intervals
                 maint_days = [d for d in store_downtime if store_downtime[d].get("Maintenance", 0) > 0]
                 maint_intervals = _merge_days_to_intervals(maint_days)
                 for start, end in maint_intervals:
-                    fig.add_vrect(
-                        x0=start - 0.5, x1=end + 0.5,
-                        fillcolor="rgba(255, 152, 0, 0.15)",
-                        layer="below",
-                        line_width=0,
-                    )
+                    shapes.append(dict(
+                        type="rect", x0=start - 0.5, x1=end + 0.5, y0=0, y1=1, yref="paper",
+                        fillcolor="rgba(255, 152, 0, 0.15)", layer="below", line_width=0
+                    ))
                 if maint_days:
                     fig.add_trace(go.Scatter(
                         x=[None], y=[None],
@@ -278,23 +278,24 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
                     ), secondary_y=False)
                 
                 # Breakdown days - merge consecutive days into intervals
-                breakdown_days = [d for d in store_downtime if store_downtime[d].get("Breakdown", 0) >= 24]
+                breakdown_days = [d for d in store_downtime if store_downtime[d].get("Breakdown", 0) > 0]
                 breakdown_intervals = _merge_days_to_intervals(breakdown_days)
                 for start, end in breakdown_intervals:
-                    fig.add_vrect(
-                        x0=start - 0.5, x1=end + 0.5,
-                        fillcolor="rgba(244, 67, 54, 0.15)",
-                        layer="below",
-                        line_width=0,
-                    )
+                    shapes.append(dict(
+                        type="rect", x0=start - 0.5, x1=end + 0.5, y0=0, y1=1, yref="paper",
+                        fillcolor="rgba(244, 67, 54, 0.15)", layer="below", line_width=0
+                    ))
                 if breakdown_days:
                     fig.add_trace(go.Scatter(
                         x=[None], y=[None],
-                        name="Breakdown (Full Day)",
+                        name="Breakdown",
                         mode='markers',
                         marker=dict(symbol='square', size=12, color='rgba(244, 67, 54, 0.4)'),
                         showlegend=True
                     ), secondary_y=False)
+                
+                if shapes:
+                    fig.update_layout(shapes=shapes)
                 
 
             cap = data["capacity"].iloc[0]
@@ -583,113 +584,78 @@ def _generate_manufacturing_charts(df_log: pd.DataFrame) -> dict:
     """Generate production charts for each manufacturing unit with downtime markers."""
     if df_log.empty: return {}
 
-    df_log['day'] = (pd.to_numeric(df_log['time_h'], errors='coerce') / 24.0).astype(int) + 1
+    # Use duckdb for fast downtime aggregation
+    dt_agg = duckdb.query("""
+        SELECT 
+            location, equipment, CAST(day AS INTEGER) as day,
+            COUNT(CASE WHEN event IN ('Maintenance', 'MaintenanceStart') THEN 1 END) as Maintenance,
+            COUNT(CASE WHEN event IN ('Breakdown', 'BreakdownStart') THEN 1 END) as Breakdown,
+            COUNT(*) as TotalDowntime
+        FROM df_log
+        WHERE process IN ('Downtime', 'Make', 'Move') 
+          AND event NOT IN ('Produce', 'ProducePartial', 'Load', 'Unload', 'ShipLoad', 'ShipUnload')
+        GROUP BY 1, 2, 3
+    """).df()
 
-    production = df_log[(df_log['process'] == 'Make') & (df_log['event'] == 'Produce')].copy()
-    downtime = df_log[df_log['process'] == 'Downtime'].copy()
-
-    if production.empty:
-        return {}
+    production = df_log[(df_log['process'] == 'Make') & (df_log['event'].isin(['Produce', 'ProducePartial']))].copy()
+    if production.empty: return {}
 
     production['qty_t'] = pd.to_numeric(production['qty'], errors='coerce').fillna(0)
-
     daily_prod = production.groupby(['location', 'equipment', 'product', 'day'])['qty_t'].sum().reset_index()
-
-    downtime_by_unit = {}
-    downtime_hours_by_unit = {}
-    if not downtime.empty:
-        for _, row in downtime.iterrows():
-            loc = row.get('location', '')
-            equip = row.get('equipment', '')
-            d = int(row['day'])
-            event_type = row.get('event', 'Unknown')
-            key = f"{loc}|{equip}"
-            if key not in downtime_by_unit:
-                downtime_by_unit[key] = {}
-                downtime_hours_by_unit[key] = {}
-            if d not in downtime_by_unit[key]:
-                downtime_by_unit[key][d] = {'Maintenance': 0, 'Breakdown': 0}
-                downtime_hours_by_unit[key][d] = 0
-            if event_type in downtime_by_unit[key][d]:
-                downtime_by_unit[key][d][event_type] += 1
-            downtime_hours_by_unit[key][d] += 1
 
     figs = {}
     for (loc, equip), group in daily_prod.groupby(['location', 'equipment']):
         fig = go.Figure()
-
+        unit_key = f"{loc}|{equip}"
+        
+        # Add production bars
         for product in group['product'].unique():
             prod_data = group[group['product'] == product]
             fig.add_trace(go.Bar(
-                x=prod_data['day'],
-                y=prod_data['qty_t'],
-                name=f"{product}",
+                x=prod_data['day'], y=prod_data['qty_t'], name=f"{product}",
                 hovertemplate=f"{product}: %{{y:,.0f}}t on Day %{{x}}<extra></extra>"
             ))
 
-        unit_key = f"{loc}|{equip}"
-        if unit_key in downtime_by_unit:
-            unit_dt = downtime_by_unit[unit_key]
-            max_prod = group['qty_t'].max() if not group.empty else 100
-
-            maint_days = [d for d in unit_dt if unit_dt[d].get('Maintenance', 0) > 0]
-            maint_intervals = _merge_days_to_intervals(maint_days)
-            for start, end in maint_intervals:
-                fig.add_vrect(
-                    x0=start - 0.5, x1=end + 0.5,
-                    fillcolor="rgba(255, 152, 0, 0.2)",
-                    layer="below",
-                    line_width=0,
-                )
-            if maint_days:
-                fig.add_trace(go.Scatter(
-                    x=[None], y=[None],
-                    name="Maintenance",
-                    mode='markers',
-                    marker=dict(symbol='square', size=12, color='rgba(255, 152, 0, 0.5)'),
-                    showlegend=True
-                ))
+        # Add downtime indicators
+        unit_dt = dt_agg[(dt_agg['location'] == loc) & (dt_agg['equipment'] == equip)]
+        if not unit_dt.empty:
+            shapes = []
             
-            breakdown_days = [d for d in unit_dt if unit_dt[d].get('Breakdown', 0) >= 24]
-            breakdown_intervals = _merge_days_to_intervals(breakdown_days)
-            for start, end in breakdown_intervals:
-                fig.add_vrect(
-                    x0=start - 0.5, x1=end + 0.5,
-                    fillcolor="rgba(244, 67, 54, 0.2)",
-                    layer="below",
-                    line_width=0,
-                )
-            if breakdown_days:
-                fig.add_trace(go.Scatter(
-                    x=[None], y=[None],
-                    name="Breakdown (Full Day)",
-                    mode='markers',
-                    marker=dict(symbol='square', size=12, color='rgba(244, 67, 54, 0.5)'),
-                    showlegend=True
+            # Maintenance
+            maint_days = unit_dt[unit_dt['Maintenance'] > 0]['day'].tolist()
+            for start, end in _merge_days_to_intervals(maint_days):
+                shapes.append(dict(
+                    type="rect", x0=start - 0.5, x1=end + 0.5, y0=0, y1=1, yref="paper",
+                    fillcolor="rgba(255, 152, 0, 0.2)", layer="below", line_width=0
                 ))
+            if maint_days:
+                fig.add_trace(go.Scatter(x=[None], y=[None], name="Maintenance", mode='markers',
+                                        marker=dict(symbol='square', size=12, color='rgba(255, 152, 0, 0.5)')))
 
+            # Breakdown
+            breakdown_days = unit_dt[unit_dt['Breakdown'] > 0]['day'].tolist()
+            for start, end in _merge_days_to_intervals(breakdown_days):
+                shapes.append(dict(
+                    type="rect", x0=start - 0.5, x1=end + 0.5, y0=0, y1=1, yref="paper",
+                    fillcolor="rgba(244, 67, 54, 0.2)", layer="below", line_width=0
+                ))
+            if breakdown_days:
+                fig.add_trace(go.Scatter(x=[None], y=[None], name="Breakdown", mode='markers',
+                                        marker=dict(symbol='square', size=12, color='rgba(244, 67, 54, 0.5)')))
+            
+            if shapes:
+                fig.update_layout(shapes=shapes)
 
-        if unit_key in downtime_hours_by_unit:
-            unit_hours = downtime_hours_by_unit[unit_key]
-            if unit_hours:
-                max_day = max(max(group['day']), max(unit_hours.keys()))
-                cumulative = 0
-                cum_days = []
-                cum_hours = []
-                for d in range(1, max_day + 1):
-                    cumulative += unit_hours.get(d, 0)
-                    cum_days.append(d)
-                    cum_hours.append(cumulative)
-                
-                if cum_hours and max(cum_hours) > 0:
-                    fig.add_trace(go.Scatter(
-                        x=cum_days, y=cum_hours,
-                        name="Cumulative Downtime",
-                        mode='lines',
-                        line=dict(color='#9c27b0', width=2, dash='dot'),
-                        yaxis='y2',
-                        hovertemplate="Day %{x}: %{y:.0f} hours total downtime<extra></extra>"
-                    ))
+            # Cumulative downtime line
+            max_day = int(max(group['day'].max(), unit_dt['day'].max()))
+            cum_hours = unit_dt.set_index('day')['TotalDowntime'].reindex(range(1, max_day + 1), fill_value=0).cumsum()
+            
+            if not cum_hours.empty and cum_hours.max() > 0:
+                fig.add_trace(go.Scatter(
+                    x=list(range(1, max_day + 1)), y=cum_hours.values, name="Cumulative Downtime",
+                    mode='lines', line=dict(color='#9c27b0', width=2, dash='dot'), yaxis='y2',
+                    hovertemplate="Day %{x}: %{y:.0f} hours total downtime<extra></extra>"
+                ))
 
         fig.update_layout(
             title=f"Production: {equip} @ {loc}",
