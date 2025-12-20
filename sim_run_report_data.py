@@ -115,11 +115,11 @@ def build_report_frames(sim, makes=None):
         dt_agg = duckdb.query("""
             SELECT 
                 location, equipment, day,
-                SUM(CASE WHEN event IN ('Maintenance', 'MaintenanceStart') THEN COALESCE(qty, 1.0) ELSE 0 END) as Maintenance,
-                SUM(CASE WHEN event IN ('Breakdown', 'BreakdownStart') THEN COALESCE(qty, 1.0) ELSE 0 END) as Breakdown,
-                SUM(CASE WHEN event = 'ResourceWait' THEN COALESCE(qty, 1.0) ELSE 0 END) as ResourceWait,
-                SUM(CASE WHEN event = 'ProduceBlocked' THEN COALESCE(qty, 1.0) ELSE 0 END) as Blocked,
-                SUM(CASE WHEN event = 'Idle' THEN COALESCE(qty, 1.0) ELSE 0 END) as Idle
+                SUM(CASE WHEN event IN ('Maintenance', 'MaintenanceStart') THEN COALESCE(qty_t, 1.0) ELSE 0 END) as Maintenance,
+                SUM(CASE WHEN event IN ('Breakdown', 'BreakdownStart') THEN COALESCE(qty_t, 1.0) ELSE 0 END) as Breakdown,
+                SUM(CASE WHEN event = 'ResourceWait' THEN COALESCE(qty_t, 1.0) ELSE 0 END) as ResourceWait,
+                SUM(CASE WHEN event = 'ProduceBlocked' THEN COALESCE(qty_t, 1.0) ELSE 0 END) as Blocked,
+                SUM(CASE WHEN event = 'Idle' THEN COALESCE(qty_t, 1.0) ELSE 0 END) as Idle
             FROM df_log
             WHERE process IN ('Downtime', 'Make', 'Move')
             GROUP BY 1, 2, 3

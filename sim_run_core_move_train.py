@@ -57,7 +57,7 @@ def transporter(env, route: TransportRoute,
                     location=route.origin_location,
                     equipment="Train",
                     product=route.product,
-                    qty=0,
+                    qty=1.0,
                     from_store=None,
                     to_store=None,
                     route_id=route_id_str
@@ -76,7 +76,7 @@ def transporter(env, route: TransportRoute,
                     location=route.origin_location,
                     equipment="Train",
                     product=route.product,
-                    qty=0,
+                    qty=1.0,
                     from_store=None,
                     to_store=None,
                     route_id=route_id_str
@@ -102,7 +102,7 @@ def transporter(env, route: TransportRoute,
                     location=route.origin_location,
                     equipment="Train",
                     product=route.product,
-                    qty=0,
+                    qty=1.0,
                     from_store=None,
                     to_store=None,
                     route_id=route_id_str
@@ -126,7 +126,7 @@ def transporter(env, route: TransportRoute,
                     location=route.origin_location,
                     equipment="Train",
                     product=route.product,
-                    qty=0,
+                    qty=1.0,
                     from_store=None,
                     to_store=None,
                     route_id=route_id_str
@@ -142,10 +142,31 @@ def transporter(env, route: TransportRoute,
         if sim:
             yield sim.wait_for_step(2)
 
-        yield origin_cont.get(take)
+        # Non-blocking get with logging
+        while True:
+            cont = origin_cont
+            if cont.level >= take - 1e-6:
+                yield cont.get(take)
+                break
+            else:
+                log_func(
+                    process="Move",
+                    event="Idle",
+                    location=route.origin_location,
+                    equipment="Train",
+                    product=route.product,
+                    qty=1.0,
+                    from_store=origin_key,
+                    to_store=None,
+                    route_id=route_id_str
+                )
+                if sim:
+                    yield sim.wait_for_step(7)
+                else:
+                    yield env.timeout(1)
+        
         origin_bal = float(origin_cont.level)  # Snapshot level after take
 
-        # Log LOAD immediately after getting from store, before the timeout
         log_func(
             process="Move",
             event="Load",
@@ -160,19 +181,59 @@ def transporter(env, route: TransportRoute,
             route_id=route_id_str
         )
 
-        yield env.timeout(math.ceil(take / max(route.load_rate_tph, 1e-6)))
+        load_h = math.ceil(take / max(route.load_rate_tph, 1e-6))
+        for _ in range(int(load_h)):
+            yield env.timeout(1)
 
         # 4. TRAVEL
-        yield env.timeout(math.ceil(route.to_min / 60.0) if route.to_min > 0 else 0)
+        travel_h = math.ceil(route.to_min / 60.0) if route.to_min > 0 else 0
+        for _ in range(int(travel_h)):
+            log_func(
+                process="Move",
+                event="Transit",
+                location=route.origin_location,
+                equipment="Train",
+                product=route.product,
+                qty=1.0,
+                from_store=None,
+                to_store=None,
+                route_id=route_id_str
+            )
+            yield env.timeout(1)
 
         # Wait for Step 6: Increase inventory by the "Train Offload" Qty
         if sim:
             yield sim.wait_for_step(6)
 
         # 5. UNLOAD (Put & Log)
-        yield env.timeout(math.ceil(take / max(route.unload_rate_tph, 1e-6)))
+        # Unload time is also busy time - let's log it hourly if it's > 1h
+        unload_h = math.ceil(take / max(route.unload_rate_tph, 1e-6))
+        for _ in range(int(unload_h)):
+            yield env.timeout(1)
 
-        yield dest_cont.put(take)
+        # Non-blocking put with logging
+        while True:
+            cont = dest_cont
+            if cont.capacity - cont.level >= take - 1e-6:
+                yield cont.put(take)
+                break
+            else:
+                log_func(
+                    process="Move",
+                    event="Idle",
+                    location=route.dest_location,
+                    equipment="Train",
+                    product=route.product,
+                    qty=1.0,
+                    from_store=None,
+                    to_store=dest_key,
+                    route_id=route_id_str
+                )
+                if sim:
+                    yield sim.wait_for_step(7)
+                else:
+                    yield env.timeout(1)
+        
         dest_bal = dest_cont.level  # Snapshot level after put
 
         log_func(
@@ -190,4 +251,17 @@ def transporter(env, route: TransportRoute,
         )
 
         # 6. RETURN
-        yield env.timeout(math.ceil(route.back_min / 60.0) if route.back_min > 0 else 0)
+        return_h = math.ceil(route.back_min / 60.0) if route.back_min > 0 else 0
+        for _ in range(int(return_h)):
+            log_func(
+                process="Move",
+                event="Return",
+                location=route.dest_location,
+                equipment="Train",
+                product=route.product,
+                qty=1.0,
+                from_store=None,
+                to_store=None,
+                route_id=route_id_str
+            )
+            yield env.timeout(1)

@@ -315,3 +315,22 @@ class SupplyChainSimulation:
         total_unmet = sum(self.unmet.values())
         if total_unmet > 0:
             _log_progress(f"Total unmet demand: {total_unmet:.1f} tons")
+
+        # Log ClosingBalance for each store
+        for key, cont in self.stores.items():
+            parts = key.split('|')
+            product = parts[0] if len(parts) > 0 else None
+            location = parts[1] if len(parts) > 1 else None
+            self.log(
+                process="Store",
+                event="ClosingBalance",
+                location=location,
+                equipment=None,
+                product=product,
+                qty=cont.level,
+                from_store=None,
+                from_level=None,
+                to_store=key,
+                to_level=cont.level,
+                route_id=None
+            )

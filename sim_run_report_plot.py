@@ -588,12 +588,11 @@ def _generate_manufacturing_charts(df_log: pd.DataFrame) -> dict:
     dt_agg = duckdb.query("""
         SELECT 
             location, equipment, CAST(day AS INTEGER) as day,
-            COUNT(CASE WHEN event IN ('Maintenance', 'MaintenanceStart') THEN 1 END) as Maintenance,
-            COUNT(CASE WHEN event IN ('Breakdown', 'BreakdownStart') THEN 1 END) as Breakdown,
-            COUNT(*) as TotalDowntime
+            SUM(CASE WHEN event IN ('Maintenance', 'MaintenanceStart') THEN COALESCE(qty_t, 1.0) ELSE 0 END) as Maintenance,
+            SUM(CASE WHEN event IN ('Breakdown', 'BreakdownStart') THEN COALESCE(qty_t, 1.0) ELSE 0 END) as Breakdown,
+            SUM(CASE WHEN event NOT IN ('Produce', 'ProducePartial', 'Load', 'Unload', 'ShipLoad', 'ShipUnload') THEN COALESCE(qty_t, 1.0) ELSE 0 END) as TotalDowntime
         FROM df_log
         WHERE process IN ('Downtime', 'Make', 'Move') 
-          AND event NOT IN ('Produce', 'ProducePartial', 'Load', 'Unload', 'ShipLoad', 'ShipUnload')
         GROUP BY 1, 2, 3
     """).df()
 

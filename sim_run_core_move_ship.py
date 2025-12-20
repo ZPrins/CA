@@ -279,7 +279,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                     location=current_location,
                     equipment="Ship",
                     product=None,
-                    qty=0,
+                    qty=1.0,
                     from_store=None,
                     to_store=None,
                     route_id=current_route_id or route_group,
@@ -325,21 +325,23 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                     
                     with berth.request() as req:
                         # Log waiting for berth if it's not immediate
-                        if not req.triggered:
+                        while not req.triggered:
                             log_func(
                                 process="Move",
                                 event="Idle",
                                 location=location,
                                 equipment="Ship",
                                 product=product,
-                                qty=0,
+                                qty=1.0,
                                 from_store=None,
                                 to_store=None,
                                 route_id=current_route_id or route_group,
                                 vessel_id=vessel_id
                             )
-                        
-                        yield req
+                            if sim:
+                                yield sim.env.any_of([req, sim.wait_for_step(7)])
+                            else:
+                                yield sim.env.any_of([req, env.timeout(1)])
                         
                         cont = stores[store_key]
                         load_rate, _ = _get_store_rates(store_rates, store_key, default_load_rate, default_unload_rate)
@@ -375,7 +377,8 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                     route_id=current_route_id or route_group,
                                     vessel_id=vessel_id
                                 )
-                                yield env.timeout(math.ceil(time_per_hold))
+                                for _ in range(int(math.ceil(time_per_hold))):
+                                    yield env.timeout(1)
                                 total_loaded_this_stop += payload_per_hold
                             elif total_loaded_this_stop > 0:
                                 waited = 0.0
@@ -386,7 +389,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                         location=location,
                                         equipment="Ship",
                                         product=product,
-                                        qty=0,
+                                        qty=1.0,
                                         from_store=store_key,
                                         to_store=None,
                                         route_id=current_route_id or route_group,
@@ -418,7 +421,8 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                         route_id=current_route_id or route_group,
                                         vessel_id=vessel_id
                                     )
-                                    yield env.timeout(math.ceil(time_per_hold))
+                                    for _ in range(int(math.ceil(time_per_hold))):
+                                        yield env.timeout(1)
                                     total_loaded_this_stop += payload_per_hold
                                 else:
                                     break
@@ -477,7 +481,20 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                     total_time = travel_hours + pilot_out + pilot_in
                     
                     if total_time > 0:
-                        yield env.timeout(math.ceil(total_time))
+                        for _ in range(int(math.ceil(total_time))):
+                            log_func(
+                                process="Move",
+                                event="Transit",
+                                location=current_location,
+                                equipment="Ship",
+                                product=None,
+                                qty=1.0,
+                                from_store=None,
+                                to_store=None,
+                                route_id=current_route_id or route_group,
+                                vessel_id=vessel_id
+                            )
+                            yield env.timeout(1)
                     
                     current_location = to_loc
                 
@@ -500,7 +517,23 @@ def transporter(env: simpy.Environment, route: TransportRoute,
             
             berth = _get_berth(env, port_berths, berth_info, unload_location)
             berth_req = berth.request()
-            yield berth_req
+            while not berth_req.triggered:
+                log_func(
+                    process="Move",
+                    event="Idle",
+                    location=unload_location,
+                    equipment="Ship",
+                    product=None,
+                    qty=1.0,
+                    from_store=None,
+                    to_store=None,
+                    route_id=current_route_id or route_group,
+                    vessel_id=vessel_id
+                )
+                if sim:
+                    yield env.any_of([berth_req, sim.wait_for_step(7)])
+                else:
+                    yield env.any_of([berth_req, env.timeout(1)])
             
             state = ShipState.UNLOADING
             log_state_change(state, unload_location)
@@ -559,7 +592,8 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                     
                     if qty_to_unload > 1e-6:
                         unload_time = qty_to_unload / max(unload_rate, 1.0)
-                        yield env.timeout(math.ceil(unload_time))
+                        for _ in range(int(math.ceil(unload_time))):
+                            yield env.timeout(1)
                         
                         # Wait for Step 7: Increase inventory by the "Ship Offload" Qty
                         if sim:

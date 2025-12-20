@@ -116,7 +116,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                 location=unit.location,
                 equipment=unit.equipment,
                 product=None,
-                qty=1.0,
+                qty=unit.step_hours,
                 from_store=None,
                 from_level=None,
                 to_store=None,
@@ -140,7 +140,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                 location=unit.location,
                 equipment=unit.equipment,
                 product=None,
-                qty=1.0,
+                qty=unit.step_hours,
                 from_store=None,
                 from_level=None,
                 to_store=None,
@@ -176,7 +176,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                         location=unit.location,
                         equipment=unit.equipment,
                         product=None,
-                        qty=1.0,
+                        qty=unit.step_hours,
                         duration_planned=planned,
                         from_store=None,
                         from_level=None,
@@ -208,7 +208,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     location=unit.location,
                     equipment=unit.equipment,
                     product=None,
-                    qty=0,
+                    qty=unit.step_hours,
                     from_store=None,
                     from_level=None,
                     to_store=None,
@@ -266,7 +266,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     location=unit.location,
                     equipment=unit.equipment,
                     product=None,
-                    qty=0,
+                    qty=unit.step_hours,
                     from_store=None,
                     from_level=None,
                     to_store=None,
@@ -319,7 +319,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     location=unit.location,
                     equipment=unit.equipment,
                     product=cand.product,
-                    qty=0.0,
+                    qty=unit.step_hours,
                     from_store=None,
                     from_level=None,
                     to_store=to_store_key,
@@ -350,18 +350,30 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
             needed = qty * cand.consumption_pct
             if from_store_key:
                 # Snapshot BEFORE get
-                pre_get_level = float(stores[from_store_key].level)
-                actual_available = pre_get_level
-                taken = min(actual_available, needed)
+                cont = stores[from_store_key]
+                pre_get_level = float(cont.level)
+                needed = qty * cand.consumption_pct
+                taken = min(pre_get_level, needed)
+                
                 if taken > EPS:
-                    # Safe to get - store has enough material
-                    yield stores[from_store_key].get(taken)
-                    # Snapshot level IMMEDIATELY after consumption
-                    from_store_bal = float(stores[from_store_key].level)
+                    # Non-blocking get attempt
+                    get_ev = cont.get(taken)
+                    # Use any_of with a 0-timeout to check if it's immediate
+                    res = yield env.any_of([get_ev, env.timeout(0)])
+                    
+                    if get_ev in res:
+                        # Success - immediately fulfilled
+                        from_store_bal = float(cont.level)
+                    else:
+                        # Blocked! Another process must have taken the stock
+                        # in the same simulation step. Cancel the request.
+                        if get_ev in cont.get_queue:
+                            cont.get_queue.remove(get_ev)
+                        taken = 0.0
+                        from_store_bal = pre_get_level
                 else:
-                    # Not enough material - skip get, set taken to 0
                     taken = 0.0
-                    from_store_bal = float(pre_get_level)
+                    from_store_bal = pre_get_level
                 
                 # Scale output if input was short
                 if needed > EPS and taken < needed - EPS:
@@ -392,43 +404,57 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                 yield sim.wait_for_step(5)
 
             # 4. Put allowed quantity (if any) - non-blocking pattern
-            put_succeeded = False
-            to_store_bal = stores[to_store_key].level
+            to_store_bal = float(stores[to_store_key].level)
             
             if allowed > EPS:
-                current_level = stores[to_store_key].level
-                actual_space = cap - current_level
-                if actual_space > EPS:
-                    safe_amount = min(allowed, actual_space)
-                    if safe_amount > EPS:
-                        put_event = stores[to_store_key].put(safe_amount)
-                        if put_event.triggered:
-                            yield put_event
-                            to_store_bal = float(stores[to_store_key].level)
-                            allowed = safe_amount
-                            
-                            if allowed < qty - EPS and from_store_key and cand.consumption_pct > 0:
-                                effective_factor = taken / qty if qty > 0 else 0
-                                excess_input = (qty - allowed) * effective_factor
-                                if excess_input > EPS:
-                                    yield stores[from_store_key].put(excess_input)
-                                    from_store_bal = float(stores[from_store_key].level)
-                        else:
-                            put_event.cancel()
-                            if taken > EPS and from_store_key:
-                                yield stores[from_store_key].put(taken)
+                cont = stores[to_store_key]
+                current_level = float(cont.level)
+                actual_space = cont.capacity - current_level
+                
+                safe_amount = min(allowed, actual_space)
+                if safe_amount > EPS:
+                    put_ev = cont.put(safe_amount)
+                    res = yield env.any_of([put_ev, env.timeout(0)])
+                    
+                    if put_ev in res:
+                        # Success
+                        to_store_bal = float(cont.level)
+                        allowed = safe_amount
+                        
+                        # Handle potential rollback of input if output was partially blocked
+                        if allowed < qty - EPS and from_store_key and cand.consumption_pct > 0:
+                            effective_factor = taken / qty if qty > 0 else 0
+                            excess_input = (qty - allowed) * effective_factor
+                            if excess_input > EPS:
+                                # Non-blocking rollback put
+                                rb_put = stores[from_store_key].put(excess_input)
+                                yield env.any_of([rb_put, env.timeout(0)]) 
+                                # even if rollback blocks, we don't want to hang the producer, 
+                                # but rollback usually shouldn't block as we just took it.
                                 from_store_bal = float(stores[from_store_key].level)
-                            allowed = 0.0
                     else:
+                        # Blocked on Put
+                        if put_ev in cont.put_queue:
+                            cont.put_queue.remove(put_ev)
+                        
+                        # Rollback ALL taken input since we couldn't put ANY output
+                        if taken > EPS and from_store_key:
+                            rb_put = stores[from_store_key].put(taken)
+                            yield env.any_of([rb_put, env.timeout(0)])
+                            from_store_bal = float(stores[from_store_key].level)
                         allowed = 0.0
                 else:
+                    # No space now
                     if taken > EPS and from_store_key:
-                        yield stores[from_store_key].put(taken)
+                        rb_put = stores[from_store_key].put(taken)
+                        yield env.any_of([rb_put, env.timeout(0)])
                         from_store_bal = float(stores[from_store_key].level)
                     allowed = 0.0
             else:
+                # No output allowed (e.g. qty was 0)
                 if taken > EPS and from_store_key:
-                    yield stores[from_store_key].put(taken)
+                    rb_put = stores[from_store_key].put(taken)
+                    yield env.any_of([rb_put, env.timeout(0)])
                     from_store_bal = float(stores[from_store_key].level)
                 allowed = 0.0
             if allowed <= 1e-9:
@@ -439,7 +465,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     location=unit.location,
                     equipment=unit.equipment,
                     product=cand.product,
-                    qty=0.0,
+                    qty=unit.step_hours,
                     qty_in=0.0, # All input rolled back
                     from_store=from_store_key,
                     from_level=from_store_bal,
