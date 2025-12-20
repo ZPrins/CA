@@ -92,6 +92,8 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
         downtime_by_equipment = report_data.get("downtime_by_equipment", {})
         equipment_to_stores = report_data.get("equipment_to_stores", {})
         store_to_equipment = report_data.get("store_to_equipment", {})
+        if not df_log.empty and "time_t" not in df_log.columns:
+            df_log["time_t"] = pd.to_numeric(df_log["time"], errors='coerce').fillna(0.0)
     else:
         # Legacy path: compute from sim directly
         if sim.inventory_snapshots:
@@ -111,12 +113,18 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
             df_inv = pd.DataFrame()
 
         if sim.action_log:
-            df_log = pd.DataFrame(sim.action_log)
+            cols_log = [
+                "day", "time_h", "time_d", "process", "event", "location", "equipment", "product", 
+                "qty", "time", "qty_in", "from_store", "from_level", "to_store", "to_level", "route_id", "vessel_id", "ship_state"
+            ]
+            df_log = pd.DataFrame.from_records(sim.action_log, columns=cols_log)
             df_log["time_h"] = pd.to_numeric(df_log["time_h"], errors="coerce")
             df_log["time_d"] = pd.to_numeric(df_log.get("time_d", df_log["time_h"] // 24), errors="coerce").fillna(0).astype(int)
             df_log["day"] = df_log["time_d"].astype(int) + 1
             if "qty_t" not in df_log.columns and "qty" in df_log.columns:
                 df_log["qty_t"] = pd.to_numeric(df_log["qty"], errors="coerce").fillna(0)
+            if "time_t" not in df_log.columns and "time" in df_log.columns:
+                df_log["time_t"] = pd.to_numeric(df_log["time"], errors="coerce").fillna(0)
         else:
             df_log = pd.DataFrame()
         
@@ -588,9 +596,13 @@ def _generate_manufacturing_charts(df_log: pd.DataFrame) -> dict:
     dt_agg = duckdb.query("""
         SELECT 
             location, equipment, CAST(day AS INTEGER) as day,
-            SUM(CASE WHEN event IN ('Maintenance', 'MaintenanceStart') THEN COALESCE(qty_t, 1.0) ELSE 0 END) as Maintenance,
-            SUM(CASE WHEN event IN ('Breakdown', 'BreakdownStart') THEN COALESCE(qty_t, 1.0) ELSE 0 END) as Breakdown,
-            SUM(CASE WHEN event NOT IN ('Produce', 'ProducePartial', 'Load', 'Unload', 'ShipLoad', 'ShipUnload') THEN COALESCE(qty_t, 1.0) ELSE 0 END) as TotalDowntime
+            SUM(CASE WHEN event IN ('Maintenance', 'MaintenanceStart') THEN COALESCE(time_t, 0.0) ELSE 0 END) as Maintenance,
+            SUM(CASE WHEN event IN ('Breakdown', 'BreakdownStart') THEN COALESCE(time_t, 0.0) ELSE 0 END) as Breakdown,
+            SUM(CASE WHEN event = 'Wait for Berth' THEN COALESCE(time_t, 0.0) ELSE 0 END) as WaitBerth,
+            SUM(CASE WHEN event = 'Idle' THEN COALESCE(time_t, 0.0) ELSE 0 END) as Idle,
+            SUM(CASE WHEN event = 'ResourceWait' THEN COALESCE(time_t, 0.0) ELSE 0 END) as ResourceWait,
+            SUM(CASE WHEN event = 'ProduceBlocked' THEN COALESCE(time_t, 0.0) ELSE 0 END) as Blocked,
+            SUM(CASE WHEN event NOT IN ('Produce', 'ProducePartial', 'Load', 'Unload', 'ShipLoad', 'ShipUnload') THEN COALESCE(time_t, 0.0) ELSE 0 END) as TotalDowntime
         FROM df_log
         WHERE process IN ('Downtime', 'Make', 'Move') 
         GROUP BY 1, 2, 3
@@ -641,6 +653,28 @@ def _generate_manufacturing_charts(df_log: pd.DataFrame) -> dict:
             if breakdown_days:
                 fig.add_trace(go.Scatter(x=[None], y=[None], name="Breakdown", mode='markers',
                                         marker=dict(symbol='square', size=12, color='rgba(244, 67, 54, 0.5)')))
+            
+            # Wait for Berth
+            wait_days = unit_dt[unit_dt['WaitBerth'] > 0]['day'].tolist()
+            for start, end in _merge_days_to_intervals(wait_days):
+                shapes.append(dict(
+                    type="rect", x0=start - 0.5, x1=end + 0.5, y0=0, y1=1, yref="paper",
+                    fillcolor="rgba(33, 150, 243, 0.2)", layer="below", line_width=0
+                ))
+            if wait_days:
+                fig.add_trace(go.Scatter(x=[None], y=[None], name="Wait for Berth", mode='markers',
+                                        marker=dict(symbol='square', size=12, color='rgba(33, 150, 243, 0.5)')))
+            
+            # Idle
+            idle_days = unit_dt[unit_dt['Idle'] > 0]['day'].tolist()
+            for start, end in _merge_days_to_intervals(idle_days):
+                shapes.append(dict(
+                    type="rect", x0=start - 0.5, x1=end + 0.5, y0=0, y1=1, yref="paper",
+                    fillcolor="rgba(158, 158, 158, 0.2)", layer="below", line_width=0
+                ))
+            if idle_days:
+                fig.add_trace(go.Scatter(x=[None], y=[None], name="Idle", mode='markers',
+                                        marker=dict(symbol='square', size=12, color='rgba(158, 158, 158, 0.5)')))
             
             if shapes:
                 fig.update_layout(shapes=shapes)

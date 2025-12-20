@@ -156,7 +156,7 @@ def extract_kpis_from_sim(sim):
         if sim.action_log:
             cols_log = [
                 "day", "time_h", "time_d", "process", "event", "location", "equipment", "product", 
-                "qty", "qty_in", "from_store", "from_level", "to_store", "to_level", "route_id", "vessel_id", "ship_state"
+                "qty", "time", "qty_in", "from_store", "from_level", "to_store", "to_level", "route_id", "vessel_id", "ship_state"
             ]
             df_log = pd.DataFrame.from_records(sim.action_log, columns=cols_log)
             
@@ -325,7 +325,7 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
     if df_log is None and sim.action_log:
         cols_log = [
             "day", "time_h", "time_d", "process", "event", "location", "equipment", "product", 
-            "qty", "qty_in", "from_store", "from_level", "to_store", "to_level", "route_id", "vessel_id", "ship_state"
+            "qty", "time", "qty_in", "from_store", "from_level", "to_store", "to_level", "route_id", "vessel_id", "ship_state"
         ]
         df_log = pd.DataFrame.from_records(sim.action_log, columns=cols_log)
         # Ensure numeric for summing

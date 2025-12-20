@@ -101,7 +101,19 @@ def collect_variability_data(sim, store_configs: list, makes: list, settings: di
     
     # Parse ship state changes to extract berth waiting times
     # Track time spent in WAITING_FOR_BERTH state per vessel
-    if 'ship_state' in df_log.columns and 'vessel_id' in df_log.columns:
+    # OR tracked by explicit "Wait for Berth" events in the log
+    wait_events = df_log[df_log['event'] == 'Wait for Berth']
+    if not wait_events.empty:
+        for (v_id, loc), group in wait_events.groupby(['vessel_id', 'location']):
+            # Each row is 1 hour of waiting
+            total_wait = group['time_h'].count()
+            variability['berth_waiting_events'].append({
+                'vessel_id': v_id,
+                'location': loc,
+                'wait_hours': float(total_wait)
+            })
+    
+    elif 'ship_state' in df_log.columns and 'vessel_id' in df_log.columns:
         ship_rows = df_log[df_log['process'] == 'ShipState'].sort_values(by=['vessel_id', 'time_h'])
 
         if not ship_rows.empty:

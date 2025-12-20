@@ -25,7 +25,7 @@ def write_csv_outputs(sim, out_dir: Path, report_data: dict = None):
     cols = [
         "day", "time_h", "time_d",
         "process", "event",
-        "location", "equipment", "product", "qty", "qty_in",
+        "location", "equipment", "product", "qty", "time", "qty_in",
         "from_store", "from_level",
         "to_store", "to_level",
         "route_id", "vessel_id", "ship_state"

@@ -46,12 +46,14 @@ def build_report_frames(sim, makes=None):
     if sim.action_log:
         cols_log = [
             "day", "time_h", "time_d", "process", "event", "location", "equipment", "product", 
-            "qty", "qty_in", "from_store", "from_level", "to_store", "to_level", "route_id", "vessel_id", "ship_state"
+            "qty", "time", "qty_in", "from_store", "from_level", "to_store", "to_level", "route_id", "vessel_id", "ship_state"
         ]
         df_log = pd.DataFrame.from_records(sim.action_log, columns=cols_log)
         
         # Ensure qty_t is available for flows
         df_log["qty_t"] = pd.to_numeric(df_log["qty"], errors='coerce').fillna(0.0)
+        # Ensure time_t is available for durations
+        df_log["time_t"] = pd.to_numeric(df_log["time"], errors='coerce').fillna(0.0)
         result["df_log"] = df_log
     else:
         result["df_log"] = pd.DataFrame()
@@ -115,11 +117,12 @@ def build_report_frames(sim, makes=None):
         dt_agg = duckdb.query("""
             SELECT 
                 location, equipment, day,
-                SUM(CASE WHEN event IN ('Maintenance', 'MaintenanceStart') THEN COALESCE(qty_t, 1.0) ELSE 0 END) as Maintenance,
-                SUM(CASE WHEN event IN ('Breakdown', 'BreakdownStart') THEN COALESCE(qty_t, 1.0) ELSE 0 END) as Breakdown,
-                SUM(CASE WHEN event = 'ResourceWait' THEN COALESCE(qty_t, 1.0) ELSE 0 END) as ResourceWait,
-                SUM(CASE WHEN event = 'ProduceBlocked' THEN COALESCE(qty_t, 1.0) ELSE 0 END) as Blocked,
-                SUM(CASE WHEN event = 'Idle' THEN COALESCE(qty_t, 1.0) ELSE 0 END) as Idle
+                SUM(CASE WHEN event IN ('Maintenance', 'MaintenanceStart') THEN COALESCE(time_t, 0.0) ELSE 0 END) as Maintenance,
+                SUM(CASE WHEN event IN ('Breakdown', 'BreakdownStart') THEN COALESCE(time_t, 0.0) ELSE 0 END) as Breakdown,
+                SUM(CASE WHEN event = 'ResourceWait' THEN COALESCE(time_t, 0.0) ELSE 0 END) as ResourceWait,
+                SUM(CASE WHEN event = 'ProduceBlocked' THEN COALESCE(time_t, 0.0) ELSE 0 END) as Blocked,
+                SUM(CASE WHEN event = 'Idle' THEN COALESCE(time_t, 0.0) ELSE 0 END) as Idle,
+                SUM(CASE WHEN event = 'Wait for Berth' THEN COALESCE(time_t, 0.0) ELSE 0 END) as WaitBerth
             FROM df_log
             WHERE process IN ('Downtime', 'Make', 'Move')
             GROUP BY 1, 2, 3
@@ -127,7 +130,7 @@ def build_report_frames(sim, makes=None):
         
         for uk, group in dt_agg.groupby(['location', 'equipment']):
             unit_key = f"{uk[0]}|{uk[1]}"
-            downtime_by_equipment[unit_key] = group.set_index('day')[['Maintenance', 'Breakdown', 'ResourceWait', 'Blocked', 'Idle']].to_dict('index')
+            downtime_by_equipment[unit_key] = group.set_index('day')[['Maintenance', 'Breakdown', 'ResourceWait', 'Blocked', 'Idle', 'WaitBerth']].to_dict('index')
 
     result["downtime_by_equipment"] = downtime_by_equipment
     result["equipment_to_stores"] = equipment_to_stores

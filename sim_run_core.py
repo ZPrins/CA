@@ -67,12 +67,12 @@ class SupplyChainSimulation:
         # If override_day is provided, use it only for the day bucket; keep true hourly time_h
         override_day = details.get('override_day', None)
         override_time_h = details.get('override_time_h', None)
-        time_h = override_time_h if override_time_h is not None else self.env.now
+        time_h = int(override_time_h) if override_time_h is not None else int(self.env.now)
         time_d = (override_day - 1) if override_day is not None else int(time_h // 24)
         day = time_d + 1
         
         # Log as a tuple with fixed structure for performance
-        # order: day, time_h, time_d, process, event, location, equipment, product, qty, qty_in, 
+        # order: day, time_h, time_d, process, event, location, equipment, product, qty, time, qty_in, 
         #        from_store, from_level, to_store, to_level, route_id, vessel_id, ship_state
         self.action_log.append((
             day,
@@ -84,6 +84,7 @@ class SupplyChainSimulation:
             details.get('equipment'),
             details.get('product'),
             details.get('qty'),
+            details.get('time'),
             details.get('qty_in'),
             details.get('from_store'),
             details.get('from_level'),
@@ -95,7 +96,7 @@ class SupplyChainSimulation:
         ))
 
     def snapshot(self):
-        now = self.env.now
+        now = int(round(self.env.now))
         day = int(now // 24)
         for key, cont in self.stores.items():
             parts = key.split("|")
@@ -328,6 +329,7 @@ class SupplyChainSimulation:
                 equipment=None,
                 product=product,
                 qty=cont.level,
+                time=0.0,
                 from_store=None,
                 from_level=None,
                 to_store=key,

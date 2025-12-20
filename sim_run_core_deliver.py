@@ -39,11 +39,13 @@ def consumer(env, store, demand_key: str, demand_rate: float,
                     equipment="Truck",
                     product=prod,
                     qty=take,
+                    time=0.0,
                     from_store=demand_key,
                     from_level=level_after,
                     to_store=None,
                     to_level=None,
-                    route_id=None
+                    route_id=None,
+                    override_time_h=env.now
                 )
 
             remaining_need -= truck_load
@@ -63,11 +65,13 @@ def consumer(env, store, demand_key: str, demand_rate: float,
                     equipment="Truck",
                     product=prod,
                     qty=take,
+                    time=0.0,
                     from_store=demand_key,
                     from_level=level_after,
                     to_store=None,
                     to_level=None,
-                    route_id=None
+                    route_id=None,
+                    override_time_h=env.now
                 )
 
             # Track unmet

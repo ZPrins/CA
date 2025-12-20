@@ -15,6 +15,51 @@ def transporter(env, route: TransportRoute,
                 sim=None):
     route_id_str = f"{route.origin_location}->{route.dest_location}"
 
+    # Helper to log accumulated idle time
+    idle_start_time = None
+    idle_start_day = None
+    idle_location = None
+    idle_store = None
+
+    def flush_idle():
+        nonlocal idle_start_time, idle_start_day, idle_location, idle_store
+        if idle_start_time is not None:
+            duration = env.now - idle_start_time
+            if duration > 1e-6:
+                # Ensure we use an integer day for the log
+                log_day = int(idle_start_time / 24) % 365 + 1
+                log_func(
+                    process="Move",
+                    event="Idle",
+                    location=idle_location,
+                    equipment="Train",
+                    product=route.product,
+                    time=float(round(duration)),
+                    from_store=idle_store if idle_location == route.origin_location else None,
+                    to_store=idle_store if idle_location == route.dest_location else None,
+                    route_id=route_id_str,
+                    override_day=log_day,
+                    override_time_h=idle_start_time
+                )
+            idle_start_time = None
+            idle_start_day = None
+            idle_location = None
+            idle_store = None
+
+    def log_idle(location, store=None):
+        nonlocal idle_start_time, idle_start_day, idle_location, idle_store
+        if idle_start_time is None:
+            idle_start_time = env.now
+            idle_start_day = int(env.now / 24) % 365 + 1
+            idle_location = location
+            idle_store = store
+        elif idle_location != location or idle_store != store:
+            flush_idle()
+            idle_start_time = env.now
+            idle_start_day = int(env.now / 24) % 365 + 1
+            idle_location = location
+            idle_store = store
+
     while True:
         # Before starting a new trip, sync to hour boundary if we finished a trip mid-hour
         # or if we are just starting. Actually, Step 2 will sync us.
@@ -51,17 +96,7 @@ def transporter(env, route: TransportRoute,
 
             if origin_cont is None or dest_cont is None:
                 # Either no origin had enough stock, or no destination had enough space yet.
-                log_func(
-                    process="Move",
-                    event="Idle",
-                    location=route.origin_location,
-                    equipment="Train",
-                    product=route.product,
-                    qty=1.0,
-                    from_store=None,
-                    to_store=None,
-                    route_id=route_id_str
-                )
+                log_idle(route.origin_location)
                 if sim:
                     yield sim.wait_for_step(7)
                 else:
@@ -70,17 +105,7 @@ def transporter(env, route: TransportRoute,
 
             # Final re-check immediately before securing inventory to reduce race-condition issues
             if origin_cont.level + 1e-6 < route.payload_t or ((dest_cont.capacity - dest_cont.level) + 1e-6 < route.payload_t):
-                log_func(
-                    process="Move",
-                    event="Idle",
-                    location=route.origin_location,
-                    equipment="Train",
-                    product=route.product,
-                    qty=1.0,
-                    from_store=None,
-                    to_store=None,
-                    route_id=route_id_str
-                )
+                log_idle(route.origin_location)
                 if sim:
                     yield sim.wait_for_step(7)
                 else:
@@ -96,17 +121,7 @@ def transporter(env, route: TransportRoute,
                     origin_key, origin_cont = ok, oc
                     break
             if origin_cont is None:
-                log_func(
-                    process="Move",
-                    event="Idle",
-                    location=route.origin_location,
-                    equipment="Train",
-                    product=route.product,
-                    qty=1.0,
-                    from_store=None,
-                    to_store=None,
-                    route_id=route_id_str
-                )
+                log_idle(route.origin_location)
                 if sim:
                     yield sim.wait_for_step(7)
                 else:
@@ -120,17 +135,7 @@ def transporter(env, route: TransportRoute,
             take = min(max(0.0, route.payload_t), origin_stock)
 
             if take <= 1e-6:
-                log_func(
-                    process="Move",
-                    event="Idle",
-                    location=route.origin_location,
-                    equipment="Train",
-                    product=route.product,
-                    qty=1.0,
-                    from_store=None,
-                    to_store=None,
-                    route_id=route_id_str
-                )
+                log_idle(route.origin_location)
                 if sim:
                     yield sim.wait_for_step(7)
                 else:
@@ -146,27 +151,16 @@ def transporter(env, route: TransportRoute,
         while True:
             cont = origin_cont
             if cont.level >= take - 1e-6:
-                yield cont.get(take)
+                flush_idle()
                 break
             else:
-                log_func(
-                    process="Move",
-                    event="Idle",
-                    location=route.origin_location,
-                    equipment="Train",
-                    product=route.product,
-                    qty=1.0,
-                    from_store=origin_key,
-                    to_store=None,
-                    route_id=route_id_str
-                )
+                log_idle(route.origin_location, origin_key)
                 if sim:
                     yield sim.wait_for_step(7)
                 else:
                     yield env.timeout(1)
         
-        origin_bal = float(origin_cont.level)  # Snapshot level after take
-
+        load_h = math.ceil(take / max(route.load_rate_tph, 1e-6))
         log_func(
             process="Move",
             event="Load",
@@ -174,32 +168,37 @@ def transporter(env, route: TransportRoute,
             equipment="Train",
             product=route.product,
             qty=take,
+            time=float(max(1.0, load_h)),
             from_store=origin_key,
-            from_level=origin_bal,
+            from_level=float(origin_cont.level - take),
             to_store=None,  # On Train
             to_level=None,
-            route_id=route_id_str
+            route_id=route_id_str,
+            override_time_h=env.now
         )
 
-        load_h = math.ceil(take / max(route.load_rate_tph, 1e-6))
-        for _ in range(int(load_h)):
-            yield env.timeout(1)
+        yield origin_cont.get(take)
+
+        if load_h > 0:
+            yield env.timeout(int(load_h))
 
         # 4. TRAVEL
         travel_h = math.ceil(route.to_min / 60.0) if route.to_min > 0 else 0
-        for _ in range(int(travel_h)):
+        if travel_h > 0:
+            flush_idle()
             log_func(
                 process="Move",
                 event="Transit",
                 location=route.origin_location,
                 equipment="Train",
                 product=route.product,
-                qty=1.0,
+                time=float(travel_h),
                 from_store=None,
                 to_store=None,
-                route_id=route_id_str
+                route_id=route_id_str,
+                override_time_h=env.now
             )
-            yield env.timeout(1)
+            yield env.timeout(int(travel_h))
 
         # Wait for Step 6: Increase inventory by the "Train Offload" Qty
         if sim:
@@ -208,33 +207,19 @@ def transporter(env, route: TransportRoute,
         # 5. UNLOAD (Put & Log)
         # Unload time is also busy time - let's log it hourly if it's > 1h
         unload_h = math.ceil(take / max(route.unload_rate_tph, 1e-6))
-        for _ in range(int(unload_h)):
-            yield env.timeout(1)
-
+        
         # Non-blocking put with logging
         while True:
             cont = dest_cont
             if cont.capacity - cont.level >= take - 1e-6:
-                yield cont.put(take)
+                flush_idle()
                 break
             else:
-                log_func(
-                    process="Move",
-                    event="Idle",
-                    location=route.dest_location,
-                    equipment="Train",
-                    product=route.product,
-                    qty=1.0,
-                    from_store=None,
-                    to_store=dest_key,
-                    route_id=route_id_str
-                )
+                log_idle(route.dest_location, dest_key)
                 if sim:
                     yield sim.wait_for_step(7)
                 else:
                     yield env.timeout(1)
-        
-        dest_bal = dest_cont.level  # Snapshot level after put
 
         log_func(
             process="Move",
@@ -243,25 +228,34 @@ def transporter(env, route: TransportRoute,
             equipment="Train",
             product=route.product,
             qty=take,
+            time=float(max(1.0, unload_h)),
             from_store=None,  # Off Train
             from_level=None,
             to_store=dest_key,
-            to_level=dest_bal,
-            route_id=route_id_str
+            to_level=float(dest_cont.level + take),
+            route_id=route_id_str,
+            override_time_h=env.now
         )
+
+        if unload_h > 0:
+            yield env.timeout(int(unload_h))
+
+        yield dest_cont.put(take)
 
         # 6. RETURN
         return_h = math.ceil(route.back_min / 60.0) if route.back_min > 0 else 0
-        for _ in range(int(return_h)):
+        if return_h > 0:
+            flush_idle()
             log_func(
                 process="Move",
                 event="Return",
                 location=route.dest_location,
                 equipment="Train",
                 product=route.product,
-                qty=1.0,
+                time=float(return_h),
                 from_store=None,
                 to_store=None,
-                route_id=route_id_str
+                route_id=route_id_str,
+                override_time_h=env.now
             )
-            yield env.timeout(1)
+            yield env.timeout(int(return_h))

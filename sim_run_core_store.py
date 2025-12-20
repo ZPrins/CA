@@ -29,6 +29,7 @@ def build_stores(env: simpy.Environment, stores_dict: dict, store_configs: List[
                 equipment=None,
                 product=product,
                 qty=opening,
+                time=0.0,
                 from_store=None,
                 from_level=None,
                 to_store=cfg.key,
