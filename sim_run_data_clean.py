@@ -65,11 +65,12 @@ def _normalize_ship_routes_wide_to_long(df: pd.DataFrame,
                 seq += 1
             elif 'Destination' in field_name and 'Location' in field_name:
                 dest_loc = val
-                long_rows.append(
-                    {'Route_Group': rg, 'Route_ID': rid, 'Sequence_ID': seq, 'Kind': 'sail', 'Location': dest_loc,
-                     'Store_Key': None, 'Product_Class': None})
-                seq += 1
-                current_loc = dest_loc
+                if dest_loc != current_loc:
+                    long_rows.append(
+                        {'Route_Group': rg, 'Route_ID': rid, 'Sequence_ID': seq, 'Kind': 'sail', 'Location': dest_loc,
+                         'Store_Key': None, 'Product_Class': None})
+                    seq += 1
+                    current_loc = dest_loc
             elif 'Unload' in field_name and 'Store' not in field_name:
                 # Try multiple store field name patterns
                 store_name = None
@@ -90,7 +91,7 @@ def _normalize_ship_routes_wide_to_long(df: pd.DataFrame,
                      'Store_Key': key, 'Product_Class': val})
                 seq += 1
 
-        if return_loc and return_loc.lower() != 'nan':
+        if return_loc and return_loc.lower() != 'nan' and return_loc != current_loc:
             long_rows.append(
                 {'Route_Group': rg, 'Route_ID': rid, 'Sequence_ID': seq, 'Kind': 'sail', 'Location': return_loc,
                  'Store_Key': None, 'Product_Class': None})
@@ -112,7 +113,11 @@ def clean_all_data(raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]
             "Input": "Product_Class",
             "Silo Max Capacity": "Capacity_T",
             "Silo Opening Stock (Low)": "Opening_Low_T",
-            "Silo Opening Stock (High)": "Opening_High_T"
+            "Silo Opening Stock (High)": "Opening_High_T",
+            "Load Rate (TPH)": "Load_Rate_TPH",
+            "Load Rate (ton/hr)": "Load_Rate_TPH",
+            "Unload Rate (TPH)": "Unload_Rate_TPH",
+            "Unload Rate (ton/hr)": "Unload_Rate_TPH"
         })
 
         df_store = clean_df_cols_str(df_store, ['Location', 'Equipment', 'Product_Class'])
@@ -128,7 +133,7 @@ def clean_all_data(raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]
 
         df_store['Store_Key'] = df_store.apply(make_key, axis=1)
 
-        for col in ['Capacity_T', 'Opening_Low_T', 'Opening_High_T']:
+        for col in ['Capacity_T', 'Opening_Low_T', 'Opening_High_T', 'Load_Rate_TPH', 'Unload_Rate_TPH']:
             if col in df_store.columns:
                 df_store[col] = pd.to_numeric(df_store[col], errors='coerce').fillna(0.0)
 
@@ -332,6 +337,7 @@ def clean_all_data(raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]
         "No. Vessels": "N_Units",
         "Origin Location": "Origin_Location",
         "Route avg Speed (knots)": "Speed_Knots",
+        "Max Wait Product (H)": "Max_Wait_Product_H",
         "#Holds": "Holds_Per_Vessel",
         "Payload per Hold": "Payload_Per_Hold_T"
     })
@@ -347,7 +353,7 @@ def clean_all_data(raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]
 
         df_ship['Payload_T'] = df_ship.apply(calc_payload_ship, axis=1)
         
-        for col in ['N_Units', 'Speed_Knots', 'Holds_Per_Vessel', 'Payload_Per_Hold_T']:
+        for col in ['N_Units', 'Speed_Knots', 'Holds_Per_Vessel', 'Payload_Per_Hold_T', 'Max_Wait_Product_H']:
             if col in df_ship.columns:
                 df_ship[col] = pd.to_numeric(df_ship[col], errors='coerce').fillna(0.0)
 

@@ -73,6 +73,8 @@ def apply_ui_overrides(raw_data: dict) -> dict:
                         df.loc[df.index[i], '#Holds'] = override['#Holds']
                     if 'Payload per Hold' in override:
                         df.loc[df.index[i], 'Payload per Hold'] = override['Payload per Hold']
+                    if 'Max Wait Product (H)' in override:
+                        df.loc[df.index[i], 'Max Wait Product (H)'] = override['Max Wait Product (H)']
             raw_data['Move_SHIP'] = df
             log(f"  [INFO] Applied UI overrides to Move_SHIP data ({len(overrides['move_ship'])} rows)")
         
@@ -238,6 +240,17 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
 
     # 3. Configure
     settings.update(run_settings)
+    
+    # Extract store rates from clean_data['Store'] and add to settings
+    store_rates = {}
+    if 'Store' in clean_data and not clean_data['Store'].empty:
+        for _, row in clean_data['Store'].iterrows():
+            sk = row.get('Store_Key')
+            lr = row.get('Load_Rate_TPH', 0.0)
+            ur = row.get('Unload_Rate_TPH', 0.0)
+            if sk:
+                store_rates[sk] = (float(lr), float(ur))
+    settings['store_rates'] = store_rates
 
     # Apply environment variable overrides
     if 'SIM_HORIZON_DAYS' in os.environ:

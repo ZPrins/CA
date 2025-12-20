@@ -48,6 +48,7 @@ class TransportRoute:
     speed_knots: Optional[float] = None
     holds_per_vessel: Optional[int] = None
     payload_per_hold_t: Optional[float] = None
+    max_wait_product_h: Optional[float] = None
     itineraries: Optional[List[List[dict]]] = None
     berth_info: Optional[Dict[str, dict]] = None
     nm_distance: Optional[Dict[tuple, float]] = None

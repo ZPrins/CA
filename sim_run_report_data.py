@@ -54,6 +54,13 @@ def build_report_frames(sim, makes=None):
         df_log["qty_t"] = pd.to_numeric(df_log["qty"], errors='coerce').fillna(0.0)
         # Ensure time_t is available for durations
         df_log["time_t"] = pd.to_numeric(df_log["time"], errors='coerce').fillna(0.0)
+        
+        # Collapse consecutive identical Ship log entries (e.g., waiting lines)
+        df_log = _collapse_ship_log(df_log)
+        
+        # Collapse Truck log entries by time_d, location, product
+        df_log = _collapse_truck_log(df_log)
+        
         result["df_log"] = df_log
     else:
         result["df_log"] = pd.DataFrame()
@@ -147,3 +154,134 @@ def build_report_frames(sim, makes=None):
     result["df_unmet"] = pd.DataFrame([{"Key": k, "Unmet": round(float(v), 2)} for k, v in sim.unmet.items()])
     
     return result
+
+
+def _collapse_ship_log(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Collapses consecutive log entries for the same vessel and event where all key parameters are identical.
+    Sums the time and quantity for these entries.
+    """
+    if df.empty:
+        return df
+
+    # Define columns that must be identical to collapse
+    # We include qty to ensure we don't collapse different load/unload amounts if they happen consecutively
+    group_cols = [
+        "process", "event", "location", "equipment", "product", 
+        "from_store", "to_store", "route_id", "vessel_id", "ship_state"
+    ]
+    
+    # We primarily target 'Ship' equipment as requested
+    is_ship = df['equipment'] == 'Ship'
+    if not is_ship.any():
+        return df
+        
+    df_ship = df[is_ship].copy()
+    df_others = df[~is_ship].copy()
+    
+    # Sort ship log by vessel and time to find consecutive entries for EACH vessel
+    df_ship = df_ship.sort_values(by=["vessel_id", "time_h"])
+    
+    # Identify consecutive groups for ships
+    # For comparison, normalize numeric columns and handle NA
+    # We use a custom comparison that ignores 'qty' for wait/idle events
+    temp_ship = df_ship[group_cols].copy()
+    for col in ["route_id", "vessel_id", "qty"]:
+        if col in temp_ship.columns:
+            temp_ship[col] = pd.to_numeric(temp_ship[col], errors='coerce')
+    
+    temp_ship = temp_ship.fillna("___NULL___")
+    
+    # Define which columns to compare. 
+    # For some events, we might want to ignore some columns.
+    # But for simplicity, let's stick to group_cols and ensure we group by vessel.
+    
+    # IMPORTANT: ship_changed should be True if CURRENT row is different from PREVIOUS row (of SAME vessel)
+    # We use shift(1) on the group
+    prev_temp_ship = df_ship.groupby("vessel_id")[group_cols].shift(1)
+    
+    # Normalize prev_temp_ship too
+    for col in ["route_id", "vessel_id", "qty"]:
+        if col in prev_temp_ship.columns:
+            prev_temp_ship[col] = pd.to_numeric(prev_temp_ship[col], errors='coerce')
+    prev_temp_ship = prev_temp_ship.fillna("___NULL___")
+
+    ship_changed = (temp_ship != prev_temp_ship).any(axis=1)
+    ship_group_id = ship_changed.cumsum()
+    
+    # Define aggregation: sum numeric values, keep 'first' for everything else
+    agg_dict = {
+        'day': 'first',
+        'time_h': 'first',
+        'time_d': 'first',
+        'process': 'first',
+        'event': 'first',
+        'location': 'first',
+        'equipment': 'first',
+        'product': 'first',
+        'qty': 'sum',
+        'time': 'sum',
+        'qty_in': 'sum',
+        'from_store': 'first',
+        'from_level': 'first',
+        'to_store': 'first',
+        'to_level': 'last',
+        'route_id': 'first',
+        'vessel_id': 'first',
+        'ship_state': 'first',
+        'qty_t': 'sum',
+        'time_t': 'sum'
+    }
+    
+    collapsed_ship = df_ship.groupby(ship_group_id).agg(agg_dict).reset_index(drop=True)
+    
+    # Re-combine and sort by time_h to preserve chronological order across all equipment
+    df_result = pd.concat([collapsed_ship, df_others]).sort_values(by=['time_h', 'vessel_id']).reset_index(drop=True)
+    return df_result
+
+
+def _collapse_truck_log(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Collapses Truck log entries for each unique time_d, location, product, adding up the qty.
+    """
+    if df.empty:
+        return df
+
+    is_truck = df['equipment'] == 'Truck'
+    if not is_truck.any():
+        return df
+        
+    df_truck = df[is_truck].copy()
+    df_others = df[~is_truck].copy()
+
+    # Define aggregation: sum numeric values, keep 'first' for everything else
+    # Note: time_h will be the 'first' time_h in the day for that group
+    agg_dict = {
+        'day': 'first',
+        'time_h': 'first',
+        'time_d': 'first',
+        'process': 'first',
+        'event': 'first',
+        'location': 'first',
+        'equipment': 'first',
+        'product': 'first',
+        'qty': 'sum',
+        'time': 'sum',
+        'qty_in': 'sum',
+        'from_store': 'first',
+        'from_level': 'last', # Take the final level after all deliveries
+        'to_store': 'first',
+        'to_level': 'last',
+        'route_id': 'first',
+        'vessel_id': 'first',
+        'ship_state': 'first',
+        'qty_t': 'sum',
+        'time_t': 'sum'
+    }
+
+    # Group by time_d, location, product
+    collapsed_truck = df_truck.groupby(['time_d', 'location', 'product'], as_index=False).agg(agg_dict)
+    
+    # Re-combine and sort by time_h
+    df_result = pd.concat([collapsed_truck, df_others]).sort_values(by=['time_h']).reset_index(drop=True)
+    return df_result

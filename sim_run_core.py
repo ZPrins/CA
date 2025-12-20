@@ -67,7 +67,7 @@ class SupplyChainSimulation:
         # If override_day is provided, use it only for the day bucket; keep true hourly time_h
         override_day = details.get('override_day', None)
         override_time_h = details.get('override_time_h', None)
-        time_h = int(override_time_h) if override_time_h is not None else int(self.env.now)
+        time_h = round(float(override_time_h), 2) if override_time_h is not None else round(float(self.env.now), 2)
         time_d = (override_day - 1) if override_day is not None else int(time_h // 24)
         day = time_d + 1
         

@@ -1366,7 +1366,7 @@ SHIP_ROUTES_SHEET_COLS = [
     "Product 2 Unload",
     "Product 2 Unload Store",
     "Destination 2 Location",
-    "Product 3 Load ",
+    "Product 3 Load",
     "Product 3 Store",
     "Destination 3 Location",
     "Destination 3 Unload",
@@ -1448,7 +1448,7 @@ def _log_action(action: str, details: str = "") -> None:
         ts = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
     ACTION_LOG.append({"Timestamp": ts, "Action": action, "Details": details})
     try:
-        print(f"[prepare_inputs] {ts}: {action} — {details}")
+        print(f"[prepare_inputs] {ts}: {action} - {details}")
     except Exception:
         # Console printing is best-effort
         pass
@@ -2272,7 +2272,9 @@ def ensure_ship_routes_sheet(xlsx_path: Path) -> dict:
     # If already transposed, just ensure all fields are present in the first column
     if _is_routes_transposed(current):
         field_col = current.columns[0]
-        existing_fields = set(str(v).strip() for v in current[field_col].dropna().tolist())
+        # Clean existing fields by stripping whitespace
+        current[field_col] = current[field_col].astype(str).str.strip()
+        existing_fields = set(current[field_col].dropna().tolist())
         missing = [f for f in SHIP_ROUTES_SHEET_COLS if f not in existing_fields]
         if missing:
             # Append missing rows at the bottom

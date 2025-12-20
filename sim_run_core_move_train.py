@@ -160,7 +160,7 @@ def transporter(env, route: TransportRoute,
                 else:
                     yield env.timeout(1)
         
-        load_h = math.ceil(take / max(route.load_rate_tph, 1e-6))
+        load_h = take / max(route.load_rate_tph, 1e-6)
         log_func(
             process="Move",
             event="Load",
@@ -168,7 +168,7 @@ def transporter(env, route: TransportRoute,
             equipment="Train",
             product=route.product,
             qty=take,
-            time=float(max(1.0, load_h)),
+            time=round(load_h, 2),
             from_store=origin_key,
             from_level=float(origin_cont.level - take),
             to_store=None,  # On Train
@@ -180,10 +180,10 @@ def transporter(env, route: TransportRoute,
         yield origin_cont.get(take)
 
         if load_h > 0:
-            yield env.timeout(int(load_h))
+            yield env.timeout(load_h)
 
         # 4. TRAVEL
-        travel_h = math.ceil(route.to_min / 60.0) if route.to_min > 0 else 0
+        travel_h = route.to_min / 60.0 if route.to_min > 0 else 0
         if travel_h > 0:
             flush_idle()
             log_func(
@@ -192,13 +192,13 @@ def transporter(env, route: TransportRoute,
                 location=route.origin_location,
                 equipment="Train",
                 product=route.product,
-                time=float(travel_h),
+                time=round(travel_h, 2),
                 from_store=None,
                 to_store=None,
                 route_id=route_id_str,
                 override_time_h=env.now
             )
-            yield env.timeout(int(travel_h))
+            yield env.timeout(travel_h)
 
         # Wait for Step 6: Increase inventory by the "Train Offload" Qty
         if sim:
@@ -206,7 +206,7 @@ def transporter(env, route: TransportRoute,
 
         # 5. UNLOAD (Put & Log)
         # Unload time is also busy time - let's log it hourly if it's > 1h
-        unload_h = math.ceil(take / max(route.unload_rate_tph, 1e-6))
+        unload_h = take / max(route.unload_rate_tph, 1e-6)
         
         # Non-blocking put with logging
         while True:
@@ -228,7 +228,7 @@ def transporter(env, route: TransportRoute,
             equipment="Train",
             product=route.product,
             qty=take,
-            time=float(max(1.0, unload_h)),
+            time=round(unload_h, 2),
             from_store=None,  # Off Train
             from_level=None,
             to_store=dest_key,
@@ -238,12 +238,12 @@ def transporter(env, route: TransportRoute,
         )
 
         if unload_h > 0:
-            yield env.timeout(int(unload_h))
+            yield env.timeout(unload_h)
 
         yield dest_cont.put(take)
 
         # 6. RETURN
-        return_h = math.ceil(route.back_min / 60.0) if route.back_min > 0 else 0
+        return_h = route.back_min / 60.0 if route.back_min > 0 else 0
         if return_h > 0:
             flush_idle()
             log_func(
@@ -252,10 +252,10 @@ def transporter(env, route: TransportRoute,
                 location=route.dest_location,
                 equipment="Train",
                 product=route.product,
-                time=float(return_h),
+                time=round(return_h, 2),
                 from_store=None,
                 to_store=None,
                 route_id=route_id_str,
                 override_time_h=env.now
             )
-            yield env.timeout(int(return_h))
+            yield env.timeout(return_h)
