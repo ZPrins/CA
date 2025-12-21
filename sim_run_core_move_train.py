@@ -1,6 +1,6 @@
 # sim_run_core_move_train.py
 from __future__ import annotations
-from typing import Callable, Dict
+from typing import Callable, Dict, Optional
 import math
 import simpy
 
@@ -12,7 +12,9 @@ def transporter(env, route: TransportRoute,
                 log_func: Callable,
                 require_full: bool = True,
                 debug_full: bool = False,
-                sim=None):
+                sim=None,
+                t_state: Optional[dict] = None,
+                vessel_id: int = 1):
     route_id_str = f"{route.origin_location}->{route.dest_location}"
 
     # Helper to log accumulated idle time
@@ -88,9 +90,18 @@ def transporter(env, route: TransportRoute,
                         dc = stores[dk]
                         free_space = (dc.capacity - dc.level)
                         if free_space + 1e-6 >= route.payload_t:
-                            origin_key, origin_cont = ok, oc
-                            dest_key, dest_cont = dk, dc
-                            break
+                            # Account for other pending deliveries to this destination
+                            other_pending = 0.0
+                            if sim and hasattr(sim, 'pending_deliveries'):
+                                for (vid, sk), qty in sim.pending_deliveries.items():
+                                    # vid < 1000 for ships, vid >= 1000 for trains (using a convention)
+                                    if sk == dk:
+                                        other_pending += qty
+                            
+                            if free_space - other_pending + 1e-6 >= route.payload_t:
+                                origin_key, origin_cont = ok, oc
+                                dest_key, dest_cont = dk, dc
+                                break
                     if origin_cont is not None:
                         break
 
@@ -111,6 +122,10 @@ def transporter(env, route: TransportRoute,
                 else:
                     yield env.timeout(1)
                 continue
+
+            # 3. Register Pending Delivery
+            if sim and hasattr(sim, 'pending_deliveries'):
+                sim.pending_deliveries[(vessel_id, dest_key)] += route.payload_t
 
             take = float(route.payload_t)
 
@@ -178,6 +193,8 @@ def transporter(env, route: TransportRoute,
         )
 
         yield origin_cont.get(take)
+        if t_state is not None:
+            t_state['cargo'][route.product] = t_state['cargo'].get(route.product, 0) + take
 
         if load_h > 0:
             yield env.timeout(load_h)
@@ -241,8 +258,17 @@ def transporter(env, route: TransportRoute,
             yield env.timeout(unload_h)
 
         yield dest_cont.put(take)
+        if t_state is not None:
+            t_state['cargo'][route.product] = max(0.0, t_state['cargo'].get(route.product, 0) - take)
 
-        # 6. RETURN
+        # 6. Unregister Pending Delivery
+        if sim and hasattr(sim, 'pending_deliveries'):
+            if (vessel_id, dest_key) in sim.pending_deliveries:
+                sim.pending_deliveries[(vessel_id, dest_key)] = max(0.0, sim.pending_deliveries[(vessel_id, dest_key)] - take)
+                if sim.pending_deliveries[(vessel_id, dest_key)] < 1e-6:
+                    del sim.pending_deliveries[(vessel_id, dest_key)]
+
+        # 7. RETURN
         return_h = route.back_min / 60.0 if route.back_min > 0 else 0
         if return_h > 0:
             flush_idle()

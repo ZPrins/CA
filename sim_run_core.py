@@ -1,6 +1,6 @@
 # sim_run_core.py
 from __future__ import annotations
-from typing import Dict, List
+from typing import Dict, List, Tuple, Optional, Any
 import simpy
 import os
 from collections import defaultdict
@@ -35,8 +35,14 @@ class SupplyChainSimulation:
         self.port_berths: Dict[str, simpy.Resource] = {}
         self.pending_maintenance_windows: List[dict] = []  # for flushing at end
         
+        # Track pending deliveries for shipping logic: (vessel_id, store_key) -> float tons
+        self.pending_deliveries: Dict[Tuple[int, str], float] = defaultdict(float)
+        
         # 7-step sequence events per hour
         self.step_events: Dict[int, simpy.Event] = {i: self.env.event() for i in range(1, 8)}
+
+        # Track transporter cargo for final closing balance
+        self.transporter_states: List[dict] = []
 
     def wait_for_step(self, step_num: int):
         """Wait for a specific step in the current hour's sequence."""
@@ -135,6 +141,16 @@ class SupplyChainSimulation:
 
     def transporter(self, route: TransportRoute, vessel_id: int = 1):
         mode = (getattr(route, 'mode', 'TRAIN') or 'TRAIN').upper()
+        
+        # State object to track cargo for end-of-sim reporting
+        t_state = {
+            'type': mode,
+            'route_id': f"{route.origin_location}->{route.dest_location}" if mode == 'TRAIN' else getattr(route, 'route_group', 'Ship'),
+            'vessel_id': vessel_id,
+            'cargo': {} # {product: quantity} or {hold: {product, quantity}}
+        }
+        self.transporter_states.append(t_state)
+
         if mode == 'SHIP':
             yield from _transporter_ship(
                 self.env,
@@ -148,10 +164,13 @@ class SupplyChainSimulation:
                 vessel_id=vessel_id,
                 sole_supplier_stores=getattr(self, 'sole_supplier_stores', None),
                 production_rates=getattr(self, 'production_rate_map', None),
-                store_capacities=getattr(self, 'store_capacity_map', None),
-                sim=self
+                store_capacity_map=getattr(self, 'store_capacity_map', None),
+                sim=self,
+                t_state=t_state
             )
         else:  # TRAIN
+            # Use a unique vessel_id for trains to avoid collision in pending_deliveries
+            train_vessel_id = 1000 + vessel_id
             yield from _transporter_train(
                 self.env,
                 route,
@@ -159,7 +178,9 @@ class SupplyChainSimulation:
                 self.log,
                 require_full=self.settings.get("require_full_payload", True),
                 debug_full=self.settings.get("debug_full_payload", False),
-                sim=self
+                sim=self,
+                t_state=t_state,
+                vessel_id=train_vessel_id
             )
 
     def consumer(self, demand: Demand):
@@ -336,3 +357,34 @@ class SupplyChainSimulation:
                 to_level=cont.level,
                 route_id=None
             )
+
+        # Log ClosingInTransit for each transporter
+        for ts in self.transporter_states:
+            cargo = ts.get('cargo', {})
+            if not cargo:
+                continue
+            
+            # Aggregate cargo by product
+            product_totals = defaultdict(float)
+            # Cargo for both ships and trains is {product: qty}
+            for prod, qty in cargo.items():
+                if qty > 0:
+                    product_totals[prod] += qty
+            
+            for prod, qty in product_totals.items():
+                if qty > 1e-6:
+                    self.log(
+                        process=ts['type'],
+                        event="ClosingInTransit",
+                        location=None,
+                        equipment=ts['type'],
+                        product=prod,
+                        qty=qty,
+                        time=0.0,
+                        from_store=None,
+                        from_level=None,
+                        to_store=None,
+                        to_level=None,
+                        route_id=ts['route_id'],
+                        vessel_id=ts.get('vessel_id')
+                    )

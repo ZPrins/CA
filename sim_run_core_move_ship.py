@@ -26,6 +26,7 @@ from enum import Enum
 from typing import Callable, Dict, List, Tuple, Optional, Any
 import math
 import random
+from collections import defaultdict
 import simpy
 
 from sim_run_types import TransportRoute
@@ -88,12 +89,16 @@ def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contai
                            nm_distances: Dict, speed_knots: float, berth_info: Dict,
                            sole_supplier_stores: Optional[set] = None,
                            production_rates: Optional[Dict[str, float]] = None,
-                           store_capacities: Optional[Dict[str, float]] = None) -> Tuple[float, float, float, float]:
+                           store_capacities: Optional[Dict[str, float]] = None,
+                           pending_deliveries: Optional[Dict[Tuple[int, str], float]] = None,
+                           current_vessel_id: int = -1,
+                           current_cargo: Optional[Dict[str, float]] = None) -> Tuple[float, float, float, float, float]:
     """
     Score a route based on utilization, urgency, travel time, and origin overflow risk.
-    Returns (score, utilization_pct, urgency_score, overflow_bonus)
+    Returns (score, utilization_pct, urgency_score, overflow_bonus, suggested_load)
     """
-    total_available = 0.0
+    total_cargo_already_onboard = sum(current_cargo.values()) if current_cargo else 0.0
+    total_available = total_cargo_already_onboard
     total_capacity = float(n_holds * payload_per_hold)
     
     urgency = 0.0
@@ -104,29 +109,75 @@ def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contai
     prod_rates = production_rates or {}
     capacities = store_capacities or {}
     
+    # Aggregate pending deliveries from OTHER vessels
+    other_pending = defaultdict(float)
+    if pending_deliveries:
+        for (vid, sk), qty in pending_deliveries.items():
+            if vid != current_vessel_id:
+                other_pending[sk] += qty
+    
+    # Pre-calculate itinerary travel time to estimate arrival at each stop
+    # Add a conservative estimate for berth waiting and loading time
+    current_time_offset = 0.0
+    total_projected_headspace = 0.0
+    has_unload = False
+    can_unload_existing_cargo = False
+    
     for step in itinerary:
         kind = step.get('kind')
         sk = step.get('store_key')
+        prod = step.get('product')
         
-        if kind == 'load' and sk and sk in stores:
+        if kind == 'sail':
+            from_loc = step.get('from', '')
+            to_loc = step.get('to', step.get('location', ''))
+            if from_loc and to_loc:
+                nm = _get_nm_distance(nm_distances, from_loc, to_loc)
+                pilot_out = _get_pilot_hours(berth_info, from_loc, 'out')
+                pilot_in = _get_pilot_hours(berth_info, to_loc, 'in')
+                step_time = (nm / max(speed_knots, 1.0)) + pilot_out + pilot_in
+                # Assume 24h average wait/process time per sail leg to be conservative
+                travel_time += step_time
+                current_time_offset += step_time + 24.0
+
+        elif kind == 'load' and sk and sk in stores:
+            # For loading, we care about current levels + production during wait/load
             level = float(stores[sk].level)
             total_available += level
             
             prod_rate = prod_rates.get(sk, 0.0)
             capacity = capacities.get(sk, float('inf'))
             if prod_rate > 0 and capacity < float('inf'):
+                # Heuristic: projection of overflow risk
                 fill_pct = level / capacity
                 if fill_pct > 0.50:
-                    # Optimized calculation to avoid max() if possible
                     bonus = 150 * (fill_pct - 0.50) / 0.50
                     if bonus > overflow_bonus:
                         overflow_bonus = bonus
                         
         elif kind == 'unload' and sk and sk in stores:
+            has_unload = True
+            # For unloading, we care about PROJECTED level at arrival
             level = float(stores[sk].level)
             rate = demand_rates.get(sk, 0.0)
+            capacity = capacities.get(sk, float('inf'))
+            prod_rate = prod_rates.get(sk, 0.0) # Factory production into this store
+            
+            # Project level at arrival: current + (prod - consumption) * travel_time + pending deliveries from others
+            projected_level = level + (prod_rate - rate) * current_time_offset + other_pending.get(sk, 0.0)
+            projected_level = max(0.0, projected_level)
+            
+            # Use a safety buffer: only target 90% of capacity to account for variance
+            effective_capacity = capacity * 0.90
+            headspace = max(0.0, effective_capacity - projected_level)
+            total_projected_headspace += headspace
+            
+            # Check if this step helps unload existing cargo
+            if current_cargo and prod in current_cargo and current_cargo[prod] > 1e-6:
+                can_unload_existing_cargo = True
+
             if rate > 0:
-                days_of_stock = level / (rate * 24)
+                days_of_stock = projected_level / (rate * 24)
                 step_urgency = 10 - days_of_stock
                 if step_urgency > urgency:
                     urgency = step_urgency
@@ -136,23 +187,49 @@ def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contai
                         bonus = 100 * (1 - days_of_stock / 60)
                         if bonus > sole_supplier_bonus:
                             sole_supplier_bonus = bonus
-                            
-        elif kind == 'sail':
-            from_loc = step.get('from', '')
-            to_loc = step.get('to', step.get('location', ''))
-            if from_loc and to_loc:
-                nm = _get_nm_distance(nm_distances, from_loc, to_loc)
-                pilot_out = _get_pilot_hours(berth_info, from_loc, 'out')
-                pilot_in = _get_pilot_hours(berth_info, to_loc, 'in')
-                travel_time += (nm / max(speed_knots, 1.0)) + pilot_out + pilot_in
+            
+            # Penalize if projected to be full or nearly full
+            if capacity < float('inf'):
+                projected_fill = projected_level / capacity
+                if projected_fill > 0.80:
+                    # Heavy penalty if already full or nearly full
+                    urgency -= 300 * (projected_fill - 0.80) / 0.20
+
+    # If we have existing cargo and this route CANNOT unload it, penalize heavily
+    if total_cargo_already_onboard > 1e-6 and not can_unload_existing_cargo:
+        urgency -= 1000.0 # Force picking a route that unloads our cargo
+
+    # Suggest load: limited by projected headspace and total available at source
+    suggested_load = total_available
+    if has_unload:
+        suggested_load = min(suggested_load, total_projected_headspace)
+    
+    suggested_load = min(suggested_load, total_capacity)
+    # Quantize to hold sizes
+    suggested_load = math.floor(suggested_load / payload_per_hold) * payload_per_hold
+    
+    # What we actually NEED to load is the difference
+    suggested_to_load = max(0.0, suggested_load - total_cargo_already_onboard)
 
     # Final score components
-    utilization = min(1.0, total_available / max(total_capacity, 1.0))
-    urgency = max(0.0, urgency)
+    # Re-calculate utilization based on suggested_load (which includes already onboard)
+    utilization = min(1.0, suggested_load / max(total_capacity, 1.0))
+    urgency = max(-2000.0, urgency) # Allow negative urgency to discourage bad routes
     
     score = (utilization * 50) + (urgency * 30) + sole_supplier_bonus + overflow_bonus - (travel_time * 0.1)
     
-    return (score, utilization, urgency, overflow_bonus)
+    # Apply headspace factor: if we can't even fill one hold because of destination headspace, 
+    # the route is essentially worthless for moving product.
+    headspace_factor = 1.0
+    if has_unload and total_capacity > 0:
+        headspace_factor = min(1.0, total_projected_headspace / total_capacity)
+        if headspace_factor < 0.5:
+            headspace_factor *= 0.2
+    
+    if score > 0:
+        score *= headspace_factor
+    
+    return (score, utilization, urgency, overflow_bonus, suggested_to_load)
 
 
 def transporter(env: simpy.Environment, route: TransportRoute,
@@ -165,8 +242,9 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                 vessel_id: int = 1,
                 sole_supplier_stores: Optional[set] = None,
                 production_rates: Optional[Dict[str, float]] = None,
-                store_capacities: Optional[Dict[str, float]] = None,
-                sim=None):
+                store_capacity_map: Optional[Dict[str, float]] = None,
+                sim=None,
+                t_state: Optional[dict] = None):
     """
     Main ship vessel process. This is called once per vessel by the simulation core.
     Follows the state machine: IDLE -> LOADING (-> LOADING_WAITING_FOR_PRODUCT -> LOADING) -> IN_TRANSIT -> WAITING_FOR_BERTH -> UNLOADING (-> UNLOADING_WAITING_FOR_SPACE -> UNLOADING) -> IDLE
@@ -207,6 +285,8 @@ def transporter(env: simpy.Environment, route: TransportRoute,
     current_location = origin_location
     state = ShipState.IDLE
     cargo = {}
+    if t_state is not None:
+        t_state['cargo'] = cargo
     chosen_itinerary = None
     itinerary_idx = 0
     demand_rates_map = demand_rates or {}
@@ -245,6 +325,10 @@ def transporter(env: simpy.Environment, route: TransportRoute,
     
     while True:
         if state == ShipState.IDLE:
+            # Ensure t_state is synced with current cargo
+            if t_state is not None:
+                t_state['cargo'] = cargo
+                
             candidate_its = [it for it in route.itineraries 
                            if _get_start_location(it) == current_location]
             
@@ -255,15 +339,19 @@ def transporter(env: simpy.Environment, route: TransportRoute,
             
             best_it = None
             best_score = -float('inf')
+            best_suggested_load = 0.0
             
             prod_rates = production_rates or {}
-            capacities = store_capacities or {}
+            capacities = store_capacity_map or {}
             
             for it in candidate_its:
-                score, util, _, overflow_bonus = _calculate_route_score(
+                score, util, _, overflow_bonus, suggested_to_load = _calculate_route_score(
                     it, stores, payload_per_hold, n_holds, 
                     demand_rates_map, nm_distances, speed_knots, berth_info,
-                    sole_supplier_stores, prod_rates, capacities
+                    sole_supplier_stores, prod_rates, capacities,
+                    getattr(sim, 'pending_deliveries', None),
+                    vessel_id,
+                    cargo
                 )
                 
                 required_util = min_utilization
@@ -287,15 +375,19 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                 if util >= required_util and score > best_score:
                     best_score = score
                     best_it = it
+                    best_suggested_load = suggested_to_load
             
             if best_it is None:
+                # If we have cargo but can't find a route, we MUST wait or find any route that unloads.
+                # If we keep cargo, we just wait.
                 log_func(
                     process="Move",
                     event="Idle",
                     location=current_location,
                     equipment="Ship",
-                    product=None,
+                    product=str(list(cargo.keys())) if cargo else None,
                     time=1.0,
+                    qty=sum(cargo.values()) if cargo else None,
                     from_store=None,
                     to_store=None,
                     route_id=current_route_id or route_group,
@@ -313,7 +405,19 @@ def transporter(env: simpy.Environment, route: TransportRoute,
             current_route_id = _get_route_id_from_itinerary(chosen_itinerary)
             state = ShipState.LOADING
             log_state_change(state)
-            cargo = {}
+            
+            # Register pending deliveries
+            if sim and hasattr(sim, 'pending_deliveries'):
+                for step in chosen_itinerary:
+                    if step.get('kind') == 'unload':
+                        sk = step.get('store_key')
+                        if sk:
+                            # The total we will drop is what we have + what we plan to load
+                            total_to_drop = sum(cargo.values()) + best_suggested_load
+                            sim.pending_deliveries[(vessel_id, sk)] += total_to_drop
+
+            # Track planned load to respect it during loading phase
+            planned_load_remaining = best_suggested_load
             itinerary_idx = 0
             total_waited_at_location = 0.0
             last_prob_wait_location = None # Reset on new itinerary
@@ -407,6 +511,8 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                     
                     already_loaded = sum(cargo.values())
                     remaining_cap = max(0, (n_holds * payload_per_hold) - already_loaded)
+                    # Also limit by planned_load_remaining
+                    remaining_cap = min(remaining_cap, planned_load_remaining)
                     holds_remaining = int(remaining_cap // payload_per_hold)
                     
                     total_loaded_this_stop = 0.0
@@ -439,6 +545,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                             
                             yield env.timeout(time_per_hold)
                             total_loaded_this_stop += payload_per_hold
+                            planned_load_remaining -= payload_per_hold
                         else:
                             waited_this_step = 0.0
                             while cont.level < payload_per_hold and total_waited_at_location < max_wait_product_h:
@@ -489,6 +596,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                             
                                 yield env.timeout(time_per_hold)
                                 total_loaded_this_stop += payload_per_hold
+                                planned_load_remaining -= payload_per_hold
                             else:
                                 break
                     
@@ -579,16 +687,65 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                     else:
                         # NOTHING loaded and we either finished all load steps or timed out.
                         # Let's reset to IDLE so we can pick a better route.
-                        state = ShipState.IDLE
-                        log_state_change(state)
+                        # Check for lost cargo before resetting
+                        total_cargo = sum(cargo.values())
+                        if total_cargo > 1e-6:
+                            log_func(
+                                process="Move",
+                                event="Cargo Lost at Sea",
+                                location=current_location,
+                                equipment="Ship",
+                                product=str(list(cargo.keys())),
+                                qty=total_cargo,
+                                time=0.0,
+                                from_store=None,
+                                to_store=None,
+                                route_id=current_route_id or route_group,
+                                vessel_id=vessel_id,
+                                ship_state=state.value,
+                                override_time_h=env.now
+                            )
+                        
+                        # Reset for next run
+                        # Check for lost cargo before resetting
+                        total_cargo = sum(cargo.values())
+                        if total_cargo > 1e-6:
+                            log_func(
+                                process="Move",
+                                event="Cargo Lost at Sea",
+                                location=current_location,
+                                equipment="Ship",
+                                product=str(list(cargo.keys())),
+                                qty=total_cargo,
+                                time=0.0,
+                                from_store=None,
+                                to_store=None,
+                                route_id=current_route_id or route_group,
+                                vessel_id=vessel_id,
+                                ship_state=state.value,
+                                override_time_h=env.now
+                            )
+                        
+                        # Unregister pending deliveries before clearing
+                        if sim and hasattr(sim, 'pending_deliveries'):
+                            # Clear all pending deliveries for this vessel
+                            keys_to_del = [k for k in sim.pending_deliveries.keys() if k[0] == vessel_id]
+                            for k in keys_to_del:
+                                del sim.pending_deliveries[k]
+
+                        cargo = {}
+                        if t_state is not None:
+                            t_state['cargo'] = cargo
                         chosen_itinerary = None
                         current_route_id = None
-                        cargo = {}
+                        state = ShipState.IDLE
+                        log_state_change(state)
                         
                         if sim:
                             yield sim.wait_for_step(7)
                         else:
                             yield env.timeout(1)
+                        continue
             else:
                 itinerary_idx += 1
         
@@ -597,7 +754,14 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                 current_location = origin_location
                 state = ShipState.IDLE
                 log_state_change(state)
-                cargo = {}
+                # DO NOT reset cargo here - keep it for next route
+                # Unregister pending deliveries
+                if sim and hasattr(sim, 'pending_deliveries'):
+                    # Clear all pending deliveries for this vessel
+                    keys_to_del = [k for k in sim.pending_deliveries.keys() if k[0] == vessel_id]
+                    for k in keys_to_del:
+                        del sim.pending_deliveries[k]
+
                 if sim:
                     yield sim.wait_for_step(7)
                 else:
@@ -714,7 +878,14 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                 current_location = origin_location
                 state = ShipState.IDLE
                 log_state_change(state)
-                cargo = {}
+                # DO NOT reset cargo here - keep it for next route
+                # Unregister pending deliveries
+                if sim and hasattr(sim, 'pending_deliveries'):
+                    # Clear all pending deliveries for this vessel
+                    keys_to_del = [k for k in sim.pending_deliveries.keys() if k[0] == vessel_id]
+                    for k in keys_to_del:
+                        del sim.pending_deliveries[k]
+
                 if sim:
                     yield sim.wait_for_step(7)
                 else:
@@ -842,6 +1013,26 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                     num_holds_to_unload = int(min(carried, room) // payload_per_hold)
                     qty_to_unload = float(num_holds_to_unload * payload_per_hold)
                     
+                    # If we can't even unload one full hold, but we have cargo and some room, 
+                    # and this is the LAST unload for this product in the itinerary, 
+                    # OR we have been waiting for space and timed out/given up,
+                    # we should unload the remainder.
+                    if qty_to_unload < 1e-6 and carried > 1e-6 and room > 1e-6:
+                        # Check if any future step in the itinerary unloads this product
+                        has_future_unload = False
+                        for i in range(itinerary_idx + 1, len(chosen_itinerary)):
+                            f_step = chosen_itinerary[i]
+                            if f_step.get('kind') == 'unload' and f_step.get('product') == product:
+                                has_future_unload = True
+                                break
+                        
+                        if not has_future_unload or wait_hours >= max_wait:
+                            qty_to_unload = min(carried, room)
+                    
+                    # If we HAVE future unloads, but we have enough space to unload SOME holds,
+                    # we already did that (qty_to_unload > 0). 
+                    # If we have NO space for even one hold, we skip and move to next stop.
+
                     if qty_to_unload > 1e-6:
                         unload_time = qty_to_unload / max(unload_rate, 1.0)
                         
@@ -872,6 +1063,11 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                         yield env.timeout(unload_time)
                         
                         cargo[product] = carried - qty_to_unload
+                        
+                        # Update pending deliveries
+                        if sim and hasattr(sim, 'pending_deliveries'):
+                            if (vessel_id, store_key) in sim.pending_deliveries:
+                                sim.pending_deliveries[(vessel_id, store_key)] = max(0.0, sim.pending_deliveries[(vessel_id, store_key)] - qty_to_unload)
                 
                 itinerary_idx += 1
             elif kind == 'unload':
@@ -908,6 +1104,9 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                 override_time_h=env.now
             )
             state = ShipState.IDLE
+            cargo = {}
+            if t_state is not None:
+                t_state['cargo'] = cargo
             if sim:
                 for _ in range(24):
                     yield sim.wait_for_step(7)
