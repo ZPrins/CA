@@ -46,7 +46,8 @@ def build_report_frames(sim, makes=None):
     if sim.action_log:
         cols_log = [
             "day", "time_h", "time_d", "process", "event", "location", "equipment", "product", 
-            "qty", "time", "qty_in", "from_store", "from_level", "to_store", "to_level", "route_id", "vessel_id", "ship_state"
+            "qty", "time", "qty_out", "from_store", "from_level", "from_fill_pct",
+            "qty_in", "to_store", "to_level", "to_fill_pct", "route_id", "vessel_id", "ship_state"
         ]
         df_log = pd.DataFrame.from_records(sim.action_log, columns=cols_log)
         
@@ -185,7 +186,7 @@ def _collapse_ship_log(df: pd.DataFrame) -> pd.DataFrame:
     # Identify consecutive groups for ships
     # For comparison, normalize numeric columns and handle NA
     # We use a custom comparison that ignores 'qty' for wait/idle events
-    temp_ship = df_ship[group_cols].copy()
+    temp_ship = df_ship[group_cols + (['qty'] if 'qty' in df_ship.columns else [])].copy()
     for col in ["route_id", "vessel_id", "qty"]:
         if col in temp_ship.columns:
             temp_ship[col] = pd.to_numeric(temp_ship[col], errors='coerce')
@@ -198,7 +199,7 @@ def _collapse_ship_log(df: pd.DataFrame) -> pd.DataFrame:
     
     # IMPORTANT: ship_changed should be True if CURRENT row is different from PREVIOUS row (of SAME vessel)
     # We use shift(1) on the group
-    prev_temp_ship = df_ship.groupby("vessel_id")[group_cols].shift(1)
+    prev_temp_ship = df_ship.groupby("vessel_id")[group_cols + (['qty'] if 'qty' in df_ship.columns else [])].shift(1)
     
     # Normalize prev_temp_ship too
     for col in ["route_id", "vessel_id", "qty"]:
@@ -221,11 +222,14 @@ def _collapse_ship_log(df: pd.DataFrame) -> pd.DataFrame:
         'product': 'first',
         'qty': 'sum',
         'time': 'sum',
-        'qty_in': 'sum',
+        'qty_out': 'sum',
         'from_store': 'first',
-        'from_level': 'first',
+        'from_level': 'last',
+        'from_fill_pct': 'last',
+        'qty_in': 'sum',
         'to_store': 'first',
         'to_level': 'last',
+        'to_fill_pct': 'last',
         'route_id': 'first',
         'vessel_id': 'first',
         'ship_state': 'first',
@@ -267,11 +271,14 @@ def _collapse_truck_log(df: pd.DataFrame) -> pd.DataFrame:
         'product': 'first',
         'qty': 'sum',
         'time': 'sum',
-        'qty_in': 'sum',
+        'qty_out': 'sum',
         'from_store': 'first',
         'from_level': 'last', # Take the final level after all deliveries
+        'from_fill_pct': 'last',
+        'qty_in': 'sum',
         'to_store': 'first',
         'to_level': 'last',
+        'to_fill_pct': 'last',
         'route_id': 'first',
         'vessel_id': 'first',
         'ship_state': 'first',

@@ -789,15 +789,15 @@ def _generate_vessel_state_chart(df_log: pd.DataFrame) -> go.Figure:
     state_changes['day'] = pd.to_numeric(state_changes['time_h'], errors='coerce') / 24.0
     state_changes = state_changes.sort_values('time_h')
 
-    states = ['IDLE', 'LOADING', 'LOADING_WAITING_FOR_PRODUCT', 'IN_TRANSIT', 'WAITING_FOR_BERTH', 'UNLOADING', 'UNLOADING_WAITING_FOR_SPACE']
+    states = ['IDLE', 'LOADING', 'WAITING_FOR_PRODUCT', 'IN_TRANSIT', 'WAITING_FOR_BERTH', 'UNLOADING', 'WAITING_FOR_SPACE']
     state_colors = {
         'IDLE': '#2ca02c',
         'LOADING': '#1f77b4',
-        'LOADING_WAITING_FOR_PRODUCT': '#aec7e8',
+        'WAITING_FOR_PRODUCT': '#aec7e8',
         'IN_TRANSIT': '#ff7f0e',
         'WAITING_FOR_BERTH': '#d62728',
         'UNLOADING': '#9467bd',
-        'UNLOADING_WAITING_FOR_SPACE': '#c5b0d5'
+        'WAITING_FOR_SPACE': '#c5b0d5'
     }
 
     vessel_states = {}
@@ -861,15 +861,15 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
     state_changes['time_h'] = pd.to_numeric(state_changes['time_h'], errors='coerce')
     state_changes = state_changes.sort_values(['vessel_id', 'time_h'])
 
-    states = ['LOADING', 'LOADING_WAITING_FOR_PRODUCT', 'IN_TRANSIT', 'WAITING_FOR_BERTH', 'UNLOADING', 'UNLOADING_WAITING_FOR_SPACE', 'IDLE']
+    states = ['LOADING', 'WAITING_FOR_PRODUCT', 'IN_TRANSIT', 'WAITING_FOR_BERTH', 'UNLOADING', 'WAITING_FOR_SPACE', 'IDLE']
     state_colors = {
         'IDLE': '#2ca02c',
         'LOADING': '#1f77b4',
-        'LOADING_WAITING_FOR_PRODUCT': '#aec7e8',
+        'WAITING_FOR_PRODUCT': '#aec7e8',
         'IN_TRANSIT': '#ff7f0e',
         'WAITING_FOR_BERTH': '#d62728',
         'UNLOADING': '#9467bd',
-        'UNLOADING_WAITING_FOR_SPACE': '#c5b0d5'
+        'WAITING_FOR_SPACE': '#c5b0d5'
     }
 
     # Track time spent in each state per route trip
@@ -959,7 +959,7 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
 
     # Add stacked bars for each state with text labels showing hours
-    display_states = ['LOADING', 'LOADING_WAITING_FOR_PRODUCT', 'IN_TRANSIT', 'WAITING_FOR_BERTH', 'UNLOADING', 'UNLOADING_WAITING_FOR_SPACE']
+    display_states = ['LOADING', 'WAITING_FOR_PRODUCT', 'IN_TRANSIT', 'WAITING_FOR_BERTH', 'UNLOADING', 'WAITING_FOR_SPACE']
     for state in display_states:
         values = [r[state] for r in route_summaries]
         # Only show text if value is significant (> 15 hours to avoid clutter)

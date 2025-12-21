@@ -78,8 +78,10 @@ class SupplyChainSimulation:
         day = time_d + 1
         
         # Log as a tuple with fixed structure for performance
-        # order: day, time_h, time_d, process, event, location, equipment, product, qty, time, qty_in, 
-        #        from_store, from_level, to_store, to_level, route_id, vessel_id, ship_state
+        # order: day, time_h, time_d, process, event, location, equipment, product, qty, time, 
+        #        qty_out, from_store, from_level, from_fill_pct, 
+        #        qty_in, to_store, to_level, to_fill_pct, 
+        #        route_id, vessel_id, ship_state
         self.action_log.append((
             day,
             time_h,
@@ -91,11 +93,14 @@ class SupplyChainSimulation:
             details.get('product'),
             details.get('qty'),
             details.get('time'),
-            details.get('qty_in'),
+            details.get('qty_out'),
             details.get('from_store'),
             details.get('from_level'),
+            details.get('from_fill_pct'),
+            details.get('qty_in'),
             details.get('to_store'),
             details.get('to_level'),
+            details.get('to_fill_pct'),
             details.get('route_id'),
             details.get('vessel_id'),
             details.get('ship_state')
@@ -145,7 +150,7 @@ class SupplyChainSimulation:
         # State object to track cargo for end-of-sim reporting
         t_state = {
             'type': mode,
-            'route_id': f"{route.origin_location}->{route.dest_location}" if mode == 'TRAIN' else getattr(route, 'route_group', 'Ship'),
+            'route_id': route.route_id or (f"{route.origin_location}->{route.dest_location}" if mode == 'TRAIN' else getattr(route, 'route_group', 'Ship')),
             'vessel_id': vessel_id,
             'cargo': {} # {product: quantity} or {hold: {product, quantity}}
         }
@@ -351,10 +356,13 @@ class SupplyChainSimulation:
                 product=product,
                 qty=cont.level,
                 time=0.0,
+                qty_in=cont.level,
                 from_store=None,
                 from_level=None,
+                from_fill_pct=None,
                 to_store=key,
                 to_level=cont.level,
+                to_fill_pct=cont.level / cont.capacity if cont.capacity > 0 else 0.0,
                 route_id=None
             )
 
@@ -374,7 +382,7 @@ class SupplyChainSimulation:
             for prod, qty in product_totals.items():
                 if qty > 1e-6:
                     self.log(
-                        process=ts['type'],
+                        process="Move",
                         event="ClosingInTransit",
                         location=None,
                         equipment=ts['type'],

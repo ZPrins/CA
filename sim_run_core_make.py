@@ -48,35 +48,31 @@ def _select_best_input_store(stores: Dict[str, simpy.Container],
 
 def _select_best_output_store(stores: Dict[str, simpy.Container], 
                                store_keys: List[str], 
-                               qty: float) -> Optional[Tuple[str, float]]:
-    """Select output store with MOST empty space (allow partial if any positive space)."""
+                               rule: str = "min_fill_pct") -> Optional[Tuple[str, float]]:
+    """Select output store based on rule (default min fill %)."""
     best_key = None
-    best_space = -1.0
+    best_val = float('inf') if rule == "min_fill_pct" else -1.0
     
     for key in store_keys:
         if key not in stores:
             continue
         store = stores[key]
-        space = store.capacity - store.level
-        # Allow selection if any positive space exists (partial allowed)
-        if space > 1e-6 and space > best_space:
-            best_space = space
-            best_key = key
+        
+        if rule == "min_fill_pct":
+            fill = store.level / store.capacity if store.capacity > 0 else 1.0
+            if fill < best_val:
+                best_val = fill
+                best_key = key
+        else:
+            # Absolute space
+            space = store.capacity - store.level
+            if space > best_val:
+                best_val = space
+                best_key = key
     
     if best_key:
-        return (best_key, best_space)
-    
-    # Fallback: if no store has any space, pick the one with most space anyway (will log blocked)
-    for key in store_keys:
-        if key not in stores:
-            continue
-        store = stores[key]
-        space = store.capacity - store.level
-        if space > best_space:
-            best_space = space
-            best_key = key
-    
-    return (best_key, best_space) if best_key else None
+        return (best_key, stores[best_key].capacity - stores[best_key].level)
+    return None
 
 
 def current_day_in_maintenance(env, maintenance_days: Set[int]) -> bool:
@@ -246,11 +242,11 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     if result:
                         selected_in, in_level = result[0], result[1]
 
-                # Select best output store (most empty space). Allow partial if any space > 0
+                # Select best output store (min fill pct). Allow partial if any space > 0
                 selected_out = None
                 out_space = 0.0
                 if out_keys:
-                    result = _select_best_output_store(stores, out_keys, full_qty)
+                    result = _select_best_output_store(stores, out_keys, unit.choice_rule)
                     if result:
                         selected_out, out_space = result[0], result[1]
 
@@ -262,7 +258,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                 # Log idle hour - equipment waiting for output space
                 log_func(
                     process="Make",
-                    event="Idle",
+                    event="Waiting for Space",
                     location=unit.location,
                     equipment=unit.equipment,
                     product=None,
@@ -320,10 +316,14 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     equipment=unit.equipment,
                     product=cand.product,
                     time=unit.step_hours,
+                    qty_out=0.0, # All input rolled back
                     from_store=None,
                     from_level=None,
+                    from_fill_pct=None,
+                    qty_in=0.0,
                     to_store=to_store_key,
                     to_level=stores[to_store_key].level if to_store_key and to_store_key in stores else None,
+                    to_fill_pct=(stores[to_store_key].level / stores[to_store_key].capacity) if (to_store_key and to_store_key in stores and stores[to_store_key].capacity > 0) else None,
                     route_id=None,
                     override_day=log_day,
                     override_time_h=log_time
@@ -466,11 +466,14 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     equipment=unit.equipment,
                     product=cand.product,
                     time=unit.step_hours,
-                    qty_in=0.0, # All input rolled back
+                    qty_out=0.0, # All input rolled back
                     from_store=from_store_key,
                     from_level=from_store_bal,
+                    from_fill_pct=(from_store_bal / stores[from_store_key].capacity) if (from_store_key and from_store_key in stores and stores[from_store_key].capacity > 0) else None,
+                    qty_in=0.0,
                     to_store=to_store_key,
                     to_level=to_store_bal,
+                    to_fill_pct=(to_store_bal / stores[to_store_key].capacity) if (to_store_key and to_store_key in stores and stores[to_store_key].capacity > 0) else None,
                     route_id=None,
                     override_day=production_start_day,
                     override_time_h=log_time
@@ -492,11 +495,14 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     product=cand.product,
                     qty=allowed,
                     time=unit.step_hours,
-                    qty_in=net_input,
+                    qty_out=net_input,
                     from_store=from_store_key,
                     from_level=from_store_bal,
+                    from_fill_pct=(from_store_bal / stores[from_store_key].capacity) if (from_store_key and from_store_key in stores and stores[from_store_key].capacity > 0) else None,
+                    qty_in=allowed,
                     to_store=to_store_key,
                     to_level=to_store_bal,
+                    to_fill_pct=(to_store_bal / stores[to_store_key].capacity) if (to_store_key and to_store_key in stores and stores[to_store_key].capacity > 0) else None,
                     route_id=None,
                     override_day=production_start_day,
                     override_time_h=log_time

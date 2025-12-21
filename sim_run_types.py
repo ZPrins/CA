@@ -44,6 +44,7 @@ class TransportRoute:
     to_min: float
     back_min: float
     mode: str = "TRAIN"
+    route_id: Optional[str] = None
     route_group: Optional[str] = None
     speed_knots: Optional[float] = None
     holds_per_vessel: Optional[int] = None

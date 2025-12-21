@@ -125,7 +125,8 @@ def build_transport_routes(clean_data: Dict[str, pd.DataFrame]) -> List[Transpor
                     unload_rate_tph=float(row['Unload_Rate_TPH']),
                     to_min=float(row['To_Min']),
                     back_min=float(row['Back_Min']),
-                    mode="TRAIN"
+                    mode="TRAIN",
+                    route_id=row.get('Route_ID') or f"{row['Origin_Location']}->{row['Dest_Location']}"
                 ))
             except Exception as e:
                 print(f"Warning: Could not create Train Route. Error: {e}")
@@ -179,6 +180,7 @@ def build_transport_routes(clean_data: Dict[str, pd.DataFrame]) -> List[Transpor
                     to_min=float(row.get('To_Min', 0.0) or 0.0),
                     back_min=float(row.get('Back_Min', 0.0) or 0.0),
                     mode="SHIP",
+                    route_id=row.get('Route_ID') or route_group,
                     route_group=route_group,
                     speed_knots=float(row.get('Speed_Knots', 0.0) or 0.0),
                     holds_per_vessel=int(row.get('Holds_Per_Vessel', 0) or 0),

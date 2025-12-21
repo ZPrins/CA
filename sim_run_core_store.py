@@ -30,9 +30,12 @@ def build_stores(env: simpy.Environment, stores_dict: dict, store_configs: List[
                 product=product,
                 qty=opening,
                 time=0.0,
+                qty_in=opening,
                 from_store=None,
                 from_level=None,
+                from_fill_pct=None,
                 to_store=cfg.key,
                 to_level=opening,
+                to_fill_pct=opening / cfg.capacity if cfg.capacity > 0 else 0.0,
                 route_id=None
             )
