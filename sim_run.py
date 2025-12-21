@@ -8,10 +8,15 @@ import pandas as pd
 # Check if quiet mode is enabled (for multi-run simulations)
 QUIET_MODE = os.environ.get('SIM_QUIET_MODE', 'false').lower() == 'true'
 
-def log(msg):
-    """Print message only if not in quiet mode."""
+def log(msg, callback=None):
+    """Print message and optionally call a callback."""
     if not QUIET_MODE:
         print(msg)
+    if callback:
+        try:
+            callback(msg)
+        except:
+            pass
 
 # Data Loading Modules
 from sim_run_data_ingest import load_data_frames, get_config_map
@@ -38,8 +43,15 @@ def apply_ui_overrides(raw_data: dict) -> dict:
         return raw_data
     
     try:
-        with open(TEMP_OVERRIDES_FILE, 'r') as f:
-            overrides = json.load(f)
+        with open(TEMP_OVERRIDES_FILE, 'rb') as f:
+            content = f.read()
+            if not content: return raw_data
+            try:
+                import orjson
+                overrides = orjson.loads(content)
+            except (ImportError, Exception):
+                import json
+                overrides = json.loads(content)
         
         # Apply Store overrides
         if 'store' in overrides and 'Store' in raw_data and not raw_data['Store'].empty:
@@ -84,8 +96,11 @@ def apply_ui_overrides(raw_data: dict) -> dict:
     return raw_data
 
 
-def _check_supply_sources(stores_cfg, makes, moves, demands):
+def _check_supply_sources(stores_cfg, makes, moves, demands, log_callback=None):
     """Check for stores with demand but no supply sources (production, rail, or ship)."""
+    
+    def _do_log(msg):
+        log(msg, callback=log_callback)
     
     # Build set of stores that receive supply
     supplied_stores = set()
@@ -131,11 +146,11 @@ def _check_supply_sources(stores_cfg, makes, moves, demands):
             unsupplied.append((store_key_upper, initial))
     
     if unsupplied:
-        log(f"\n[WARNING] Stores with demand but NO supply sources:")
+        _do_log(f"\n[WARNING] Stores with demand but NO supply sources:")
         for store_key, initial in sorted(unsupplied):
             init_note = f" (initial: {initial:,.0f}t)" if initial > 0 else ""
-            log(f"  - {store_key}{init_note}")
-        log("  These stores will deplete and cause unmet demand.\n")
+            _do_log(f"  - {store_key}{init_note}")
+        _do_log("  These stores will deplete and cause unmet demand.\n")
 
 
 def extract_kpis_from_sim(sim):
@@ -189,7 +204,7 @@ def extract_kpis_from_sim(sim):
     return kpis
 
 
-def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', settings_override=None):
+def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', settings_override=None, log_callback=None, raw_data=None):
     """
     Run simulation and return results.
     
@@ -197,6 +212,8 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
         input_file: Path to Excel input file
         artifacts: 'full' to generate all outputs, 'kpi_only' to skip file generation
         settings_override: Optional dict to override settings
+        log_callback: Optional function(str) to receive log messages
+        raw_data: Optional pre-loaded dataframes (dict)
     
     Returns:
         dict with 'success', 'kpis', and optionally 'sim' object
@@ -204,10 +221,14 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
     total_start = time.time()
     step_start = time.time()
     
-    log(f"Starting simulation with input file: {input_file}")
+    def _do_log(msg):
+        log(msg, callback=log_callback)
+
+    _do_log(f"Starting simulation with input file: {input_file}")
 
     # 1. Load & Clean
-    raw_data = load_data_frames(input_file)
+    if raw_data is None:
+        raw_data = load_data_frames(input_file)
     
     # Apply any UI overrides before cleaning
     raw_data = apply_ui_overrides(raw_data)
@@ -225,17 +246,18 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
     step_start = time.time()
     
     # --- SAFETY CHECK ---
-    log(f"\nModel Summary: (loaded in {load_elapsed}s)")
-    log(f"  Stores:  {len(stores_cfg)}")
-    log(f"  Makes:   {len(makes)}")
-    log(f"  Moves:   {len(moves)}")
-    log(f"  Demands: {len(demands)}")
+    _do_log(f"\nModel Summary: (loaded in {load_elapsed}s)")
+    _do_log(f"  Stores:  {len(stores_cfg)}")
+    _do_log(f"  Makes:   {len(makes)}")
+    _do_log(f"  Moves:   {len(moves)}")
+    _do_log(f"  Demands: {len(demands)}")
 
     # --- CHECK FOR STORES WITH NO SUPPLY SOURCES ---
-    _check_supply_sources(stores_cfg, makes, moves, demands)
+    # We'll need to wrap _check_supply_sources too if we want its logs to be captured
+    _check_supply_sources(stores_cfg, makes, moves, demands, log_callback=log_callback)
 
     if len(stores_cfg) == 0:
-        log("\n[ERROR] No stores were loaded! Please check inputs.")
+        _do_log("\n[ERROR] No stores were loaded! Please check inputs.")
         return {'success': False, 'error': 'No stores loaded', 'kpis': {}}
 
     # 3. Configure
@@ -279,7 +301,7 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
     
     sim_elapsed = int(time.time() - step_start)
     step_start = time.time()
-    log(f"\nSimulation completed in {sim_elapsed}s")
+    _do_log(f"\nSimulation completed in {sim_elapsed}s")
     
     # Extract KPIs from simulation object (always)
     kpis = extract_kpis_from_sim(sim)
@@ -292,7 +314,7 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
         data_start = time.time()
         report_data = build_report_frames(sim, makes)
         data_elapsed = int(time.time() - data_start)
-        log(f"Report data prepared ({data_elapsed}s)")
+        _do_log(f"Report data prepared ({data_elapsed}s)")
         
         # Get graph sequence from Network sheet for proper ordering
         network_df = raw_data.get('Network', pd.DataFrame())
@@ -314,24 +336,24 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
         elapsed_to_html = int(time.time() - total_start)
         plot_results(sim, out_dir, moves, makes, graph_sequence, report_data, elapsed_to_html)
         html_elapsed = int(time.time() - html_start)
-        log(f"Interactive HTML report generated ({html_elapsed}s)")
+        _do_log(f"Interactive HTML report generated ({html_elapsed}s)")
         
         csv_start = time.time()
         write_csv_outputs(sim, out_dir, report_data)
         csv_elapsed = int(time.time() - csv_start)
-        log(f"CSV outputs written to {out_dir} ({csv_elapsed}s)")
+        _do_log(f"CSV outputs written to {out_dir} ({csv_elapsed}s)")
         
         model_start = time.time()
         generate_standalone(settings, stores_cfg, makes, moves, demands, out_dir)
         model_elapsed = int(time.time() - model_start)
-        log(f"Standalone model generated ({model_elapsed}s)")
+        _do_log(f"Standalone model generated ({model_elapsed}s)")
         
         # Generate variability report with actual simulation data
         var_start = time.time()
         variability = collect_variability_data(sim, stores_cfg, makes, settings, df_log=report_data.get("df_log"))
         generate_variability_report(variability, out_dir)
         var_elapsed = int(time.time() - var_start)
-        log(f"Variability analysis report generated ({var_elapsed}s)")
+        _do_log(f"Variability analysis report generated ({var_elapsed}s)")
 
     # --- MOVEMENT SUMMARY ---
     df_log = report_data.get("df_log") if artifacts == 'full' else None
@@ -354,24 +376,24 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
         n_ship_loads = n_train_loads = 0
         ship_tons = train_tons = 0
 
-    log(f"\n=== Transport Summary ===")
-    log(f"  Ship Loads:  {n_ship_loads} ({ship_tons:,.0f} tons)")
-    log(f"  Train Loads: {n_train_loads} ({train_tons:,.0f} tons)")
-    log(f"  Total Unmet: {sum(sim.unmet.values()):,.0f} tons")
+    _do_log(f"\n=== Transport Summary ===")
+    _do_log(f"  Ship Loads:  {n_ship_loads} ({ship_tons:,.0f} tons)")
+    _do_log(f"  Train Loads: {n_train_loads} ({train_tons:,.0f} tons)")
+    _do_log(f"  Total Unmet: {sum(sim.unmet.values()):,.0f} tons")
     
     # Top 5 Lost Demand by product/location
     if sim.unmet:
         sorted_unmet = sorted(sim.unmet.items(), key=lambda x: x[1], reverse=True)[:5]
-        log(f"\n=== Top 5 Lost Demand ===")
+        _do_log(f"\n=== Top 5 Lost Demand ===")
         for i, (key, val) in enumerate(sorted_unmet, 1):
-            log(f"  {i}. {key}: {val:,.0f} t")
+            _do_log(f"  {i}. {key}: {val:,.0f} t")
     
     total_elapsed = int(time.time() - total_start)
     
     if artifacts == 'full':
         out_dir = settings.get('out_dir', config.out_dir)
-        log(f"\nTotal runtime: {total_elapsed}s")
-        log(f"All complete! Check '{out_dir}' for results.")
+        _do_log(f"\nTotal runtime: {total_elapsed}s")
+        _do_log(f"All complete! Check '{out_dir}' for results.")
     
     return {'success': True, 'kpis': kpis}
 

@@ -10,26 +10,34 @@ def get_config_map(df: pd.DataFrame) -> Dict[str, Any]:
     """Converts a 'Settings' DataFrame into a key-value dictionary."""
     if df.empty:
         return {}
+    
+    # Fast conversion: set first column as index, take second column as series
+    # Using iloc to handle varying column names
+    try:
+        s = df.set_index(df.columns[0]).iloc[:, 0]
+        settings_raw = s.to_dict()
+    except Exception:
+        return {}
+
     settings = {}
-    df = df.astype(str)
-    for index, row in df.iterrows():
-        try:
-            key = str(row.iloc[0])  # Use index 0 in case col name varies
-            value = str(row.iloc[1])
-            if value.lower() in ('true', 'false'):
-                settings[key] = value.lower() == 'true'
-            elif '.' in value:
-                try:
-                    settings[key] = float(value)
-                except:
-                    settings[key] = value
-            else:
-                try:
-                    settings[key] = int(value)
-                except:
-                    settings[key] = value
-        except Exception:
-            pass
+    for k, v in settings_raw.items():
+        if pd.isna(k): continue
+        key = str(k).strip()
+        val_str = str(v).strip()
+        val_lower = val_str.lower()
+        
+        if val_lower == 'true':
+            settings[key] = True
+        elif val_lower == 'false':
+            settings[key] = False
+        else:
+            try:
+                if '.' in val_str:
+                    settings[key] = float(val_str)
+                else:
+                    settings[key] = int(val_str)
+            except ValueError:
+                settings[key] = val_str
     return settings
 
 
@@ -50,8 +58,13 @@ def load_data_frames(input_file: str) -> Dict[str, pd.DataFrame]:
     if os.path.exists(input_file) and input_file.endswith(('.xlsx', '.xls')):
         try:
             print("  [INFO] Detected Excel file. Reading sheets...")
-            # Load all sheets at once for performance
-            xls = pd.read_excel(input_file, sheet_name=None)
+            # Try to use calamine engine if available for 5-10x faster Excel reading
+            try:
+                import python_calamine
+                xls = pd.read_excel(input_file, sheet_name=None, engine='calamine')
+                print("  [INFO] Using 'calamine' engine for fast Excel reading.")
+            except ImportError:
+                xls = pd.read_excel(input_file, sheet_name=None)
 
             for sheet in sheets:
                 # Handle case-insensitive sheet matching

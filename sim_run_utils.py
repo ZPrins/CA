@@ -23,3 +23,11 @@ def nan_to_none(val):
         return val
     except Exception:
         return val
+
+def try_import_orjson():
+    """Try to import orjson and return it if successful, otherwise return None."""
+    try:
+        import orjson
+        return orjson
+    except ImportError:
+        return None

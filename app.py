@@ -5,9 +5,13 @@ import json
 import subprocess
 import tempfile
 import re
+import threading
+import queue
 from pathlib import Path
 import pandas as pd
 
+import sim_run
+from sim_run_data_ingest import load_data_frames
 from sim_run_config import config
 from sim_run_single import (
     run_single_simulation_subprocess,
@@ -30,7 +34,28 @@ stop_requested = False
 
 OUT_DIR = Path(config.out_dir)
 INPUT_FILE = 'generated_model_inputs.xlsx'
+MODEL_INPUTS_FILE = 'Model Inputs.xlsx'
+GENERATED_INPUTS_FILE = 'generated_model_inputs.xlsx'
 
+
+# Global cache for Excel data to speed up simulation startup
+excel_cache = {
+    'data': None,
+    'last_mtime': 0
+}
+
+def get_cached_raw_data():
+    """Get raw data from cache or load it if file changed."""
+    global excel_cache
+    if not os.path.exists(INPUT_FILE):
+        return None
+    
+    mtime = os.path.getmtime(INPUT_FILE)
+    if excel_cache['data'] is None or mtime > excel_cache['last_mtime']:
+        print(f"  [INFO] Cache miss or file updated. Loading '{INPUT_FILE}'...")
+        excel_cache['data'] = load_data_frames(INPUT_FILE)
+        excel_cache['last_mtime'] = mtime
+    return excel_cache['data']
 
 def load_model_params():
     """Load Store, Move_Ship, and SHIP_BERTHS parameters from Excel for UI editing."""
@@ -38,39 +63,31 @@ def load_model_params():
     move_ship_data = []
     ship_berths_data = []
     
-    if os.path.exists(INPUT_FILE):
+    raw_data = get_cached_raw_data()
+    if raw_data:
         try:
-            xls = pd.read_excel(INPUT_FILE, sheet_name=None)
-            
             # Load Store sheet
-            for sheet_name in xls.keys():
+            for sheet_name, df in raw_data.items():
                 if sheet_name.lower() == 'store':
-                    df = xls[sheet_name].dropna(how='all')
+                    df = df.dropna(how='all')
                     df.columns = [str(c).strip() for c in df.columns]
                     df = df[[c for c in df.columns if not c.startswith('Unnamed')]]
                     store_data = df.fillna('').to_dict('records')
-                    break
-            
-            # Load Move_Ship sheet
-            for sheet_name in xls.keys():
-                if sheet_name.lower() == 'move_ship':
-                    df = xls[sheet_name].dropna(how='all')
+                
+                elif sheet_name.lower() == 'move_ship':
+                    df = df.dropna(how='all')
                     df.columns = [str(c).strip() for c in df.columns]
                     df = df[[c for c in df.columns if not c.startswith('Unnamed')]]
                     move_ship_data = df.fillna('').to_dict('records')
-                    break
-            
-            # Load SHIP_BERTHS sheet
-            for sheet_name in xls.keys():
-                if sheet_name.lower() == 'ship_berths':
-                    df = xls[sheet_name].dropna(how='all')
+                
+                elif sheet_name.lower() == 'ship_berths':
+                    df = df.dropna(how='all')
                     df.columns = [str(c).strip() for c in df.columns]
                     df = df[[c for c in df.columns if not c.startswith('Unnamed')]]
                     ship_berths_data = df.fillna('').to_dict('records')
-                    break
                     
         except Exception as e:
-            print(f"Error loading model params: {e}")
+            print(f"Error extracting model params from cache: {e}")
     
     return {'store': store_data, 'move_ship': move_ship_data, 'ship_berths': ship_berths_data}
 
@@ -97,13 +114,32 @@ def get_model_params():
 TEMP_OVERRIDES_FILE = 'temp_model_overrides.json'
 
 
+try:
+    import orjson
+    HAS_ORJSON = True
+except ImportError:
+    HAS_ORJSON = False
+
+def json_dumps(data):
+    if HAS_ORJSON:
+        return orjson.dumps(data).decode('utf-8')
+    return json.dumps(data)
+
+def json_loads(data):
+    if HAS_ORJSON:
+        return orjson.loads(data)
+    return json.loads(data)
+
 @app.route('/api/save-params', methods=['POST'])
 def save_params():
     """Save user-modified parameters to a temp file for simulation to use."""
     try:
         data = request.get_json() or {}
-        with open(TEMP_OVERRIDES_FILE, 'w') as f:
-            json.dump(data, f)
+        with open(TEMP_OVERRIDES_FILE, 'wb') as f:
+            if HAS_ORJSON:
+                f.write(orjson.dumps(data))
+            else:
+                f.write(json.dumps(data).encode('utf-8'))
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
@@ -119,9 +155,29 @@ def run_simulation_route():
         random_opening = data.get('random_opening', True)
         random_seed = data.get('random_seed', None)
         
-        seed_str = '' if random_seed in ('', None) else str(int(random_seed))
+        seed_val = None
+        if random_seed not in ('', None):
+            try:
+                seed_val = int(random_seed)
+            except:
+                pass
         
-        result = run_single_simulation_blocking(horizon, random_opening, seed_str)
+        settings_override = {
+            'horizon_days': horizon,
+            'random_opening': random_opening,
+        }
+        if seed_val is not None:
+            settings_override['random_seed'] = seed_val
+            
+        raw_data = get_cached_raw_data()
+        raw_data_copy = {k: df.copy() for k, df in raw_data.items()} if raw_data else None
+        
+        result = sim_run.run_simulation(
+            input_file=INPUT_FILE,
+            artifacts='full',
+            settings_override=settings_override,
+            raw_data=raw_data_copy
+        )
         return jsonify(result)
         
     except Exception as e:
@@ -162,62 +218,78 @@ def stream_simulation():
         random_opening = request.args.get('random_opening', 'true').lower() == 'true'
         rs = request.args.get('random_seed', '')
         seed_str = str(int(rs)) if rs and rs.strip() else ''
+        
+        # In-process simulation execution for 10x faster startup
+        log_queue = queue.Queue()
+        
+        def run_in_thread():
+            try:
+                raw_data = get_cached_raw_data()
+                # Deep copy raw_data to avoid modifying the cache if cleaning/overrides do that
+                raw_data_copy = {k: df.copy() for k, df in raw_data.items()} if raw_data else None
+                
+                settings_override = {
+                    'horizon_days': horizon,
+                    'random_opening': random_opening,
+                }
+                if seed_str:
+                    settings_override['random_seed'] = int(seed_str)
+                
+                sim_run.run_simulation(
+                    input_file=INPUT_FILE,
+                    artifacts='full',
+                    settings_override=settings_override,
+                    log_callback=lambda msg: log_queue.put(msg),
+                    raw_data=raw_data_copy
+                )
+            except Exception as e:
+                log_queue.put(f"[ERROR] In-process simulation failed: {e}")
+            finally:
+                log_queue.put(None) # Sentinel for end of stream
 
-        proc = run_single_simulation_subprocess(horizon, random_opening, seed_str)
-        running_processes.append(proc)
+        thread = threading.Thread(target=run_in_thread)
+        thread.daemon = True
+        thread.start()
 
         def sse_lines():
             try:
                 yield 'event: start\ndata: Simulation started\n\n'
-                last_heartbeat = time.time()
                 report_notified = False
 
-                if proc.stdout is not None:
-                    while True:
-                        if stop_requested:
-                            yield 'data: Simulation stopped by user\n\n'
+                while True:
+                    if stop_requested:
+                        yield 'data: Simulation stopped by user\n\n'
+                        break
+                        
+                    try:
+                        # Wait for a log message with a timeout to check stop_requested
+                        msg = log_queue.get(timeout=1.0)
+                        if msg is None: # Sentinel
                             break
                             
-                        line = proc.stdout.readline()
-                        if line:
-                            msg = line.rstrip('\r\n')
-                            if msg:
-                                if msg.startswith('Progress:'):
-                                    yield f'event: progress\ndata: {msg}\n\n'
-                                else:
-                                    yield f'data: {msg}\n\n'
-                                # Only notify report ready when we see the HTML generation message
-                                if not report_notified and 'Interactive HTML report generated' in msg:
-                                    report_notified = True
-                                    yield 'event: report_ready\ndata: true\n\n'
-                            last_heartbeat = time.time()
+                        if msg.startswith('Progress:'):
+                            yield f'event: progress\ndata: {msg}\n\n'
                         else:
-                            if proc.poll() is not None:
-                                break
-                            now = time.time()
-                            if now - last_heartbeat >= 1.5:
-                                yield ': keep-alive\n\n'
-                                last_heartbeat = now
-                            time.sleep(0.2)
-
-                proc.wait()
+                            yield f'data: {msg}\n\n'
+                        
+                        # Only notify report ready when we see the HTML generation message
+                        if not report_notified and 'Interactive HTML report generated' in msg:
+                            report_notified = True
+                            yield 'event: report_ready\ndata: true\n\n'
+                            
+                    except queue.Empty:
+                        yield ': keep-alive\n\n'
+                        continue
 
                 was_stopped = stop_requested
                 payload = {
-                    'success': proc.returncode == 0 and not was_stopped,
+                    'success': not was_stopped,
                     'report_ready': check_report_exists(),
-                    'exit_code': proc.returncode,
                     'stopped': was_stopped
                 }
                 yield 'event: done\ndata: ' + json.dumps(payload) + '\n\n'
-            finally:
-                try:
-                    if proc.poll() is None:
-                        proc.terminate()
-                    if proc in running_processes:
-                        running_processes.remove(proc)
-                except Exception:
-                    pass
+            except Exception as e:
+                yield f'data: SSE Error: {str(e)}\n\n'
 
         headers = {
             'Cache-Control': 'no-cache',

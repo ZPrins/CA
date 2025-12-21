@@ -146,7 +146,12 @@ def collect_variability_data(sim, store_configs: list, makes: list, settings: di
     return variability
 
 
-import orjson
+try:
+    import orjson
+    HAS_ORJSON = True
+except ImportError:
+    HAS_ORJSON = False
+import json
 
 def generate_variability_report(variability: dict, out_dir: Path) -> Path:
     """

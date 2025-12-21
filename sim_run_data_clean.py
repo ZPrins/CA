@@ -13,88 +13,117 @@ def _rename_cols(df: pd.DataFrame, mapping: Dict[str, str]) -> pd.DataFrame:
 
 def _normalize_ship_routes_wide_to_long(df: pd.DataFrame,
                                         store_lookup: Dict[Tuple[str, str, str], str]) -> pd.DataFrame:
-    # (Same as before - keeping existing logic)
+    """Optimized wide-to-long normalization for SHIP_ROUTES."""
     first_col = df.columns[0]
-    is_wide = (str(first_col).strip().lower() == 'field') or \
-              (df[first_col].astype(str).str.contains('Route Group').any())
+    
+    # Check if it's actually in wide format by looking at the first column values
+    first_col_vals = df[first_col].astype(str).str.strip().str.lower()
+    is_wide = (str(first_col).strip().lower() == 'field') or (first_col_vals == 'route group').any()
 
     if not is_wide: return df
 
     print("  [INFO] Normalizing Wide 'SHIP_ROUTES' format...")
+    
+    # Clean the field names to ensure reliable lookups
+    df = df.copy()
+    df[first_col] = df[first_col].astype(str).str.strip()
+    
+    # Identify which columns represent routes (exclude the 'Field' column)
     all_cols = [c for c in df.columns if c != first_col]
-    route_cols = []
-    for c in all_cols:
-        route_map = dict(zip(df[first_col].astype(str).str.strip(), df[c].astype(str).str.strip()))
-        rg = route_map.get('Route Group')
-        if rg and rg.lower() not in ('nan', 'none', ''):
-            route_cols.append(c)
+    
+    # Find the row indices for key fields
+    field_series = df[first_col]
+    idx_rg = field_series[field_series == 'Route Group'].index
+    if idx_rg.empty: return df # Should not happen if is_wide
+    
+    idx_rid = field_series[field_series == 'Route ID'].index
+    idx_origin = field_series[field_series == 'Origin Location'].index
+    idx_return = field_series[field_series == 'Return Location'].index
+
     long_rows = []
+    
+    for r_col in all_cols:
+        # Quick check if this column has a valid Route Group
+        rg = df.at[idx_rg[0], r_col]
+        if pd.isna(rg) or str(rg).strip().lower() in ('nan', 'none', ''):
+            continue
+            
+        rg = str(rg).strip()
+        rid = str(df.at[idx_rid[0], r_col]).strip() if not idx_rid.empty else None
+        origin = str(df.at[idx_origin[0], r_col]).strip() if not idx_origin.empty else None
+        return_loc = str(df.at[idx_return[0], r_col]).strip() if not idx_return.empty else None
 
-    for r_col in route_cols:
-        route_map = dict(zip(df[first_col].astype(str).str.strip(), df[r_col].astype(str).str.strip()))
-        rg = route_map.get('Route Group')
-        rid = route_map.get('Route ID')
-        origin = route_map.get('Origin Location')
-        return_loc = route_map.get('Return Location')
-
-        if not rg or rg.lower() == 'nan': continue
+        if not origin or origin.lower() == 'nan': continue
 
         seq = 1
         current_loc = origin
 
-        long_rows.append({'Route_Group': rg, 'Route_ID': rid, 'Sequence_ID': seq, 'Kind': 'start', 'Location': origin,
-                          'Store_Key': None, 'Product_Class': None})
+        long_rows.append({
+            'Route_Group': rg, 'Route_ID': rid, 'Sequence_ID': seq, 'Kind': 'start', 
+            'Location': origin, 'Store_Key': None, 'Product_Class': None
+        })
         seq += 1
 
-        for _, row in df.iterrows():
-            field_name = str(row[first_col]).strip()
+        # Process loads and unloads. 
+        # We iterate over rows once for this route column.
+        for idx, row in df.iterrows():
+            field_name = row[first_col]
             val = str(row[r_col]).strip()
             if val.lower() in ('nan', 'none', ''): continue
 
             if 'Load' in field_name and 'Unload' not in field_name and 'Store' not in field_name:
+                # Find associated Store field
                 store_field = field_name.replace("Load", "Store")
-                store_name = route_map.get(store_field)
-                key = None
-                if store_name:
-                    key = store_lookup.get((current_loc, store_name.upper(), val))
-                    if not key: key = store_lookup.get((current_loc, store_name, val))
-
-                long_rows.append(
-                    {'Route_Group': rg, 'Route_ID': rid, 'Sequence_ID': seq, 'Kind': 'load', 'Location': current_loc,
-                     'Store_Key': key, 'Product_Class': val})
-                seq += 1
+                # Look up store name in the same column for the store field row
+                store_row = df[df[first_col] == store_field]
+                if not store_row.empty:
+                    store_name = str(store_row.iloc[0][r_col]).strip()
+                    key = store_lookup.get((current_loc, store_name.upper(), val)) or \
+                          store_lookup.get((current_loc, store_name, val))
+                    
+                    long_rows.append({
+                        'Route_Group': rg, 'Route_ID': rid, 'Sequence_ID': seq, 'Kind': 'load', 
+                        'Location': current_loc, 'Store_Key': key, 'Product_Class': val
+                    })
+                    seq += 1
+            
             elif 'Destination' in field_name and 'Location' in field_name:
                 dest_loc = val
                 if dest_loc != current_loc:
-                    long_rows.append(
-                        {'Route_Group': rg, 'Route_ID': rid, 'Sequence_ID': seq, 'Kind': 'sail', 'Location': dest_loc,
-                         'Store_Key': None, 'Product_Class': None})
+                    long_rows.append({
+                        'Route_Group': rg, 'Route_ID': rid, 'Sequence_ID': seq, 'Kind': 'sail', 
+                        'Location': dest_loc, 'Store_Key': None, 'Product_Class': None
+                    })
                     seq += 1
                     current_loc = dest_loc
+            
             elif 'Unload' in field_name and 'Store' not in field_name:
-                # Try multiple store field name patterns
+                # Find associated store name
                 store_name = None
                 for pattern in [field_name + " Store", 
                                 field_name.replace(" Unload", " Store"),
                                 field_name.replace("Unload", "Store")]:
-                    store_name = route_map.get(pattern)
-                    if store_name and store_name.lower() not in ('nan', 'none', ''):
-                        break
+                    store_row = df[df[first_col] == pattern]
+                    if not store_row.empty:
+                        sn = str(store_row.iloc[0][r_col]).strip()
+                        if sn.lower() not in ('nan', 'none', ''):
+                            store_name = sn
+                            break
                 
-                key = None
                 if store_name:
-                    key = store_lookup.get((current_loc, store_name.upper(), val))
-                    if not key: key = store_lookup.get((current_loc, store_name, val))
-
-                long_rows.append(
-                    {'Route_Group': rg, 'Route_ID': rid, 'Sequence_ID': seq, 'Kind': 'unload', 'Location': current_loc,
-                     'Store_Key': key, 'Product_Class': val})
-                seq += 1
+                    key = store_lookup.get((current_loc, store_name.upper(), val)) or \
+                          store_lookup.get((current_loc, store_name, val))
+                    long_rows.append({
+                        'Route_Group': rg, 'Route_ID': rid, 'Sequence_ID': seq, 'Kind': 'unload', 
+                        'Location': current_loc, 'Store_Key': key, 'Product_Class': val
+                    })
+                    seq += 1
 
         if return_loc and return_loc.lower() != 'nan' and return_loc != current_loc:
-            long_rows.append(
-                {'Route_Group': rg, 'Route_ID': rid, 'Sequence_ID': seq, 'Kind': 'sail', 'Location': return_loc,
-                 'Store_Key': None, 'Product_Class': None})
+            long_rows.append({
+                'Route_Group': rg, 'Route_ID': rid, 'Sequence_ID': seq, 'Kind': 'sail', 
+                'Location': return_loc, 'Store_Key': None, 'Product_Class': None
+            })
 
     return pd.DataFrame(long_rows)
 

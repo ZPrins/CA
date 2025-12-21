@@ -92,68 +92,63 @@ def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contai
     """
     Score a route based on utilization, urgency, travel time, and origin overflow risk.
     Returns (score, utilization_pct, urgency_score, overflow_bonus)
-    
-    sole_supplier_stores: Set of store keys that only have ONE route serving them.
-    production_rates: Dict mapping store_key -> production rate (tons/hour) INTO that store.
-    store_capacities: Dict mapping store_key -> capacity.
     """
-    load_steps = [s for s in itinerary if s.get('kind') == 'load']
-    unload_steps = [s for s in itinerary if s.get('kind') == 'unload']
-    
     total_available = 0.0
     total_capacity = float(n_holds * payload_per_hold)
     
-    for step in load_steps:
-        sk = step.get('store_key')
-        if sk and sk in stores:
-            total_available += float(stores[sk].level)
-    
-    utilization = min(1.0, total_available / max(total_capacity, 1.0))
-    
     urgency = 0.0
     sole_supplier_bonus = 0.0
-    for step in unload_steps:
+    overflow_bonus = 0.0
+    travel_time = 0.0
+    
+    prod_rates = production_rates or {}
+    capacities = store_capacities or {}
+    
+    for step in itinerary:
+        kind = step.get('kind')
         sk = step.get('store_key')
-        if sk and sk in stores:
+        
+        if kind == 'load' and sk and sk in stores:
+            level = float(stores[sk].level)
+            total_available += level
+            
+            prod_rate = prod_rates.get(sk, 0.0)
+            capacity = capacities.get(sk, float('inf'))
+            if prod_rate > 0 and capacity < float('inf'):
+                fill_pct = level / capacity
+                if fill_pct > 0.50:
+                    # Optimized calculation to avoid max() if possible
+                    bonus = 150 * (fill_pct - 0.50) / 0.50
+                    if bonus > overflow_bonus:
+                        overflow_bonus = bonus
+                        
+        elif kind == 'unload' and sk and sk in stores:
             level = float(stores[sk].level)
             rate = demand_rates.get(sk, 0.0)
             if rate > 0:
                 days_of_stock = level / (rate * 24)
-                step_urgency = max(0, 10 - days_of_stock)
-                urgency = max(urgency, step_urgency)
+                step_urgency = 10 - days_of_stock
+                if step_urgency > urgency:
+                    urgency = step_urgency
                 
                 if sole_supplier_stores and sk in sole_supplier_stores:
                     if days_of_stock < 60:
-                        sole_supplier_bonus = max(sole_supplier_bonus, 100 * (1 - days_of_stock / 60))
-    
-    overflow_bonus = 0.0
-    prod_rates = production_rates or {}
-    capacities = store_capacities or {}
-    for step in load_steps:
-        sk = step.get('store_key')
-        if sk and sk in stores:
-            level = float(stores[sk].level)
-            prod_rate = prod_rates.get(sk, 0.0)
-            capacity = capacities.get(sk, float('inf'))
-            
-            if prod_rate > 0 and capacity < float('inf'):
-                space_left = capacity - level
-                hours_to_full = space_left / prod_rate if prod_rate > 0 else float('inf')
-                fill_pct = level / capacity
-                
-                if fill_pct > 0.50:
-                    overflow_bonus = max(overflow_bonus, 150 * (fill_pct - 0.50) / 0.50)
-    
-    travel_time = 0.0
-    sail_steps = [s for s in itinerary if s.get('kind') == 'sail']
-    for step in sail_steps:
-        from_loc = step.get('from', '')
-        to_loc = step.get('to', step.get('location', ''))
-        if from_loc and to_loc:
-            nm = _get_nm_distance(nm_distances, from_loc, to_loc)
-            pilot_out = _get_pilot_hours(berth_info, from_loc, 'out')
-            pilot_in = _get_pilot_hours(berth_info, to_loc, 'in')
-            travel_time += (nm / max(speed_knots, 1.0)) + pilot_out + pilot_in
+                        bonus = 100 * (1 - days_of_stock / 60)
+                        if bonus > sole_supplier_bonus:
+                            sole_supplier_bonus = bonus
+                            
+        elif kind == 'sail':
+            from_loc = step.get('from', '')
+            to_loc = step.get('to', step.get('location', ''))
+            if from_loc and to_loc:
+                nm = _get_nm_distance(nm_distances, from_loc, to_loc)
+                pilot_out = _get_pilot_hours(berth_info, from_loc, 'out')
+                pilot_in = _get_pilot_hours(berth_info, to_loc, 'in')
+                travel_time += (nm / max(speed_knots, 1.0)) + pilot_out + pilot_in
+
+    # Final score components
+    utilization = min(1.0, total_available / max(total_capacity, 1.0))
+    urgency = max(0.0, urgency)
     
     score = (utilization * 50) + (urgency * 30) + sole_supplier_bonus + overflow_bonus - (travel_time * 0.1)
     
