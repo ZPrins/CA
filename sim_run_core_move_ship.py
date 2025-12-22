@@ -200,9 +200,14 @@ def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contai
         urgency -= 1000.0  # Force picking a route that unloads our cargo
 
     # Suggest load: limited by projected headspace and total available at source
+    # [Issue Fix]: Be slightly more optimistic about headspace if demand is significant
+    # or if we have plenty of source stock. We want to maximize vessel utilization.
     suggested_load = total_available
     if has_unload:
-        suggested_load = min(suggested_load, total_projected_headspace)
+        # Increase effective headspace by a small factor (e.g. 20%) to allow for 
+        # optimism that demand/production will clear space during the voyage
+        optimistic_headspace = total_projected_headspace * 1.25
+        suggested_load = min(suggested_load, optimistic_headspace)
 
     suggested_load = min(suggested_load, total_capacity)
     # Quantize to hold sizes
@@ -216,15 +221,17 @@ def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contai
     utilization = min(1.0, suggested_load / max(total_capacity, 1.0))
     urgency = max(-2000.0, urgency)  # Allow negative urgency to discourage bad routes
 
-    score = (utilization * 50) + (urgency * 30) + sole_supplier_bonus + overflow_bonus - (travel_time * 0.1)
+    # Increase utilization weight from 50 to 100 to favor full ships
+    score = (utilization * 100) + (urgency * 30) + sole_supplier_bonus + overflow_bonus - (travel_time * 0.1)
 
     # Apply headspace factor: if we can't even fill one hold because of destination headspace, 
     # the route is essentially worthless for moving product.
     headspace_factor = 1.0
     if has_unload and total_capacity > 0:
-        headspace_factor = min(1.0, total_projected_headspace / total_capacity)
-        if headspace_factor < 0.5:
-            headspace_factor *= 0.2
+        # Also be more relaxed about the headspace factor penalty
+        headspace_factor = min(1.0, (total_projected_headspace * 1.2) / total_capacity)
+        if headspace_factor < 0.3:
+            headspace_factor *= 0.5
 
     if score > 0:
         score *= headspace_factor
@@ -311,6 +318,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
             equipment="Ship",
             product=None,
             qty=None,
+            unmet_demand=0.0,
             from_store=None,
             from_level=None,
             to_store=None,
@@ -333,6 +341,29 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                              if _get_start_location(it) == current_location]
 
             if not candidate_its:
+                if current_location != origin_location:
+                    nm = _get_nm_distance(nm_distances, current_location, origin_location)
+                    if nm > 0:
+                        travel_hours = nm / max(speed_knots, 1.0)
+                        pilot_out = _get_pilot_hours(berth_info, current_location, 'out')
+                        pilot_in = _get_pilot_hours(berth_info, origin_location, 'in')
+                        total_time = travel_hours + pilot_out + pilot_in
+                        
+                        log_func(
+                            process="Move",
+                            event="Transit",
+                            location=current_location,
+                            equipment="Ship",
+                            product=None,
+                            time=round(total_time, 2),
+                            from_store=None,
+                            to_store=None,
+                            route_id=current_route_id or route_group,
+                            vessel_id=vessel_id,
+                            ship_state=state.value,
+                            override_time_h=env.now
+                        )
+                        yield env.timeout(total_time)
                 current_location = origin_location
                 yield env.timeout(1)
                 continue
@@ -409,6 +440,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                     equipment="Ship",
                     product=str(list(cargo.keys())) if cargo else None,
                     time=1.0,
+                                    unmet_demand=0.0,
                     qty=sum(cargo.values()) if cargo else None,
                     from_store=None,
                     to_store=None,
@@ -441,6 +473,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                         product=str(list(cargo.keys())),
                         qty=sum(cargo.values()),
                         time=0.0,
+                                unmet_demand=0.0,
                         from_store=None,
                         to_store=None,
                         route_id=current_route_id or route_group,
@@ -532,6 +565,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                     equipment="Ship",
                                     product=product,
                                     time=1.0,
+                                    unmet_demand=0.0,
                                     from_store=None,
                                     to_store=None,
                                     route_id=current_route_id or route_group,
@@ -559,6 +593,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                     equipment="Ship",
                                     product=product,
                                     time=1.0,
+                                    unmet_demand=0.0,
                                     from_store=None,
                                     to_store=None,
                                     route_id=current_route_id or route_group,
@@ -579,6 +614,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                 equipment="Ship",
                                 product=product,
                                 time=0.0,
+                                unmet_demand=0.0,
                                 from_store=None,
                                 to_store=None,
                                 route_id=current_route_id or route_group,
@@ -610,7 +646,9 @@ def transporter(env: simpy.Environment, route: TransportRoute,
 
                         if cont.level >= payload_per_hold:
                             # IMPORTANT: GET THE INVENTORY FIRST
+                            start_hold_t = env.now
                             yield cont.get(payload_per_hold)
+                            yield env.timeout(time_per_hold)
                             
                             log_func(
                                 process="Move",
@@ -620,6 +658,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                 product=product,
                                 qty=payload_per_hold,
                                 time=round(time_per_hold, 2),
+                                unmet_demand=0.0,
                                 qty_out=payload_per_hold,
                                 from_store=store_key,
                                 from_level=float(cont.level),
@@ -629,10 +668,9 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                 route_id=current_route_id or route_group,
                                 vessel_id=vessel_id,
                                 ship_state=state.value,
-                                override_time_h=env.now
+                                override_time_h=start_hold_t
                             )
 
-                            yield env.timeout(time_per_hold)
                             total_loaded_this_stop += payload_per_hold
                             planned_load_remaining -= payload_per_hold
                         else:
@@ -645,6 +683,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                     equipment="Ship",
                                     product=product,
                                     time=1.0,
+                                    unmet_demand=0.0,
                                     from_store=store_key,
                                     from_level=float(cont.level),
                                     from_fill_pct=float(cont.level) / cont.capacity if cont.capacity > 0 else 0.0,
@@ -667,7 +706,9 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                     yield sim.wait_for_step(3)
 
                                 # IMPORTANT: GET THE INVENTORY FIRST
+                                start_hold_t = env.now
                                 yield cont.get(payload_per_hold)
+                                yield env.timeout(time_per_hold)
 
                                 log_func(
                                     process="Move",
@@ -677,6 +718,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                     product=product,
                                     qty=payload_per_hold,
                                     time=round(time_per_hold, 2),
+                                unmet_demand=0.0,
                                     qty_out=payload_per_hold,
                                     from_store=store_key,
                                     from_level=float(cont.level),
@@ -686,10 +728,9 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                     route_id=current_route_id or route_group,
                                     vessel_id=vessel_id,
                                     ship_state=state.value,
-                                    override_time_h=env.now
+                                    override_time_h=start_hold_t
                                 )
 
-                                yield env.timeout(time_per_hold)
                                 total_loaded_this_stop += payload_per_hold
                                 planned_load_remaining -= payload_per_hold
                             else:
@@ -754,8 +795,9 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                         location=current_location,
                         equipment="Ship",
                         product=None,
-                        time=1.0,
                         qty=0,
+                        time=1.0,
+                        unmet_demand=0.0,
                         from_store=None,
                         to_store=None,
                         route_id=current_route_id or route_group,
@@ -789,8 +831,9 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                             location=current_location,
                             equipment="Ship",
                             product=None,
-                            time=0.0,
                             qty=0,
+                            time=0.0,
+                            unmet_demand=0.0,
                             from_store=None,
                             to_store=None,
                             route_id=current_route_id or route_group,
@@ -840,6 +883,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                 product=str(list(cargo.keys())),
                                 qty=total_cargo,
                                 time=0.0,
+                                unmet_demand=0.0,
                                 from_store=None,
                                 to_store=None,
                                 route_id=current_route_id or route_group,
@@ -879,6 +923,31 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                     active_berth = None
                     active_berth_req = None
 
+                # Return to origin location if not already there
+                if current_location != origin_location:
+                    nm = _get_nm_distance(nm_distances, current_location, origin_location)
+                    if nm > 0:
+                        travel_hours = nm / max(speed_knots, 1.0)
+                        pilot_out = _get_pilot_hours(berth_info, current_location, 'out')
+                        pilot_in = _get_pilot_hours(berth_info, origin_location, 'in')
+                        total_time = travel_hours + pilot_out + pilot_in
+                        
+                        log_func(
+                            process="Move",
+                            event="Transit",
+                            location=current_location,
+                            equipment="Ship",
+                            product=None,
+                            time=round(total_time, 2),
+                            from_store=None,
+                            to_store=None,
+                            route_id=current_route_id or route_group,
+                            vessel_id=vessel_id,
+                            ship_state=state.value,
+                            override_time_h=env.now
+                        )
+                        yield env.timeout(total_time)
+                
                 current_location = origin_location
                 state = ShipState.IDLE
                 current_route_id = None
@@ -1064,6 +1133,32 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                     active_berth.release(active_berth_req)
                     active_berth = None
                     active_berth_req = None
+
+                # Return to origin location if not already there
+                if current_location != origin_location:
+                    nm = _get_nm_distance(nm_distances, current_location, origin_location)
+                    if nm > 0:
+                        travel_hours = nm / max(speed_knots, 1.0)
+                        pilot_out = _get_pilot_hours(berth_info, current_location, 'out')
+                        pilot_in = _get_pilot_hours(berth_info, origin_location, 'in')
+                        total_time = travel_hours + pilot_out + pilot_in
+                        
+                        log_func(
+                            process="Move",
+                            event="Transit",
+                            location=current_location,
+                            equipment="Ship",
+                            product=None,
+                            time=round(total_time, 2),
+                            from_store=None,
+                            to_store=None,
+                            route_id=current_route_id or route_group,
+                            vessel_id=vessel_id,
+                            ship_state=state.value,
+                            override_time_h=env.now
+                        )
+                        yield env.timeout(total_time)
+
                 current_location = origin_location
                 state = ShipState.IDLE
                 log_state_change(state)
@@ -1107,6 +1202,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                 equipment="Ship",
                                 product=None,
                                 time=1.0,
+                                    unmet_demand=0.0,
                                 from_store=None,
                                 to_store=None,
                                 route_id=current_route_id or route_group,
@@ -1133,6 +1229,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                                 equipment="Ship",
                                 product=None,
                                 time=1.0,
+                                    unmet_demand=0.0,
                                 from_store=None,
                                 to_store=None,
                                 route_id=current_route_id or route_group,
@@ -1153,6 +1250,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                             equipment="Ship",
                             product=None,
                             time=0.0,
+                                unmet_demand=0.0,
                             from_store=None,
                             to_store=None,
                             route_id=current_route_id or route_group,
@@ -1199,11 +1297,10 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                             can_proceed = True
                         elif demand_rate > 1e-6:
                             # How much time would it take to get the required space?
-                            time_to_space = (required_space - room) / demand_rate
-                            # If it's less than, say, 1 hour, we can consider it "available enough" 
-                            # to start the process, assuming the simulation's time-stepping handles it.
-                            # But more robustly, we check if room + demand * 1h >= required_space
-                            if room + demand_rate * 1.0 >= required_space - 1e-6:
+                            # Check if room + demand * 1h >= required_space
+                            # Use a small buffer to ensure we don't break the loop 
+                            # if we still can't fit a FULL hold in the next hour.
+                            if room + demand_rate * 1.0 >= required_space:
                                 can_proceed = True
 
                         if can_proceed:
@@ -1220,6 +1317,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                             equipment="Ship",
                             product=product,
                             time=1.0,
+                                    unmet_demand=0.0,
                             from_store=None,
                             to_store=store_key,
                             to_level=float(cont.level),
@@ -1277,7 +1375,9 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                             yield sim.wait_for_step(7)
 
                         # IMPORTANT: PUT THE INVENTORY FIRST
+                        start_hold_t = env.now
                         yield cont.put(qty_to_unload)
+                        yield env.timeout(unload_time)
 
                         log_func(
                             process="Move",
@@ -1287,6 +1387,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                             product=product,
                             qty=qty_to_unload,
                             time=round(unload_time, 2),
+                            unmet_demand=0.0,
                             qty_in=qty_to_unload,
                             from_store=None,
                             from_level=None,
@@ -1296,10 +1397,8 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                             route_id=current_route_id or route_group,
                             vessel_id=vessel_id,
                             ship_state=state.value,
-                            override_time_h=env.now
+                            override_time_h=start_hold_t
                         )
-
-                        yield env.timeout(unload_time)
 
                         cargo[product] = carried - qty_to_unload
 
@@ -1308,8 +1407,40 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                             if (vessel_id, store_key) in sim.pending_deliveries:
                                 sim.pending_deliveries[(vessel_id, store_key)] = max(0.0, sim.pending_deliveries[
                                     (vessel_id, store_key)] - qty_to_unload)
-
-                itinerary_idx += 1
+                        
+                        # Only move to next step if we unloaded EVERYTHING for this product step
+                        # or if it's a partial that we are happy with? 
+                        # Actually, if we unloaded at least one hold, we can move to next step of itinerary.
+                        itinerary_idx += 1
+                    elif wait_hours >= max_wait:
+                        # Skip this unload step because we timed out
+                        log_func(
+                            process="Move",
+                            event="Skip Unload - Wait Limit Reached",
+                            location=unload_location,
+                            equipment="Ship",
+                            product=product,
+                            qty=0,
+                            time=0.0,
+                            unmet_demand=0.0,
+                            from_store=None,
+                            to_store=None,
+                            route_id=current_route_id or route_group,
+                            vessel_id=vessel_id,
+                            ship_state=state.value,
+                            override_time_h=env.now
+                        )
+                        itinerary_idx += 1
+                    else:
+                        # We didn't unload anything and haven't timed out.
+                        # Stay on the current itinerary step and wait another hour.
+                        if sim:
+                            yield sim.wait_for_step(7)
+                        else:
+                            yield env.timeout(1.0)
+                else:
+                    # Not found in stores or cargo, just skip
+                    itinerary_idx += 1
             elif kind == 'unload':
                 # Transition to UNLOADING but keep the berth if it's the same location
                 state = ShipState.UNLOADING
@@ -1334,6 +1465,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                 equipment="Ship",
                 product=None,
                 qty=0,
+                unmet_demand=0.0,
                 from_store=None,
                 from_level=None,
                 to_store=None,

@@ -46,7 +46,7 @@ def build_report_frames(sim, makes=None):
     if sim.action_log:
         cols_log = [
             "day", "time_h", "time_d", "process", "event", "location", "equipment", "product", 
-            "qty", "time", "qty_out", "from_store", "from_level", "from_fill_pct",
+            "qty", "time", "unmet_demand", "qty_out", "from_store", "from_level", "from_fill_pct",
             "qty_in", "to_store", "to_level", "to_fill_pct", "route_id", "vessel_id", "ship_state"
         ]
         df_log = pd.DataFrame.from_records(sim.action_log, columns=cols_log)
@@ -222,6 +222,7 @@ def _collapse_ship_log(df: pd.DataFrame) -> pd.DataFrame:
         'product': 'first',
         'qty': 'sum',
         'time': 'sum',
+        'unmet_demand': 'sum',
         'qty_out': 'sum',
         'from_store': 'first',
         'from_level': 'last',
@@ -271,6 +272,7 @@ def _collapse_truck_log(df: pd.DataFrame) -> pd.DataFrame:
         'product': 'first',
         'qty': 'sum',
         'time': 'sum',
+        'unmet_demand': 'sum',
         'qty_out': 'sum',
         'from_store': 'first',
         'from_level': 'last', # Take the final level after all deliveries

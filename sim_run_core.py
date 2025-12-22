@@ -79,7 +79,7 @@ class SupplyChainSimulation:
         
         # Log as a tuple with fixed structure for performance
         # order: day, time_h, time_d, process, event, location, equipment, product, qty, time, 
-        #        qty_out, from_store, from_level, from_fill_pct, 
+        #        unmet_demand, qty_out, from_store, from_level, from_fill_pct, 
         #        qty_in, to_store, to_level, to_fill_pct, 
         #        route_id, vessel_id, ship_state
         self.action_log.append((
@@ -93,6 +93,7 @@ class SupplyChainSimulation:
             details.get('product'),
             details.get('qty'),
             details.get('time'),
+            details.get('unmet_demand'),
             details.get('qty_out'),
             details.get('from_store'),
             details.get('from_level'),
@@ -356,6 +357,7 @@ class SupplyChainSimulation:
                 product=product,
                 qty=cont.level,
                 time=0.0,
+                unmet_demand=0.0,
                 qty_in=cont.level,
                 from_store=None,
                 from_level=None,
@@ -389,6 +391,7 @@ class SupplyChainSimulation:
                         product=prod,
                         qty=qty,
                         time=0.0,
+                        unmet_demand=0.0,
                         from_store=None,
                         from_level=None,
                         to_store=None,

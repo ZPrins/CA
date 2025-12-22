@@ -29,8 +29,10 @@ def consumer(env, store, demand_key: str, demand_rate: float,
         # Batch delivery logic
         for _ in range(max(0, n_full)):
             take = min(float(store.level), truck_load)
-            if take > 0:
-                yield store.get(take)
+            unmet_this_truck = max(0.0, truck_load - take) if take < truck_load else 0.0
+            if take > 0 or unmet_this_truck > 0:
+                if take > 0:
+                    yield store.get(take)
                 level_after = store.level
                 log_func(
                     process="Deliver",
@@ -40,6 +42,7 @@ def consumer(env, store, demand_key: str, demand_rate: float,
                     product=prod,
                     qty=take,
                     time=0.0,
+                    unmet_demand=unmet_this_truck,
                     qty_out=take,
                     from_store=demand_key,
                     from_level=level_after,
@@ -49,6 +52,8 @@ def consumer(env, store, demand_key: str, demand_rate: float,
                     route_id=None,
                     override_time_h=env.now
                 )
+                if unmet_this_truck > 0:
+                    unmet_total += unmet_this_truck
 
             remaining_need -= truck_load
             if remaining_need <= 0: break
@@ -57,8 +62,10 @@ def consumer(env, store, demand_key: str, demand_rate: float,
         remainder = round(max(0.0, remaining_need), 2)
         if remainder > 0:
             take = min(float(store.level), remainder)
-            if take > 0:
-                yield store.get(take)
+            unmet_remainder = max(0.0, remainder - take)
+            if take > 0 or unmet_remainder > 0:
+                if take > 0:
+                    yield store.get(take)
                 level_after = store.level
                 log_func(
                     process="Deliver",
@@ -68,6 +75,7 @@ def consumer(env, store, demand_key: str, demand_rate: float,
                     product=prod,
                     qty=take,
                     time=0.0,
+                    unmet_demand=unmet_remainder,
                     qty_out=take,
                     from_store=demand_key,
                     from_level=level_after,
@@ -77,10 +85,8 @@ def consumer(env, store, demand_key: str, demand_rate: float,
                     route_id=None,
                     override_time_h=env.now
                 )
-
-            # Track unmet
-            if take < remainder:
-                unmet_total += (remainder - take)
+                if unmet_remainder > 0:
+                    unmet_total += unmet_remainder
 
         if unmet_total > 0:
             unmet_dict[demand_key] = round(unmet_dict.get(demand_key, 0.0) + unmet_total, 2)
