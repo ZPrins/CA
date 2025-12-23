@@ -3,9 +3,13 @@ from __future__ import annotations
 from typing import Callable, Dict
 
 
-def consumer(env, store, demand_key: str, demand_rate: float,
+def consumer(env, stores, demand_key: str, demand_rate: float,
              truck_load: float, step_h: float,
              log_func: Callable, unmet_dict: Dict[str, float], sim=None):
+    # Ensure stores is a list
+    if not isinstance(stores, list):
+        stores = [stores]
+
     while True:
         # Wait for Step 1: Reduce the Inventory by the "Deliver" Qty
         if sim:
@@ -28,12 +32,27 @@ def consumer(env, store, demand_key: str, demand_rate: float,
 
         # Batch delivery logic
         for _ in range(max(0, n_full)):
-            take = min(float(store.level), truck_load)
+            take = 0.0
+            chosen_store = None
+            
+            # Try to take from stores in order
+            for store in stores:
+                if float(store.level) > 0:
+                    take = min(float(store.level), truck_load)
+                    chosen_store = store
+                    break
+            
+            # If no stock, chosen_store is None, take is 0
+            if not chosen_store and stores:
+                chosen_store = stores[0] # Default to first store for logging unmet
+
             unmet_this_truck = max(0.0, truck_load - take) if take < truck_load else 0.0
+            
             if take > 0 or unmet_this_truck > 0:
                 if take > 0:
-                    yield store.get(take)
-                level_after = store.level
+                    yield chosen_store.get(take)
+                
+                level_after = chosen_store.level
                 log_func(
                     process="Deliver",
                     event="Demand",
@@ -44,9 +63,9 @@ def consumer(env, store, demand_key: str, demand_rate: float,
                     time=0.0,
                     unmet_demand=unmet_this_truck,
                     qty_out=take,
-                    from_store=demand_key,
+                    from_store=getattr(chosen_store, 'store_key', demand_key),
                     from_level=level_after,
-                    from_fill_pct=float(level_after) / store.capacity if store.capacity > 0 else 0.0,
+                    from_fill_pct=float(level_after) / chosen_store.capacity if chosen_store.capacity > 0 else 0.0,
                     to_store=None,
                     to_level=None,
                     route_id=None,
@@ -61,12 +80,23 @@ def consumer(env, store, demand_key: str, demand_rate: float,
         # Remainder
         remainder = round(max(0.0, remaining_need), 2)
         if remainder > 0:
-            take = min(float(store.level), remainder)
+            take = 0.0
+            chosen_store = None
+            for store in stores:
+                if float(store.level) > 0:
+                    take = min(float(store.level), remainder)
+                    chosen_store = store
+                    break
+            
+            if not chosen_store and stores:
+                chosen_store = stores[0]
+
             unmet_remainder = max(0.0, remainder - take)
             if take > 0 or unmet_remainder > 0:
                 if take > 0:
-                    yield store.get(take)
-                level_after = store.level
+                    yield chosen_store.get(take)
+                
+                level_after = chosen_store.level
                 log_func(
                     process="Deliver",
                     event="Demand",
@@ -77,9 +107,9 @@ def consumer(env, store, demand_key: str, demand_rate: float,
                     time=0.0,
                     unmet_demand=unmet_remainder,
                     qty_out=take,
-                    from_store=demand_key,
+                    from_store=getattr(chosen_store, 'store_key', demand_key),
                     from_level=level_after,
-                    from_fill_pct=float(level_after) / store.capacity if store.capacity > 0 else 0.0,
+                    from_fill_pct=float(level_after) / chosen_store.capacity if chosen_store.capacity > 0 else 0.0,
                     to_store=None,
                     to_level=None,
                     route_id=None,

@@ -192,9 +192,18 @@ class SupplyChainSimulation:
     def consumer(self, demand: Demand):
         truck_load = float(self.settings.get("demand_truck_load_tons", 25.0) or 25.0)
         step_h = float(self.settings.get("demand_step_hours", 1.0) or 1.0)
+        
+        # Use multiple stores if available
+        demand_stores = []
+        if demand.store_keys:
+            demand_stores = [self.stores[sk] for sk in demand.store_keys if sk in self.stores]
+        
+        if not demand_stores and demand.store_key in self.stores:
+            demand_stores = [self.stores[demand.store_key]]
+
         yield from _consumer(
             self.env,
-            self.stores[demand.store_key],
+            demand_stores,
             demand.store_key,
             demand.rate_per_hour,
             truck_load,

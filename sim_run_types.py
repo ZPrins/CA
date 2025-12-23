@@ -58,3 +58,4 @@ class TransportRoute:
 class Demand:
     store_key: str
     rate_per_hour: float
+    store_keys: Optional[List[str]] = None

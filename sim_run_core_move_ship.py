@@ -167,8 +167,8 @@ def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contai
             projected_level = level + (prod_rate - rate) * current_time_offset + other_pending.get(sk, 0.0)
             projected_level = max(0.0, projected_level)
 
-            # Use a safety buffer: only target 85% of capacity to account for variance
-            effective_capacity = capacity * 0.85
+            # Use a safety buffer: only target 100% of capacity to account for variance
+            effective_capacity = capacity * 1.0
             headspace = max(0.0, effective_capacity - projected_level)
             total_projected_headspace += headspace
 
@@ -189,11 +189,12 @@ def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contai
                             sole_supplier_bonus = bonus
 
             # Penalize if projected to be full or nearly full
+            # [Optimization]: Removed heavy global urgency penalty as it blocks multi-product routes.
+            # Headspace factor in score already handles this.
             if capacity < float('inf'):
                 projected_fill = projected_level / capacity
-                if projected_fill > 0.80:
-                    # Heavy penalty if already full or nearly full
-                    urgency -= 300 * (projected_fill - 0.80) / 0.20
+                if projected_fill > 0.95:
+                    urgency -= 2.0  # Mild discouragement for full stores
 
     # If we have existing cargo and this route CANNOT unload it, penalize heavily
     if total_cargo_already_onboard > 1e-6 and not can_unload_existing_cargo:

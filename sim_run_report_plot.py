@@ -115,7 +115,8 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
         if sim.action_log:
             cols_log = [
                 "day", "time_h", "time_d", "process", "event", "location", "equipment", "product", 
-                "qty", "time", "qty_in", "from_store", "from_level", "to_store", "to_level", "route_id", "vessel_id", "ship_state"
+                "qty", "time", "unmet_demand", "qty_out", "from_store", "from_level", "from_fill_pct", 
+                "qty_in", "to_store", "to_level", "to_fill_pct", "route_id", "vessel_id", "ship_state"
             ]
             df_log = pd.DataFrame.from_records(sim.action_log, columns=cols_log)
             df_log["time_h"] = pd.to_numeric(df_log["time_h"], errors="coerce")
@@ -385,12 +386,31 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
             loc, equip = parts[0], parts[1]
             mfg_by_loc_equip[(loc, equip)] = unit_key
     
-    # Group graph_sequence items by location (preserving order within each location)
-    location_order = []  # List of unique locations in order of first appearance
+    # 5.5 Group content by location, ensuring consistent sorting
+    # Clean up locations: remove "Other", "Unknown", etc if empty
+    actual_locations = set()
+    for (loc, equip, proc) in graph_sequence:
+        if loc and str(loc) != 'nan' and loc != 'Unknown':
+            actual_locations.add(loc)
+    
+    # Add locations from inventory and log data that might be missing from graph_sequence
+    if not df_inv.empty:
+        for sk in df_inv["store_key"].unique():
+            parts = str(sk).split("|")
+            if len(parts) >= 2 and parts[1] and str(parts[1]) != 'nan' and parts[1] != 'Unknown':
+                actual_locations.add(parts[1])
+    
+    # Sort locations: Gladstone first, then others alphabetically
+    sorted_locations = sorted(list(actual_locations))
+    if "Gladstone" in sorted_locations:
+        sorted_locations.remove("Gladstone")
+        location_order = ["Gladstone"] + sorted_locations
+    else:
+        location_order = sorted_locations
+
     items_by_location = {}  # location -> list of (equip, proc) in sequence order
     for (loc, equip, proc) in graph_sequence:
         if loc not in items_by_location:
-            location_order.append(loc)
             items_by_location[loc] = []
         items_by_location[loc].append((equip, proc))
     
@@ -398,34 +418,62 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
     added_stores = set()
     added_mfg = set()
     
+    # Add individual vessel timelines as requested
+    vessel_timeline_figs = _generate_vessel_timeline_charts(df_log, routes=routes)
+    for vessel_name, fig in vessel_timeline_figs:
+        content.append({"type": "fig", "fig": fig, "title": f"Vessel Timeline: {vessel_name}", "category": "shipping"})
+
+    # Add cumulative unmet demand charts
+    unmet_demand_figs = _generate_unmet_demand_charts(df_log)
+    for lp, fig in unmet_demand_figs:
+        # Extract location for filtering
+        loc = lp.split('|')[0] if '|' in lp else "Unknown"
+        prod = lp.split('|')[1] if '|' in lp else "Unknown"
+        content.append({"type": "fig", "fig": fig, "title": f"Unmet Demand: {lp}", "category": "demand", "location": loc, "product": prod})
+
     # Add graphs grouped by location, with all products under each location
     for loc in location_order:
         content.append({"type": "header", "location": loc, "category": "inventory"})
         
         # Process all items for this location in sequence order
-        for (equip, proc) in items_by_location[loc]:
-            if proc == 'Make':
-                unit_key = mfg_by_loc_equip.get((loc, equip))
-                if unit_key and unit_key not in added_mfg:
-                    fig = manufacturing_figs.get(unit_key)
-                    if fig:
-                        content.append({"type": "fig", "fig": fig, "title": f"Manufacturing: {unit_key}", "category": "manufacturing", "location": loc})
-                        added_mfg.add(unit_key)
-            
-            elif proc == 'Store':
-                key = (loc, equip)
-                if key in store_by_loc_name:
-                    for (sk, product) in store_by_loc_name[key]:
-                        if sk not in added_stores:
-                            content.append({"type": "fig", "fig": store_figs[sk], "category": "inventory", "product": product, "location": loc})
-                            added_stores.add(sk)
+        if loc in items_by_location:
+            for (equip, proc) in items_by_location[loc]:
+                if proc == 'Make':
+                    unit_key = mfg_by_loc_equip.get((loc, equip))
+                    if unit_key and unit_key not in added_mfg:
+                        fig = manufacturing_figs.get(unit_key)
+                        if fig:
+                            content.append({"type": "fig", "fig": fig, "title": f"Manufacturing: {unit_key}", "category": "manufacturing", "location": loc})
+                            added_mfg.add(unit_key)
+                
+                elif proc == 'Store':
+                    key = (loc, equip)
+                    if key in store_by_loc_name:
+                        for (sk, product) in store_by_loc_name[key]:
+                            if sk not in added_stores:
+                                content.append({"type": "fig", "fig": store_figs[sk], "category": "inventory", "product": product, "location": loc})
+                                added_stores.add(sk)
+        
+        # Also catch any stores/mfg at this location NOT in graph_sequence
+        for (l, e), unit_key in mfg_by_loc_equip.items():
+            if l == loc and unit_key not in added_mfg:
+                fig = manufacturing_figs.get(unit_key)
+                if fig:
+                    content.append({"type": "fig", "fig": fig, "title": f"Manufacturing: {unit_key}", "category": "manufacturing", "location": loc})
+                    added_mfg.add(unit_key)
+        
+        for (l, sn), items in store_by_loc_name.items():
+            if l == loc:
+                for (sk, product) in items:
+                    if sk not in added_stores:
+                        content.append({"type": "fig", "fig": store_figs[sk], "category": "inventory", "product": product, "location": loc})
+                        added_stores.add(sk)
     
-    # Add any remaining manufacturing/store graphs not in the sequence
+    # Add any truly remaining manufacturing/store graphs (those with loc like "Other")
     remaining_stores = [(sk, prod) for items in store_by_loc_name.values() for (sk, prod) in items if sk not in added_stores]
     remaining_mfg = [uk for uk in manufacturing_figs.keys() if uk not in added_mfg]
     
     if remaining_stores or remaining_mfg:
-        location_order.append("Other")
         content.append({"type": "header", "location": "Other", "category": "inventory"})
         for unit_key in sorted(remaining_mfg):
             fig = manufacturing_figs[unit_key]
@@ -435,7 +483,13 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
 
     print(f"  [timing] Content assembly: {time.time()-t1:.1f}s")
     t1 = time.time()
-    _generate_html_report(sim, out_dir, content, sorted(all_products), location_order, current_runtime, prev_runtime)
+    # Final cleanup of location_order for checkboxes (unique, sorted, no Unknown)
+    final_locations = sorted([l for l in location_order if l and l != 'Unknown' and l != 'nan'])
+    if "Other" in final_locations:
+        final_locations.remove("Other")
+        final_locations.append("Other")
+
+    _generate_html_report(sim, out_dir, content, sorted(list(all_products)), final_locations, current_runtime, prev_runtime)
     print(f"  [timing] HTML write: {time.time()-t1:.1f}s")
     print(f"  [timing] TOTAL plot_results: {time.time()-t0:.1f}s")
 
@@ -536,7 +590,8 @@ def _generate_ship_timeline_by_route_group(df_log: pd.DataFrame) -> List[go.Figu
             return 'Unknown'
     
     moves['route_group'] = moves['route_id'].apply(get_route_group)
-    route_groups = moves['route_group'].dropna().unique()
+    # Filter out Unknown or empty route groups
+    route_groups = [rg for rg in moves['route_group'].dropna().unique() if rg != 'Unknown']
     figs = []
 
     for rg in sorted(route_groups):
@@ -575,15 +630,153 @@ def _generate_ship_timeline_by_route_group(df_log: pd.DataFrame) -> List[go.Figu
             ))
 
         loc_products = rg_moves['loc_product'].dropna().unique()
+        # Tighten height to match Rail graph spacing (30px per row, min 400px)
+        fig_height = max(400, len(loc_products) * 30)
         fig.update_layout(
             title=f"Ship Route: {rg}",
             xaxis_title="Day of Year",
             yaxis_title="Location|Product",
-            height=max(300, len(loc_products) * 40),
+            height=fig_height,
             template="plotly_white",
-            yaxis=dict(autorange="reversed")
+            yaxis=dict(autorange="reversed"),
+            margin=dict(t=50, b=50, l=150, r=50) # Increased left margin for long loc|product labels
         )
         figs.append((rg, fig))
+
+    return figs
+
+
+def _generate_vessel_timeline_charts(df_log: pd.DataFrame, routes: list | None = None) -> List[Tuple[str, go.Figure]]:
+    """Generate Gantt-style timeline for each ship showing states/events."""
+    if df_log.empty: return []
+
+    # Map route_id to (origin, destination)
+    route_info_map = {}
+    if routes:
+        for r in routes:
+            rid = getattr(r, 'route_id', None)
+            if rid:
+                route_info_map[str(rid)] = (r.origin_location, r.dest_location)
+
+    # Map vessel IDs to names/groups
+    vessel_names = {
+        10: "South",
+        11: "North 1",
+        12: "North 2",
+        13: "North 3",
+        14: "Import CL",
+        15: "Import GBFS"
+    }
+
+    state_colors = {
+        'IDLE': '#2ca02c',
+        'LOADING': '#1f77b4',
+        'WAITING_FOR_PRODUCT': '#aec7e8',
+        'IN_TRANSIT': '#ff7f0e',
+        'WAITING_FOR_BERTH': '#d62728',
+        'UNLOADING': '#9467bd',
+        'WAITING_FOR_SPACE': '#c5b0d5',
+        'Transit': '#ff7f0e',
+        'Load': '#1f77b4',
+        'Unload': '#9467bd',
+        'Wait for Berth': '#d62728',
+        'Waiting for Product': '#aec7e8',
+        'Waiting for Space': '#c5b0d5',
+        'Idle': '#2ca02c'
+    }
+
+    # Filter for ship-related events
+    ship_data = df_log[df_log['equipment'] == 'Ship'].copy()
+    if ship_data.empty: return []
+
+    vessels = sorted(ship_data['vessel_id'].dropna().unique())
+    figs = []
+
+    for vid in vessels:
+        v_data = ship_data[ship_data['vessel_id'] == vid].copy()
+        v_name = vessel_names.get(int(vid), f"Vessel {vid}")
+        
+        # Build timeline intervals
+        intervals = []
+        for _, row in v_data.iterrows():
+            event = row['event']
+            if event == 'StateChange': continue # Skip aggregate state changes
+            
+            start_t = float(row['time_h'])
+            duration = float(row.get('time_t', 0))
+            if duration <= 0: continue
+            
+            end_t = start_t + duration
+            
+            intervals.append({
+                'Event': event,
+                'Start': start_t / 24.0,
+                'End': end_t / 24.0,
+                'Duration': duration,
+                'Location': row.get('location'),
+                'Product': row.get('product'),
+                'Route': row.get('route_id'),
+                'Qty': row.get('qty_t', 0)
+            })
+        
+        if not intervals: continue
+        
+        df_v = pd.DataFrame(intervals)
+        
+        # Filter out events that never occurred (duration = 0)
+        events_found = df_v['Event'].unique()
+        
+        fig = go.Figure()
+        for event in sorted(events_found):
+            ev_data = df_v[df_v['Event'] == event]
+            
+            for _, r in ev_data.iterrows():
+                # Extract Source/Destination from route map if available
+                rid = str(r['Route']) if r['Route'] and str(r['Route']) != 'nan' else None
+                source_loc, dest_loc = "N/A", "N/A"
+                if rid and rid in route_info_map:
+                    source_loc, dest_loc = route_info_map[rid]
+                
+                qty_val = r['Qty'] if r['Qty'] > 0 else 0
+                products = r['Product'] if r['Product'] and str(r['Product']) != 'nan' else "N/A"
+                
+                # New tooltip requirements: Source Location, Products, Qty, Destination
+                tooltip = (
+                    f"<b>{r['Event']}</b><br>"
+                    f"Duration: {r['Duration']:.1f}h<br>"
+                    f"Source Location: {source_loc}<br>"
+                    f"Products: {products}<br>"
+                    f"Qty: {qty_val:,.0f} t<br>"
+                    f"Destination: {dest_loc}<br>"
+                )
+                
+                # Add extra context if it differs from the above
+                if r['Location'] and str(r['Location']) != 'nan' and r['Location'] not in [source_loc, dest_loc]:
+                    tooltip += f"Current Location: {r['Location']}<br>"
+                if rid:
+                    tooltip += f"Route ID: {rid}<br>"
+
+                fig.add_trace(go.Scatter(
+                    x=[r['Start'], r['End'], None],
+                    y=[r['Event'], r['Event'], None],
+                    mode='lines',
+                    line=dict(color=state_colors.get(r['Event'], '#999'), width=15),
+                    name=r['Event'],
+                    showlegend=False,
+                    text=tooltip,
+                    hoverinfo='text'
+                ))
+
+        fig.update_layout(
+            title=f"Vessel Timeline: {v_name}",
+            xaxis_title="Day of Year",
+            yaxis_title="Event",
+            height=max(300, len(events_found) * 40),
+            template="plotly_white",
+            hovermode='closest',
+            yaxis=dict(categoryorder='array', categoryarray=sorted(events_found))
+        )
+        figs.append((v_name, fig))
 
     return figs
 
@@ -849,6 +1042,52 @@ def _generate_vessel_state_chart(df_log: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def _generate_unmet_demand_charts(df_log: pd.DataFrame) -> List[Tuple[str, go.Figure]]:
+    """Generate cumulative unmet demand charts by Location|Product."""
+    if df_log.empty: return []
+    
+    # Filter for entries with unmet demand
+    unmet_df = df_log[df_log['unmet_demand'] > 0].copy()
+    if unmet_df.empty: return []
+    
+    # Create Location|Product key
+    unmet_df['loc_product'] = unmet_df['location'].fillna('Unknown') + '|' + unmet_df['product'].fillna('Unknown')
+    
+    # Ensure time is numeric
+    unmet_df['day_float'] = pd.to_numeric(unmet_df['time_h'], errors='coerce') / 24.0
+    
+    figs = []
+    for lp in sorted(unmet_df['loc_product'].unique()):
+        data = unmet_df[unmet_df['loc_product'] == lp].copy()
+        data = data.sort_values('day_float')
+        
+        # Calculate cumulative unmet demand
+        data['cum_unmet'] = data['unmet_demand'].cumsum()
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=data['day_float'],
+            y=data['cum_unmet'],
+            mode='lines+markers',
+            name='Cumulative Unmet Demand',
+            line=dict(color='red', width=2),
+            marker=dict(size=4),
+            hovertemplate="Day: %{x:.1f}<br>Cumulative Unmet: %{y:,.0f} t<extra></extra>"
+        ))
+        
+        fig.update_layout(
+            title=f"Cumulative Unmet Demand: {lp}",
+            xaxis_title="Day of Year",
+            yaxis_title="Unmet Demand (tons)",
+            template="plotly_white",
+            height=400,
+            margin=dict(t=50, b=50, l=60, r=20)
+        )
+        figs.append((lp, fig))
+        
+    return figs
+
+
 def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
     """Generate stacked bar chart showing avg time per status for each route, with trip count labels."""
     if df_log.empty:
@@ -1100,6 +1339,7 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
             <button class="filter-btn active" data-category="inventory" onclick="toggleCategory('inventory')">Inventory</button>
             <button class="filter-btn active" data-category="manufacturing" onclick="toggleCategory('manufacturing')">Manufacturing</button>
             <button class="filter-btn active" data-category="shipping" onclick="toggleCategory('shipping')">Shipping</button>
+            <button class="filter-btn active" data-category="demand" onclick="toggleCategory('demand')">Demand</button>
             <div class="filter-divider"></div>
             <span class="filter-label">Products:</span>
             <button class="quick-btn" onclick="selectAllProducts()">All</button>
@@ -1150,7 +1390,7 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
 
     html_parts.append("""</div><div class="footer"><p>Generated by sim_run_report_plot.py</p></div>
     <script>
-    const categoryState = { inventory: true, manufacturing: true, shipping: true };
+    const categoryState = { inventory: true, manufacturing: true, shipping: true, demand: true };
     const productState = {};
     const locationState = {};
     
@@ -1170,7 +1410,7 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
     }
     
     function selectAllCategories() {
-        ['inventory', 'manufacturing', 'shipping'].forEach(cat => {
+        ['inventory', 'manufacturing', 'shipping', 'demand'].forEach(cat => {
             categoryState[cat] = true;
             document.querySelector(`[data-category="${cat}"].filter-btn`).classList.add('active');
         });
@@ -1178,7 +1418,7 @@ def _generate_html_report(sim, out_dir: Path, content: list, products: list = No
     }
     
     function clearAllCategories() {
-        ['inventory', 'manufacturing', 'shipping'].forEach(cat => {
+        ['inventory', 'manufacturing', 'shipping', 'demand'].forEach(cat => {
             categoryState[cat] = false;
             document.querySelector(`[data-category="${cat}"].filter-btn`).classList.remove('active');
         });

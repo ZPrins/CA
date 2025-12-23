@@ -125,7 +125,7 @@ def build_transport_routes(clean_data: Dict[str, pd.DataFrame]) -> List[Transpor
                     unload_rate_tph=float(row['Unload_Rate_TPH']),
                     to_min=float(row['To_Min']),
                     back_min=float(row['Back_Min']),
-                    mode="TRAIN",
+                    mode=row.get('Mode', 'TRAIN'),
                     route_id=row.get('Route_ID') or f"{row['Origin_Location']}->{row['Dest_Location']}"
                 ))
             except Exception as e:
@@ -200,7 +200,13 @@ def build_demands(df_deliver: pd.DataFrame) -> List[Demand]:
     if df_deliver.empty: return demands
     for _, row in df_deliver.iterrows():
         try:
-            demands.append(Demand(store_key=row['Store_Key'], rate_per_hour=float(row['Rate_Per_Hour'])))
+            sk = row['Store_Key']
+            sks = row.get('Store_Keys', [sk])
+            demands.append(Demand(
+                store_key=sk,
+                rate_per_hour=float(row['Rate_Per_Hour']),
+                store_keys=sks
+            ))
         except Exception as e:
             print(f"Warning: Could not create Demand for row {row.get('Store_Key')}. Error: {e}")
     return demands
