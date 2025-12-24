@@ -231,10 +231,22 @@ def plot_results(sim, out_dir: Path, routes: list | None = None, makes: list | N
                                          marker=dict(symbol='triangle-down', size=10, color='#1f78b4')),
                               secondary_y=True)
 
+            # Conveyor In
+            if "Conveyor_in" in data.columns and data["Conveyor_in"].sum() > 0:
+                fig.add_trace(go.Scatter(x=data["day"], y=data["Conveyor_in"], name="Conveyor In (t)", mode='markers',
+                                         marker=dict(symbol='triangle-down', size=8, color='#ff7f0e')),
+                              secondary_y=True)
+
             # Train Out
             if "Train_out" in data.columns and data["Train_out"].sum() > 0:
                 fig.add_trace(go.Scatter(x=data["day"], y=data["Train_out"], name="Rail Out (t)", mode='markers',
                                          marker=dict(symbol='triangle-up', size=8, color='#e377c2')), secondary_y=True)
+
+            # Conveyor Out
+            if "Conveyor_out" in data.columns and data["Conveyor_out"].sum() > 0:
+                fig.add_trace(go.Scatter(x=data["day"], y=data["Conveyor_out"], name="Conveyor Out (t)", mode='markers',
+                                         marker=dict(symbol='triangle-up', size=8, color='#ffbb78')),
+                              secondary_y=True)
 
             # === FOREGROUND TRACES (added last, drawn on top) ===
             

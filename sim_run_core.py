@@ -20,6 +20,7 @@ from sim_run_core_store import build_stores as _build_stores
 from sim_run_core_make import producer as _producer
 from sim_run_core_move_train import transporter as _transporter_train
 from sim_run_core_move_ship import transporter as _transporter_ship
+from sim_run_core_move_conveyor import transporter as _transporter_conveyor
 from sim_run_core_deliver import consumer as _consumer
 
 
@@ -173,6 +174,16 @@ class SupplyChainSimulation:
                 store_capacity_map=getattr(self, 'store_capacity_map', None),
                 sim=self,
                 t_state=t_state
+            )
+        elif mode == 'CONVEYOR':
+            yield from _transporter_conveyor(
+                self.env,
+                route,
+                self.stores,
+                self.log,
+                sim=self,
+                t_state=t_state,
+                vessel_id=vessel_id
             )
         else:  # TRAIN
             # Use a unique vessel_id for trains to avoid collision in pending_deliveries

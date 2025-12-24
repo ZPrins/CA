@@ -49,7 +49,7 @@ def load_data_frames(input_file: str) -> Dict[str, pd.DataFrame]:
     """
     sheets = [
         "Settings", "Store", "Make", "Deliver",
-        "Move_TRAIN", "Move_SHIP", "SHIP_ROUTES",
+        "Move_TRAIN", "Move_CONVEYOR", "Move_SHIP", "SHIP_ROUTES",
         "SHIP_BERTHS", "SHIP_DISTANCES", "Network"
     ]
     raw_data = {}

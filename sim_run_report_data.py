@@ -117,9 +117,13 @@ def build_report_frames(sim, makes=None):
             UNION ALL
             SELECT 'Ship' as equip, 'in' as dir, to_store as sk, day, SUM(qty_t) as q FROM df_log WHERE event IN ('Unload', 'ShipUnload') AND equipment = 'Ship' AND to_store IS NOT NULL GROUP BY 1,2,3,4
             UNION ALL
+            SELECT 'Conveyor' as equip, 'in' as dir, to_store as sk, day, SUM(qty_t) as q FROM df_log WHERE event = 'Transfer' AND equipment = 'Conveyor' AND to_store IS NOT NULL GROUP BY 1,2,3,4
+            UNION ALL
             SELECT 'Train' as equip, 'out' as dir, from_store as sk, day, SUM(qty_t) as q FROM df_log WHERE event = 'Load' AND equipment = 'Train' AND from_store IS NOT NULL GROUP BY 1,2,3,4
             UNION ALL
             SELECT 'Ship' as equip, 'out' as dir, from_store as sk, day, SUM(qty_t) as q FROM df_log WHERE event IN ('Load', 'ShipLoad') AND equipment = 'Ship' AND from_store IS NOT NULL GROUP BY 1,2,3,4
+            UNION ALL
+            SELECT 'Conveyor' as equip, 'out' as dir, from_store as sk, day, SUM(qty_t) as q FROM df_log WHERE event = 'Transfer' AND equipment = 'Conveyor' AND from_store IS NOT NULL GROUP BY 1,2,3,4
             UNION ALL
             SELECT 'Production' as equip, 'in' as dir, to_store as sk, day, SUM(qty_t) as q FROM df_log WHERE event IN ('Produce', 'ProducePartial') AND to_store IS NOT NULL GROUP BY 1,2,3,4
             UNION ALL

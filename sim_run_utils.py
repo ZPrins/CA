@@ -10,7 +10,13 @@ def clean_df_cols_str(df: pd.DataFrame, cols: list) -> pd.DataFrame:
     for col in cols:
         if col in df.columns:
             # Force to string, strip whitespace
-            df[col] = df[col].astype(str).str.strip()
+            # Use .apply if it's a DataFrame (multiple columns with same name)
+            target = df[col]
+            if isinstance(target, pd.DataFrame):
+                df[col] = target.astype(str).apply(lambda s: s.str.strip())
+            else:
+                df[col] = target.astype(str).str.strip()
+            
             # Replace string 'nan' (from pandas string conversion of NaNs) with None
             df[col] = df[col].replace({'nan': None, 'NaN': None, '': None})
     return df

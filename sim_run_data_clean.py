@@ -177,10 +177,14 @@ def clean_all_data(raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]
     else:
         clean_data['Store'] = pd.DataFrame()
 
-    # --- 1.5 NETWORK (Pre-process for Make/Move) ---
+    # --- 1.5 NETWORK (Pre-process for Make/Move/Conveyor) ---
     df_net = raw_data.get('Network', pd.DataFrame())
     network_make_input_map = {} # (Location, Equipment, Product) -> List of Store Keys
     network_make_output_map = {} # (Location, Equipment, Product) -> List of Store Keys
+    
+    # NEW: Maps for Conveyor Discovery
+    conveyor_origins = {} # (Location, Equipment, Product) -> List of Store Keys
+    conveyor_destinations = {} # (Location, Equipment, Product) -> List of Store Keys
 
     if not df_net.empty:
         # Standardize columns
@@ -190,7 +194,7 @@ def clean_all_data(raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]
         })
         df_net = clean_df_cols_str(df_net, ['Location', 'Equipment', 'Process', 'Input', 'Output', 'Next_Equipment'])
         
-        # Build Input Map: Find Stores where Next_Equipment == a Make Unit
+        # Build Input Map: Find Stores where Next_Equipment == a Make Unit OR Conveyor
         for _, row in df_net.iterrows():
             loc = row['Location']
             eq = row['Equipment']
@@ -199,15 +203,21 @@ def clean_all_data(raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]
             next_eq = row['Next_Equipment']
             
             if proc == 'Store' and next_eq:
-                # This store feeds into next_eq
-                key = (loc, next_eq, prod)
                 store_key = store_lookup_map.get((loc, eq, prod))
                 if store_key:
+                    # Generic input map for Make units
+                    key = (loc, next_eq, prod)
                     if key not in network_make_input_map: network_make_input_map[key] = []
                     if store_key not in network_make_input_map[key]:
                         network_make_input_map[key].append(store_key)
+                    
+                    # Specific origin map for Conveyors
+                    # We check if next_eq is a conveyor in the next pass, but we can store it here
+                    if key not in conveyor_origins: conveyor_origins[key] = []
+                    if store_key not in conveyor_origins[key]:
+                        conveyor_origins[key].append(store_key)
 
-        # Build Output Map: Find Make Units and their Next_Equipment (Store)
+        # Build Output Map: Find Units (Make/Conveyor) and their Next_Equipment (Store)
         for _, row in df_net.iterrows():
             loc = row['Location']
             eq = row['Equipment']
@@ -215,14 +225,23 @@ def clean_all_data(raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]
             prod = row['Output']
             next_eq = row['Next_Equipment']
             
-            if proc == 'Make' and next_eq:
-                # This make unit feeds into next_eq (Store)
+            if next_eq:
                 store_key = store_lookup_map.get((loc, next_eq, prod))
                 if store_key:
-                    key = (loc, eq, prod)
-                    if key not in network_make_output_map: network_make_output_map[key] = []
-                    if store_key not in network_make_output_map[key]:
-                        network_make_output_map[key].append(store_key)
+                    if proc == 'Make':
+                        key = (loc, eq, prod)
+                        if key not in network_make_output_map: network_make_output_map[key] = []
+                        if store_key not in network_make_output_map[key]:
+                            network_make_output_map[key].append(store_key)
+                    
+                    if proc == 'Move' or eq.upper() == 'CONVEYOR':
+                        key = (loc, eq, prod)
+                        if key not in conveyor_destinations: conveyor_destinations[key] = []
+                        if store_key not in conveyor_destinations[key]:
+                            conveyor_destinations[key].append(store_key)
+
+    # --- 1.6 CONVEYOR DISCOVERY (Legacy - removed in favor of explicit sheet) ---
+    clean_data['Move_CONVEYOR'] = pd.DataFrame()
 
     # --- 2. MAKE ---
     df_make = raw_data.get('Make', pd.DataFrame())
@@ -340,16 +359,10 @@ def clean_all_data(raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]
         df_deliver[['Store_Key', 'Store_Keys']] = df_deliver.apply(resolve_deliver_key, axis=1)
         clean_data['Deliver'] = df_deliver.dropna(subset=['Store_Key'])
 
-    # --- 4. MOVE (TRAIN/CONVEYOR) ---
+    # --- 4. MOVE (TRAIN) ---
     df_train = raw_data.get('Move_TRAIN', pd.DataFrame())
     if not df_train.empty:
-        # Check if equipment column exists to detect CONVEYOR
-        eq_col = None
-        for c in ['Equipment Name', 'Equipment', 'Equipment_Name']:
-            if c in df_train.columns:
-                eq_col = c
-                break
-
+        # Standardize columns
         if 'Product Class' in df_train.columns and 'Product' in df_train.columns:
             df_train = df_train.drop(columns=['Product Class'])
 
@@ -429,19 +442,22 @@ def clean_all_data(raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]
 
             # Resolve explicit origin store to store key if possible
             if orig_store:
-                # Try with Equipment name if available (sometimes Store sheet uses it as name)
-                k = store_lookup_map.get((row['Origin_Location'], orig_store, row['Product_Class']))
-                if k:
-                    origs_list = [k]
-                else:
-                    # Search all stores at this location for this product and see if 'Equipment' (Silo name) matches
-                    all_at_loc = loc_prod_map.get((row['Origin_Location'], row['Product_Class']), [])
-                    for candidate_key in all_at_loc:
-                        # Store keys are Product|Location|Equipment|Product
-                        parts = candidate_key.split('|')
-                        if len(parts) >= 3 and parts[2].upper() == orig_store.upper():
-                            origs_list = [candidate_key]
-                            break
+                # Support comma-separated list of store names
+                store_names = [s.strip() for s in orig_store.split(',') if s.strip()]
+                for sn in store_names:
+                    # Try with Equipment name if available (sometimes Store sheet uses it as name)
+                    k = store_lookup_map.get((row['Origin_Location'], sn.upper(), row['Product_Class']))
+                    if k:
+                        origs_list.append(k)
+                    else:
+                        # Search all stores at this location for this product and see if 'Equipment' (Silo name) matches
+                        all_at_loc = loc_prod_map.get((row['Origin_Location'], row['Product_Class']), [])
+                        for candidate_key in all_at_loc:
+                            # Store keys are Product|Location|Equipment|Product
+                            parts = candidate_key.split('|')
+                            if len(parts) >= 3 and parts[2].upper() == sn.upper():
+                                origs_list.append(candidate_key)
+                                break
 
             # Fallback: all location+product stores (preserve Store sheet order)
             if not origs_list:
@@ -449,17 +465,20 @@ def clean_all_data(raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]
 
             # Resolve explicit destination store to store key if possible
             if dest_store:
-                k2 = store_lookup_map.get((row['Dest_Location'], dest_store, row['Product_Class']))
-                if k2:
-                    dests_list = [k2]
-                else:
-                    # Search all stores at this location for this product and see if 'Equipment' (Silo name) matches
-                    all_at_loc_dest = loc_prod_map.get((row['Dest_Location'], row['Product_Class']), [])
-                    for candidate_key in all_at_loc_dest:
-                        parts = candidate_key.split('|')
-                        if len(parts) >= 3 and parts[2].upper() == dest_store.upper():
-                            dests_list = [candidate_key]
-                            break
+                # Support comma-separated list of store names
+                store_names = [s.strip() for s in dest_store.split(',') if s.strip()]
+                for sn in store_names:
+                    k2 = store_lookup_map.get((row['Dest_Location'], sn.upper(), row['Product_Class']))
+                    if k2:
+                        dests_list.append(k2)
+                    else:
+                        # Search all stores at this location for this product and see if 'Equipment' (Silo name) matches
+                        all_at_loc_dest = loc_prod_map.get((row['Dest_Location'], row['Product_Class']), [])
+                        for candidate_key in all_at_loc_dest:
+                            parts = candidate_key.split('|')
+                            if len(parts) >= 3 and parts[2].upper() == sn.upper():
+                                dests_list.append(candidate_key)
+                                break
 
             # Fallback: all location+product stores (preserve Store sheet order)
             if not dests_list:
@@ -469,21 +488,76 @@ def clean_all_data(raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]
 
         df_train[['Store_Keys_Origin', 'Store_Keys_Dest']] = df_train.apply(resolve_route_keys, axis=1)
 
-        # Fix for Conveyor: if mode is CONVEYOR, use it
-        if 'Equipment' in df_train.columns:
-            def set_mode(row):
-                if str(row.get('Equipment', '')).upper() == 'CONVEYOR':
-                    return 'CONVEYOR'
-                return 'TRAIN'
-            df_train['Mode'] = df_train.apply(set_mode, axis=1)
-        else:
-            df_train['Mode'] = 'TRAIN'
+        # Force Mode to TRAIN for all entries in Move_TRAIN sheet
+        df_train['Mode'] = 'TRAIN'
 
         for col in ['N_Units', 'Load_Rate_TPH', 'Unload_Rate_TPH', 'To_Min', 'Back_Min']:
             if col in df_train.columns:
                 df_train[col] = pd.to_numeric(df_train[col], errors='coerce').fillna(0.0)
 
         clean_data['Move_TRAIN'] = df_train.dropna(subset=['Product_Class'])
+
+    # --- 4.5 MOVE (CONVEYOR) ---
+    df_conv = raw_data.get('Move_CONVEYOR', pd.DataFrame())
+    if not df_conv.empty:
+        df_conv = df_conv.rename(columns={
+            "Product Class": "Product_Class",
+            "Product": "Product_Class",
+            "Origin Store": "Origin_Store",
+            "Destination Store": "Dest_Store",
+            "Speed (tons/hr)": "Speed_TPH"
+        })
+        df_conv = df_conv.loc[:, ~df_conv.columns.duplicated()]
+        df_conv = clean_df_cols_str(df_conv, ['Product_Class', 'Location', 'Origin_Store', 'Dest_Store'])
+        if 'Origin_Store' in df_conv.columns: df_conv['Origin_Store'] = df_conv['Origin_Store'].astype(str).str.upper()
+        if 'Dest_Store' in df_conv.columns: df_conv['Dest_Store'] = df_conv['Dest_Store'].astype(str).str.upper()
+
+        def resolve_conv_keys(row):
+            loc = row['Location']
+            prod = row['Product_Class']
+            orig_store = (row.get('Origin_Store') or '').strip()
+            dest_store = (row.get('Dest_Store') or '').strip()
+            
+            origs_list = []
+            if orig_store:
+                # Support comma-separated list of store names
+                store_names = [s.strip() for s in orig_store.split(',') if s.strip()]
+                for sn in store_names:
+                    k = store_lookup_map.get((loc, sn.upper(), prod))
+                    if k: origs_list.append(k)
+                    else:
+                        all_at_loc = loc_prod_map.get((loc, prod), [])
+                        for ck in all_at_loc:
+                            if ck.split('|')[2].upper() == sn.upper():
+                                origs_list.append(ck); break
+            if not origs_list: origs_list = loc_prod_map.get((loc, prod), [])
+
+            dests_list = []
+            if dest_store:
+                # Support comma-separated list of store names
+                store_names = [s.strip() for s in dest_store.split(',') if s.strip()]
+                for sn in store_names:
+                    k2 = store_lookup_map.get((loc, sn.upper(), prod))
+                    if k2: dests_list.append(k2)
+                    else:
+                        all_at_loc_dest = loc_prod_map.get((loc, prod), [])
+                        for ck in all_at_loc_dest:
+                            if ck.split('|')[2].upper() == sn.upper():
+                                dests_list.append(ck); break
+            if not dests_list: dests_list = loc_prod_map.get((loc, prod), [])
+
+            return pd.Series([",".join(origs_list), ",".join(dests_list)])
+
+        df_conv[['Store_Keys_Origin', 'Store_Keys_Dest']] = df_conv.apply(resolve_conv_keys, axis=1)
+        df_conv['Mode'] = 'CONVEYOR'
+        df_conv['Origin_Location'] = df_conv['Location']
+        df_conv['Dest_Location'] = df_conv['Location']
+        
+        for col in ['Speed_TPH']:
+            if col in df_conv.columns:
+                df_conv[col] = pd.to_numeric(df_conv[col], errors='coerce').fillna(0.0)
+
+        clean_data['Move_CONVEYOR'] = df_conv.dropna(subset=['Product_Class'])
 
     # --- 5. SHIP ---
     # FIX: Rename "# Vessels" to "N_Units"

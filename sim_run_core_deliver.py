@@ -35,12 +35,13 @@ def consumer(env, stores, demand_key: str, demand_rate: float,
             take = 0.0
             chosen_store = None
             
-            # Try to take from stores in order
-            for store in stores:
-                if float(store.level) > 0:
-                    take = min(float(store.level), truck_load)
-                    chosen_store = store
-                    break
+            # Pick the fullest store among those that have stock
+            candidates = [s for s in stores if float(s.level) > 0]
+            if candidates:
+                # Sort by level descending
+                candidates.sort(key=lambda s: float(s.level), reverse=True)
+                chosen_store = candidates[0]
+                take = min(float(chosen_store.level), truck_load)
             
             # If no stock, chosen_store is None, take is 0
             if not chosen_store and stores:
@@ -83,11 +84,13 @@ def consumer(env, stores, demand_key: str, demand_rate: float,
         if remainder > 0:
             take = 0.0
             chosen_store = None
-            for store in stores:
-                if float(store.level) > 0:
-                    take = min(float(store.level), remainder)
-                    chosen_store = store
-                    break
+            
+            # Pick the fullest store
+            candidates = [s for s in stores if float(s.level) > 0]
+            if candidates:
+                candidates.sort(key=lambda s: float(s.level), reverse=True)
+                chosen_store = candidates[0]
+                take = min(float(chosen_store.level), remainder)
             
             if not chosen_store and stores:
                 chosen_store = stores[0]

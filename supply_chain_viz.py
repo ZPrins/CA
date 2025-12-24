@@ -1319,9 +1319,20 @@ MOVE_TRAIN_KEY_COLS = ["Product Class", "Product", "Origin Location", "Destinati
 MOVE_TRAIN_SHEET_COLS = MOVE_TRAIN_KEY_COLS + [
     "Origin Store",
     "Destination Store",
+    "Equipment",
     "Load Rate (tons/hr)",
     "Unload Rate (tons/hr)",
 ] + MOVE_TRAIN_REQUIRED_INPUT_COLS
+
+# MOVE_CONVEYOR sheet
+MOVE_CONVEYOR_SHEET_COLS = [
+    "Product Class",
+    "Product",
+    "Location",
+    "Origin Store",
+    "Destination Store",
+    "Speed (tons/hr)",
+]
 
 # MOVE_SHIP sheet per spec
 # Updated to include two additional columns: "#Holds" and "Payload per Hold"
@@ -1744,7 +1755,7 @@ def ensure_move_train_sheet(xlsx_path: Path) -> dict:
 
     # Build helper maps from Network for store inference
     # Destination store from Move rows where next is Store
-    dest_store_map: dict[tuple[str, str, str], str] = {}
+    dest_store_map: dict[tuple[str, str, str], list[str]] = {}
     mv_t = mv_train.copy()
     for _, r in mv_t.iterrows():
         try:
@@ -1755,13 +1766,16 @@ def ensure_move_train_sheet(xlsx_path: Path) -> dict:
                     str(r.get("next_location", "")).strip().upper(),
                 )
                 dst_store = str(r.get("next_equipment", "")).strip()
-                if key not in dest_store_map and dst_store:
-                    dest_store_map[key] = dst_store
+                if dst_store:
+                    if key not in dest_store_map:
+                        dest_store_map[key] = []
+                    if dst_store not in dest_store_map[key]:
+                        dest_store_map[key].append(dst_store)
         except Exception:
             pass
 
     # Origin store from Store rows that feed a TRAIN move
-    origin_store_map: dict[tuple[str, str], str] = {}
+    origin_store_map: dict[tuple[str, str], list[str]] = {}
     store_rows = net[_u(net["process"]) == "STORE"].copy()
     for _, r in store_rows.iterrows():
         try:
@@ -1771,13 +1785,16 @@ def ensure_move_train_sheet(xlsx_path: Path) -> dict:
                     str(r.get("location", "")).strip().upper(),
                 )
                 origin_store = str(r.get("equipment_name", "")).strip()
-                if key not in origin_store_map and origin_store:
-                    origin_store_map[key] = origin_store
+                if origin_store:
+                    if key not in origin_store_map:
+                        origin_store_map[key] = []
+                    if origin_store not in origin_store_map[key]:
+                        origin_store_map[key].append(origin_store)
         except Exception:
             pass
 
     # Fallback maps: any Store at (product, location)
-    any_store_map: dict[tuple[str, str], str] = {}
+    any_store_map: dict[tuple[str, str], list[str]] = {}
     if not store_rows.empty:
         tmp = (
             store_rows[["input", "location", "equipment_name"]]
@@ -1788,8 +1805,12 @@ def ensure_move_train_sheet(xlsx_path: Path) -> dict:
         tmp_sorted = tmp.sort_values(["k_loc", "k_prod", "equipment_name"], kind="mergesort")
         for _, r in tmp_sorted.iterrows():
             key = (r["k_prod"], r["k_loc"])
-            if key not in any_store_map:
-                any_store_map[key] = str(r.get("equipment_name", "")).strip()
+            s_name = str(r.get("equipment_name", "")).strip()
+            if s_name:
+                if key not in any_store_map:
+                    any_store_map[key] = []
+                if s_name not in any_store_map[key]:
+                    any_store_map[key].append(s_name)
 
     # Build unique template rows from MOVE rows
     cols_map = {
@@ -1830,19 +1851,19 @@ def ensure_move_train_sheet(xlsx_path: Path) -> dict:
     def infer_origin_store(prod: str, origin: str) -> str:
         k = (prod.strip().upper(), origin.strip().upper())
         if k in origin_store_map:
-            return origin_store_map[k]
+            return ", ".join(origin_store_map[k])
         if k in any_store_map:
-            return any_store_map[k]
+            return ", ".join(any_store_map[k])
         return ""
 
     def infer_destination_store(prod: str, origin: str, dest: str) -> str:
         k3 = (prod.strip().upper(), origin.strip().upper(), dest.strip().upper())
         if k3 in dest_store_map:
-            return dest_store_map[k3]
+            return ", ".join(dest_store_map[k3])
         # fallback to any store at destination for product
         k2 = (prod.strip().upper(), dest.strip().upper())
         if k2 in any_store_map:
-            return any_store_map[k2]
+            return ", ".join(any_store_map[k2])
         return ""
 
     added_count = 0
@@ -1865,7 +1886,7 @@ def ensure_move_train_sheet(xlsx_path: Path) -> dict:
             current = pd.concat([current, pd.DataFrame([filled])], ignore_index=True)
             added_count += 1
 
-    # Second pass: backfill blanks in existing rows, preserving user-entered values
+    # Second pass: ensure all stores from Network are present in the list
     if not current.empty:
         # Ensure text dtype for store and per-move rate columns to avoid pandas FutureWarning when writing strings
         for _col in ["Origin Store", "Destination Store", "Load Rate (tons/hr)", "Unload Rate (tons/hr)"]:
@@ -1878,10 +1899,34 @@ def ensure_move_train_sheet(xlsx_path: Path) -> dict:
             prod = str(r.get("Product", ""))
             o_loc = str(r.get("Origin Location", ""))
             d_loc = str(r.get("Destination Location", ""))
-            if (pd.isna(r.get("Origin Store")) or str(r.get("Origin Store", "")).strip() == ""):
-                current.at[idx, "Origin Store"] = infer_origin_store(prod, o_loc)
-            if (pd.isna(r.get("Destination Store")) or str(r.get("Destination Store", "")).strip() == ""):
-                current.at[idx, "Destination Store"] = infer_destination_store(prod, o_loc, d_loc)
+            
+            # Inferred stores from Network
+            inferred_origin = infer_origin_store(prod, o_loc)
+            inferred_dest = infer_destination_store(prod, o_loc, d_loc)
+            
+            # Current values
+            cur_origin = str(r.get("Origin Store", "")).strip()
+            cur_dest = str(r.get("Destination Store", "")).strip()
+
+            def merge_stores(current_str, inferred_str):
+                if not inferred_str: return current_str
+                if not current_str: return inferred_str
+                
+                # Split and clean
+                cur_list = [s.strip() for s in current_str.split(",") if s.strip()]
+                inf_list = [s.strip() for s in inferred_str.split(",") if s.strip()]
+                
+                # Combine maintaining order
+                combined = cur_list.copy()
+                for s in inf_list:
+                    if s not in combined:
+                        combined.append(s)
+                return ", ".join(combined)
+
+            if inferred_origin:
+                current.at[idx, "Origin Store"] = merge_stores(cur_origin, inferred_origin)
+            if inferred_dest:
+                current.at[idx, "Destination Store"] = merge_stores(cur_dest, inferred_dest)
 
     # Preserve existing column order
     ordered_cols = list(current.columns)
@@ -1895,6 +1940,141 @@ def ensure_move_train_sheet(xlsx_path: Path) -> dict:
     summary = {"rows_added": added_count}
     _log_action("ensure_move_train_sheet", f"rows_added={added_count}, auto_filled_origin_dest_stores")
     return summary
+
+
+def ensure_move_conveyor_sheet(xlsx_path: Path) -> dict:
+    """Ensure the 'Move_CONVEYOR' sheet exists with unique rows for conveyor moves from the Network.
+    
+    Fields:
+      - Product Class, Product, Location, Origin Store, Destination Store, Speed (tons/hr)
+    """
+    net = _read_network_df(xlsx_path)
+    if net.empty:
+        raise ValueError("Network sheet is empty or missing required columns.")
+
+    def _u(s: pd.Series) -> pd.Series:
+        return s.astype(str).fillna("").str.strip().str.upper()
+
+    mv = net[_u(net["process"]) == "MOVE"].copy()
+    if mv.empty:
+        existing = _read_sheet_df(xlsx_path, "Move_CONVEYOR")
+        if existing is None:
+            empty_df = pd.DataFrame(columns=MOVE_CONVEYOR_SHEET_COLS)
+            _write_sheet_df(xlsx_path, "Move_CONVEYOR", empty_df)
+        return {"rows_added": 0}
+
+    # Filter to CONVEYOR equipment
+    mv_conv = mv[_u(mv["equipment_name"]) == "CONVEYOR"].copy()
+    if mv_conv.empty:
+        existing = _read_sheet_df(xlsx_path, "Move_CONVEYOR")
+        if existing is None:
+            empty_df = pd.DataFrame(columns=MOVE_CONVEYOR_SHEET_COLS)
+            _write_sheet_df(xlsx_path, "Move_CONVEYOR", empty_df)
+        return {"rows_added": 0}
+
+    # Build unique template rows
+    # Fields: Product Class, Product, Location, Origin Store, Destination Store, Speed (tons/hr)
+    # Origin Store is the equipment name of the Store row that feeds this Move:CONVEYOR
+    # Destination Store is the equipment name of the Store row that this Move:CONVEYOR feeds into
+    
+    # Map for destination store
+    dest_store_map: dict[tuple[str, str, str], list[str]] = {}
+    for _, r in mv_conv.iterrows():
+        if str(r.get("next_process", "")).strip().upper() == "STORE":
+            key = (
+                str(r.get("product_class", "")).strip().upper(),
+                str(r.get("output", "")).strip().upper(),
+                str(r.get("location", "")).strip().upper(),
+            )
+            dst_store = str(r.get("next_equipment", "")).strip()
+            if dst_store:
+                if key not in dest_store_map:
+                    dest_store_map[key] = []
+                if dst_store not in dest_store_map[key]:
+                    dest_store_map[key].append(dst_store)
+
+    # Map for origin store
+    origin_store_map: dict[tuple[str, str, str], list[str]] = {}
+    store_rows = net[_u(net["process"]) == "STORE"].copy()
+    for _, r in store_rows.iterrows():
+        if str(r.get("next_process", "")).strip().upper() == "MOVE" and str(r.get("next_equipment", "")).strip().upper() == "CONVEYOR":
+            key = (
+                str(r.get("product_class", "")).strip().upper(),
+                str(r.get("input", "")).strip().upper(), # Store input is its product
+                str(r.get("location", "")).strip().upper(),
+            )
+            origin_store = str(r.get("equipment_name", "")).strip()
+            if origin_store:
+                if key not in origin_store_map:
+                    origin_store_map[key] = []
+                if origin_store not in origin_store_map[key]:
+                    origin_store_map[key].append(origin_store)
+
+    uniq_rows = []
+    seen_keys = set()
+    for _, r in mv_conv.iterrows():
+        pc = str(r.get("product_class", "")).strip()
+        prod = str(r.get("output", "")).strip()
+        loc = str(r.get("location", "")).strip()
+        key = (pc.upper(), prod.upper(), loc.upper())
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        
+        orig_store = ", ".join(origin_store_map.get(key, []))
+        dest_store = ", ".join(dest_store_map.get(key, []))
+        
+        uniq_rows.append({
+            "Product Class": pc,
+            "Product": prod,
+            "Location": loc,
+            "Origin Store": orig_store,
+            "Destination Store": dest_store,
+            "Speed (tons/hr)": None # User to fill
+        })
+
+    uniq = pd.DataFrame(uniq_rows)
+    current = _read_sheet_df(xlsx_path, "Move_CONVEYOR")
+    if current is None or current.empty:
+        current = pd.DataFrame(columns=MOVE_CONVEYOR_SHEET_COLS)
+
+    current = _ensure_columns(current, MOVE_CONVEYOR_SHEET_COLS)
+    
+    # Merge
+    current["_KEY"] = _u(current["Product Class"]) + "|" + _u(current["Product"]) + "|" + _u(current["Location"])
+    uniq["_KEY"] = _u(uniq["Product Class"]) + "|" + _u(uniq["Product"]) + "|" + _u(uniq["Location"])
+    
+    added_count = 0
+    for _, r in uniq.iterrows():
+        if r["_KEY"] not in current["_KEY"].values:
+            new_row = {c: r.get(c, pd.NA) for c in MOVE_CONVEYOR_SHEET_COLS}
+            current = pd.concat([current, pd.DataFrame([new_row])], ignore_index=True)
+            added_count += 1
+        else:
+            # Update missing stores from Network in existing rows
+            idx = current[current["_KEY"] == r["_KEY"]].index[0]
+            for col in ["Origin Store", "Destination Store"]:
+                cur_val = str(current.at[idx, col]).strip()
+                if cur_val.lower() == "nan": cur_val = ""
+                inf_val = str(r[col]).strip()
+                
+                if not inf_val: continue
+                if not cur_val:
+                    current.at[idx, col] = inf_val
+                    continue
+                
+                cur_list = [s.strip() for s in cur_val.split(",") if s.strip()]
+                inf_list = [s.strip() for s in inf_val.split(",") if s.strip()]
+                combined = cur_list.copy()
+                for s in inf_list:
+                    if s not in combined:
+                        combined.append(s)
+                current.at[idx, col] = ", ".join(combined)
+
+    current = current[MOVE_CONVEYOR_SHEET_COLS].reset_index(drop=True)
+    _write_sheet_df(xlsx_path, "Move_CONVEYOR", current)
+    _log_action("ensure_move_conveyor_sheet", f"rows_added={added_count}")
+    return {"rows_added": added_count}
 
 
 def ensure_move_ship_sheet(xlsx_path: Path) -> dict:
@@ -2111,36 +2291,43 @@ def ensure_delivery_sheet(xlsx_path: Path) -> dict:
                 valid = [eq for eq in cand_list if (loc_u, eq.upper(), inp_u) in valid_store]
                 if not valid:
                     return ""
-                if len(valid) == 1:
-                    return valid[0]
-                # Stable deterministic choice among valid candidates for repeatability
-                return sorted(valid, key=lambda s: s.upper())[0]
+                # Return all valid candidates joined by comma
+                return ", ".join(sorted(valid, key=lambda s: s.upper()))
+
+            # Inferred valid choice from Network
+            chosen = _choose(key_pair[0], key_pair[1], candidates)
+            if not chosen and candidates:
+                # If Store sheet not filled/matching, use all candidates from Network
+                chosen = ", ".join(sorted(candidates, key=lambda s: s.upper()))
 
             if cur == "":
                 # Fill when empty
-                chosen = _choose(key_pair[0], key_pair[1], candidates)
                 if chosen:
                     current.at[idx, "Demand Store"] = chosen
                     filled += 1
                 else:
-                    if candidates:
-                        ambiguous += 1  # multiple but could not choose uniquely
-                    else:
-                        missing += 1
+                    missing += 1
             else:
-                # Validate existing value; correct if invalid and we can determine a unique/preferred candidate
-                is_valid = (key_pair[0], cur.upper(), key_pair[1]) in valid_store
-                if not is_valid:
-                    chosen = _choose(key_pair[0], key_pair[1], candidates)
-                    if chosen:
-                        current.at[idx, "Demand Store"] = chosen
+                # Merge existing value with inferred candidates from Network
+                if chosen:
+                    cur_list = [s.strip() for s in cur.split(",") if s.strip()]
+                    inf_list = [s.strip() for s in chosen.split(",") if s.strip()]
+                    
+                    combined = cur_list.copy()
+                    added_to_row = False
+                    for s in inf_list:
+                        if s not in combined:
+                            combined.append(s)
+                            added_to_row = True
+                    
+                    if added_to_row:
+                        current.at[idx, "Demand Store"] = ", ".join(combined)
                         corrected_invalid += 1
                     else:
-                        # leave as-is but count as ambiguous/missing as appropriate
-                        if candidates:
-                            ambiguous += 1
-                        else:
-                            missing += 1
+                        # Existing is already correct or a superset
+                        pass
+                else:
+                    missing += 1
 
     ordered_cols = list(current.columns)
     sort_cols = [c for c in ["Location", "Input"] if c in current.columns]
@@ -2487,6 +2674,7 @@ def prepare_inputs_excel(xlsx_path: Path) -> dict:
     make_summary = ensure_make_sheet(xlsx_path)
     store_summary = ensure_store_sheet(xlsx_path)
     move_train_summary = ensure_move_train_sheet(xlsx_path)
+    move_conveyor_summary = ensure_move_conveyor_sheet(xlsx_path)
     move_ship_summary = ensure_move_ship_sheet(xlsx_path)
     delivery_summary = ensure_delivery_sheet(xlsx_path)
     ship_berths_summary = ensure_ship_berths_sheet(xlsx_path)
@@ -2498,6 +2686,7 @@ def prepare_inputs_excel(xlsx_path: Path) -> dict:
         "make": make_summary,
         "store": store_summary,
         "move_train": move_train_summary,
+        "move_conveyor": move_conveyor_summary,
         "move_ship": move_ship_summary,
         "deliver": delivery_summary,
         "ship_berths": ship_berths_summary,
@@ -2542,7 +2731,7 @@ def prepare_inputs_generate(src_xlsx: Path, out_xlsx: Path) -> dict:
     copy_sheet_names = [
         "Settings", "Make", "Store", "Deliver", "Delivery",
         "Berths",  # legacy, preserved if present
-        "Move_TRAIN", "Move_SHIP",
+        "Move_TRAIN", "Move_CONVEYOR", "Move_SHIP",
         "SHIP_BERTHS", "SHIP_ROUTES", "SHIP_DISTANCES",
     ]
     copied_dfs: dict[str, pd.DataFrame] = {}
@@ -2573,6 +2762,7 @@ def prepare_inputs_generate(src_xlsx: Path, out_xlsx: Path) -> dict:
     make_summary = ensure_make_sheet(out_xlsx)
     store_summary = ensure_store_sheet(out_xlsx)
     move_train_summary = ensure_move_train_sheet(out_xlsx)
+    move_conveyor_summary = ensure_move_conveyor_sheet(out_xlsx)
     move_ship_summary = ensure_move_ship_sheet(out_xlsx)
     delivery_summary = ensure_delivery_sheet(out_xlsx)
     ship_berths_summary = ensure_ship_berths_sheet(out_xlsx)
@@ -2606,6 +2796,7 @@ def prepare_inputs_generate(src_xlsx: Path, out_xlsx: Path) -> dict:
         "make": make_summary,
         "store": store_summary,
         "move_train": move_train_summary,
+        "move_conveyor": move_conveyor_summary,
         "move_ship": move_ship_summary,
         "deliver": delivery_summary,
         "ship_berths": ship_berths_summary,

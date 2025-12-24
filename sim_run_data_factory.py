@@ -102,6 +102,7 @@ def build_transport_routes(clean_data: Dict[str, pd.DataFrame]) -> List[Transpor
     routes: List[TransportRoute] = []
     df_train = clean_data.get('Move_TRAIN', pd.DataFrame())
     df_ship_config = clean_data.get('Move_SHIP', pd.DataFrame())
+    df_conveyor = clean_data.get('Move_CONVEYOR', pd.DataFrame())
 
     # --- TRAINS ---
     if not df_train.empty:
@@ -113,6 +114,7 @@ def build_transport_routes(clean_data: Dict[str, pd.DataFrame]) -> List[Transpor
                     print(
                         f"  [WARN] Skipping TRAIN route: {row.get('Origin_Location')} -> {row.get('Dest_Location')} ({row.get('Product_Class')}). No stores found.")
                     continue
+
                 routes.append(TransportRoute(
                     product=row['Product_Class'],
                     origin_location=row['Origin_Location'],
@@ -125,11 +127,38 @@ def build_transport_routes(clean_data: Dict[str, pd.DataFrame]) -> List[Transpor
                     unload_rate_tph=float(row['Unload_Rate_TPH']),
                     to_min=float(row['To_Min']),
                     back_min=float(row['Back_Min']),
-                    mode=row.get('Mode', 'TRAIN'),
+                    mode='TRAIN',
                     route_id=row.get('Route_ID') or f"{row['Origin_Location']}->{row['Dest_Location']}"
                 ))
             except Exception as e:
                 print(f"Warning: Could not create Train Route. Error: {e}")
+
+    # --- CONVEYORS ---
+    if not df_conveyor.empty:
+        for _, row in df_conveyor.iterrows():
+            try:
+                orig_keys = [k.strip() for k in str(row['Store_Keys_Origin']).split(',') if k.strip()]
+                dest_keys = [k.strip() for k in str(row['Store_Keys_Dest']).split(',') if k.strip()]
+                if not orig_keys or not dest_keys:
+                    continue
+
+                routes.append(TransportRoute(
+                    product=row['Product_Class'],
+                    origin_location=row['Origin_Location'],
+                    dest_location=row['Dest_Location'],
+                    origin_stores=orig_keys,
+                    dest_stores=dest_keys,
+                    n_units=int(row.get('N_Units', 1)),
+                    payload_t=float(row.get('Payload_T', 10.0)),
+                    load_rate_tph=float(row.get('Speed_TPH', 1000.0)), # Map Speed_TPH to load/unload rates
+                    unload_rate_tph=float(row.get('Speed_TPH', 1000.0)),
+                    to_min=float(row.get('To_Min', 0.0)),
+                    back_min=float(row.get('Back_Min', 0.0)),
+                    mode='CONVEYOR',
+                    route_id=row.get('Route_ID') or f"CONV|{row['Origin_Location']}|{row.get('Equipment', 'CONVEYOR')}"
+                ))
+            except Exception as e:
+                print(f"Warning: Could not create Conveyor Route. Error: {e}")
 
     # --- SHIPS ---
     if not df_ship_config.empty:

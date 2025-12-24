@@ -92,28 +92,34 @@ def transporter(env, route: TransportRoute,
 
         # 2. Select Source/Dest
         if require_full:
-            # Require: FULL load available at origin AND FULL space available at destination
+            # Sort origin stores by level (descending) to pick the fullest first
+            candidates_origin = []
             for ok in route.origin_stores:
                 oc = stores[ok]
                 if oc.level + 1e-6 >= route.payload_t:
-                    for dk in route.dest_stores:
-                        dc = stores[dk]
-                        free_space = (dc.capacity - dc.level)
-                        if free_space + 1e-6 >= route.payload_t:
-                            # Account for other pending deliveries to this destination
-                            other_pending = 0.0
-                            if sim and hasattr(sim, 'pending_deliveries'):
-                                for (vid, sk), qty in sim.pending_deliveries.items():
-                                    # vid < 1000 for ships, vid >= 1000 for trains (using a convention)
-                                    if sk == dk:
-                                        other_pending += qty
-                            
-                            if free_space - other_pending + 1e-6 >= route.payload_t:
-                                origin_key, origin_cont = ok, oc
-                                dest_key, dest_cont = dk, dc
-                                break
-                    if origin_cont is not None:
-                        break
+                    candidates_origin.append((ok, oc))
+            candidates_origin.sort(key=lambda x: x[1].level, reverse=True)
+
+            # Sort destination stores by free space (descending) to pick the emptiest first
+            candidates_dest = []
+            for dk in route.dest_stores:
+                dc = stores[dk]
+                free_space = (dc.capacity - dc.level)
+                if free_space + 1e-6 >= route.payload_t:
+                    # Account for other pending deliveries to this destination
+                    other_pending = 0.0
+                    if sim and hasattr(sim, 'pending_deliveries'):
+                        for (vid, sk), qty in sim.pending_deliveries.items():
+                            if sk == dk:
+                                other_pending += qty
+                    
+                    if free_space - other_pending + 1e-6 >= route.payload_t:
+                        candidates_dest.append((dk, dc, free_space - other_pending))
+            candidates_dest.sort(key=lambda x: x[2], reverse=True)
+
+            if candidates_origin and candidates_dest:
+                origin_key, origin_cont = candidates_origin[0]
+                dest_key, dest_cont = candidates_dest[0][:2]
 
             if origin_cont is None or dest_cont is None:
                 # Either no origin had enough stock, or no destination had enough space yet.
@@ -157,12 +163,15 @@ def transporter(env, route: TransportRoute,
             take = float(route.payload_t)
 
         else:
+            # Sort origin stores by level (descending) to pick the fullest first
+            candidates_origin = []
             for ok in route.origin_stores:
                 oc = stores[ok]
                 if oc.level > 1e-6:
-                    origin_key, origin_cont = ok, oc
-                    break
-            if origin_cont is None:
+                    candidates_origin.append((ok, oc))
+            candidates_origin.sort(key=lambda x: x[1].level, reverse=True)
+
+            if not candidates_origin:
                 log_idle(route.origin_location, store=route.origin_stores[0] if route.origin_stores else None, reason="Waiting for Product")
                 if sim:
                     yield sim.wait_for_step(7)
@@ -173,9 +182,24 @@ def transporter(env, route: TransportRoute,
                         wait_h = float(sim.settings.get('transporter_wait_h', 1.0))
                     yield env.timeout(wait_h)
                 continue
+            
+            origin_key, origin_cont = candidates_origin[0]
 
-            dest_key = route.dest_stores[0]
-            dest_cont = stores[dest_key]
+            # Sort destination stores by free space (descending) to pick the emptiest first
+            candidates_dest = []
+            for dk in route.dest_stores:
+                dc = stores[dk]
+                free_space = (dc.capacity - dc.level)
+                if free_space > 1e-6:
+                    candidates_dest.append((dk, dc, free_space))
+            candidates_dest.sort(key=lambda x: x[2], reverse=True)
+
+            if not candidates_dest:
+                 # Default to first one if none have space (it will block on .put later)
+                 dest_key = route.dest_stores[0]
+                 dest_cont = stores[dest_key]
+            else:
+                 dest_key, dest_cont = candidates_dest[0][:2]
 
             origin_stock = float(origin_cont.level)
             take = min(max(0.0, route.payload_t), origin_stock)
