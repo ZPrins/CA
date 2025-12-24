@@ -90,10 +90,14 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
     maintenance_days: Set[int] = set(unit.maintenance_days) if unit.maintenance_days else set()
     downtime_pct: float = unit.unplanned_downtime_pct or 0.0
     
+    # Retrieve mean breakdown duration from settings if available
+    mean_breakdown_duration: float = 3.0
+    if sim and hasattr(sim, 'settings'):
+        mean_breakdown_duration = float(sim.settings.get('mean_breakdown_duration', 3.0))
+    
     available_hours_seen: float = 0.0
     downtime_consumed: float = 0.0
     breakdown_remaining: int = 0
-    mean_breakdown_duration: float = 3.0
     maintenance_window_start = None  # track start of continuous maintenance window
     maintenance_window_hours = 0  # accumulate hours for continuous window
 
@@ -121,7 +125,8 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                 to_level=None,
                 route_id=None,
                 override_day=log_day,
-                override_time_h=log_time
+                override_time_h=log_time,
+                vessel_id=None
             )
             if sim:
                 yield sim.wait_for_step(7)
@@ -147,7 +152,8 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                 to_level=None,
                 route_id=None,
                 override_day=log_day,
-                override_time_h=log_time
+                override_time_h=log_time,
+                vessel_id=None
             )
             downtime_consumed += unit.step_hours
             breakdown_remaining -= 1
@@ -186,8 +192,9 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                         to_level=None,
                         route_id=None,
                         override_day=log_day,
-                        override_time_h=log_time
-                    )
+                        override_time_h=log_time,
+                vessel_id=None
+            )
                     downtime_consumed += unit.step_hours
                     breakdown_remaining = max(0, planned - 1)
                     if sim:
@@ -219,8 +226,9 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     to_level=None,
                     route_id=None,
                     override_day=log_day,
-                    override_time_h=log_time
-                )
+                    override_time_h=log_time,
+                vessel_id=None
+            )
                 if sim:
                     yield sim.wait_for_step(7)
                 else:
@@ -279,8 +287,9 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     to_level=None,
                     route_id=None,
                     override_day=log_day,
-                    override_time_h=log_time
-                )
+                    override_time_h=log_time,
+                vessel_id=None
+            )
                 if sim:
                     yield sim.wait_for_step(7)
                 else:
@@ -336,6 +345,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     to_store=to_store_key,
                     to_level=stores[to_store_key].level if to_store_key and to_store_key in stores else None,
                     to_fill_pct=(stores[to_store_key].level / stores[to_store_key].capacity) if (to_store_key and to_store_key in stores and stores[to_store_key].capacity > 0) else None,
+                    vessel_id=None,
                     route_id=None,
                     override_day=log_day,
                     override_time_h=log_time
@@ -484,6 +494,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     from_store=from_store_key,
                     from_level=from_store_bal,
                     from_fill_pct=(from_store_bal / stores[from_store_key].capacity) if (from_store_key and from_store_key in stores and stores[from_store_key].capacity > 0) else None,
+                    vessel_id=None,
                     qty_in=0.0,
                     to_store=to_store_key,
                     to_level=to_store_bal,
@@ -514,6 +525,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     from_store=from_store_key,
                     from_level=from_store_bal,
                     from_fill_pct=(from_store_bal / stores[from_store_key].capacity) if (from_store_key and from_store_key in stores and stores[from_store_key].capacity > 0) else None,
+                    vessel_id=None,
                     qty_in=allowed,
                     to_store=to_store_key,
                     to_level=to_store_bal,

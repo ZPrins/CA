@@ -30,7 +30,7 @@ class Config:
     autoscale_default: bool = True
 
     # Progress logging granularity
-    progress_step_pct: int = 10
+    progress_step_pct: int = 5
 
     prefer_lowest_fill_origin: bool = True
     prefer_highest_room_dest: bool = True

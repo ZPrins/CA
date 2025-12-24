@@ -12,11 +12,13 @@ from sim_run_config import config
 
 
 def _extract_prev_data_from_html(html_path: Path) -> tuple:
-    """Extract Level (t) data and runtime from existing HTML report."""
+    """Extract Level (t) data and runtime from existing HTML report efficiently."""
     if not html_path.exists():
         return {}, 30  # Default 30s
     
     try:
+        # For large files, regex on the whole content is slow. 
+        # But we need it for extracting previous inventory data.
         html_content = html_path.read_text(encoding='utf-8')
         prev_data = {}
         prev_runtime = 30
@@ -26,14 +28,19 @@ def _extract_prev_data_from_html(html_path: Path) -> tuple:
         if runtime_match:
             prev_runtime = int(runtime_match.group(1))
         
-        # Find all inventory plot divs and their corresponding Plotly.newPlot calls
-        pattern = r'<div id="(plot-\d+)" class="plot" data-category="inventory" data-product="([^"]*)" data-location="([^"]*)"[^>]*></div><script>Plotly\.newPlot\("[^"]+", (\{.*?\})\);</script>'
+        # Find inventory plot data using a more targeted pattern
+        # Inventory plots have data-category="inventory"
+        pattern = r'data-category="inventory" data-product="([^"]*)" data-location="([^"]*)"[^>]*></div><script>Plotly\.newPlot\("[^"]+", (\{.*?\})\);</script>'
         
         for match in re.finditer(pattern, html_content):
-            plot_id, product, location, fig_json = match.groups()
+            product, location, fig_json = match.groups()
             key = f"{location}|{product}"
             
             try:
+                # Use a fast search for 'Level (t)' before parsing JSON if possible
+                if '"Level (t)"' not in fig_json:
+                    continue
+                    
                 fig_data = json.loads(fig_json)
                 # Find Level (t) trace
                 for trace in fig_data.get('data', []):
@@ -47,7 +54,8 @@ def _extract_prev_data_from_html(html_path: Path) -> tuple:
                 continue
         
         return prev_data, prev_runtime
-    except Exception:
+    except Exception as e:
+        print(f"  [WARN] Failed to extract previous data from HTML: {e}")
         return {}, 30
 
 
@@ -692,9 +700,33 @@ def _generate_vessel_timeline_charts(df_log: pd.DataFrame, routes: list | None =
     vessels = sorted(ship_data['vessel_id'].dropna().unique())
     figs = []
 
+    # Map for getting route group names from IDs
+    def get_route_group_name(route_id):
+        if pd.isna(route_id): return None
+        rid_str = str(route_id)
+        if rid_str.startswith('1'): return 'North'
+        if rid_str.startswith('2'): return 'South'
+        if rid_str.startswith('3'): return 'Import CL'
+        if rid_str.startswith('4'): return 'Import GBFS'
+        return None
+
     for vid in vessels:
         v_data = ship_data[ship_data['vessel_id'] == vid].copy()
-        v_name = vessel_names.get(int(vid), f"Vessel {vid}")
+        
+        # Try to determine a better name if not in vessel_names
+        v_name = vessel_names.get(int(vid))
+        if not v_name:
+            # Look at route_ids served by this vessel
+            active_routes = v_data['route_id'].dropna().unique()
+            if len(active_routes) > 0:
+                # Try to get a group name from the first route
+                group_name = get_route_group_name(active_routes[0])
+                if group_name:
+                    v_name = f"{group_name} (Vessel {vid})"
+                else:
+                    v_name = f"Vessel {vid} ({active_routes[0]})"
+            else:
+                v_name = f"Vessel {vid}"
         
         # Build timeline intervals
         intervals = []
@@ -730,6 +762,10 @@ def _generate_vessel_timeline_charts(df_log: pd.DataFrame, routes: list | None =
         for event in sorted(events_found):
             ev_data = df_v[df_v['Event'] == event]
             
+            x_coords = []
+            y_coords = []
+            tooltips = []
+            
             for _, r in ev_data.iterrows():
                 # Extract Source/Destination from route map if available
                 rid = str(r['Route']) if r['Route'] and str(r['Route']) != 'nan' else None
@@ -756,16 +792,22 @@ def _generate_vessel_timeline_charts(df_log: pd.DataFrame, routes: list | None =
                 if rid:
                     tooltip += f"Route ID: {rid}<br>"
 
-                fig.add_trace(go.Scatter(
-                    x=[r['Start'], r['End'], None],
-                    y=[r['Event'], r['Event'], None],
-                    mode='lines',
-                    line=dict(color=state_colors.get(r['Event'], '#999'), width=15),
-                    name=r['Event'],
-                    showlegend=False,
-                    text=tooltip,
-                    hoverinfo='text'
-                ))
+                # Add segments separated by None to keep them in one trace
+                x_coords.extend([r['Start'], r['End'], None])
+                y_coords.extend([r['Event'], r['Event'], None])
+                tooltips.extend([tooltip, tooltip, None])
+
+            fig.add_trace(go.Scatter(
+                x=x_coords,
+                y=y_coords,
+                mode='lines',
+                line=dict(color=state_colors.get(event, '#999'), width=15),
+                name=event,
+                showlegend=False,
+                text=tooltips,
+                hoverinfo='text',
+                connectgaps=False
+            ))
 
         fig.update_layout(
             title=f"Vessel Timeline: {v_name}",

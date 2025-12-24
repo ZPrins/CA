@@ -63,6 +63,7 @@ def transporter(env, route: TransportRoute,
             to_level=to_lvl,
             to_fill_pct=to_fill,
             route_id=route_id_str,
+            vessel_id=vessel_id,
             override_day=log_day,
             override_time_h=env.now
         )
@@ -73,7 +74,11 @@ def transporter(env, route: TransportRoute,
 
         # 1. Validation
         if route.payload_t <= 0 or route.load_rate_tph <= 0 or route.unload_rate_tph <= 0:
-            yield env.timeout(1)
+            # Retrieve small wait timeout from settings if available, else 1.0
+            wait_h = 1.0
+            if sim and hasattr(sim, 'settings'):
+                wait_h = float(sim.settings.get('transporter_wait_h', 1.0))
+            yield env.timeout(wait_h)
             continue
 
         origin_cont = None
@@ -124,7 +129,11 @@ def transporter(env, route: TransportRoute,
                 if sim:
                     yield sim.wait_for_step(7)
                 else:
-                    yield env.timeout(1)
+                    # Retrieve small wait timeout from settings if available, else 1.0
+                    wait_h = 1.0
+                    if sim and hasattr(sim, 'settings'):
+                        wait_h = float(sim.settings.get('transporter_wait_h', 1.0))
+                    yield env.timeout(wait_h)
                 continue
 
             # Final re-check immediately before securing inventory to reduce race-condition issues
@@ -134,7 +143,11 @@ def transporter(env, route: TransportRoute,
                 if sim:
                     yield sim.wait_for_step(7)
                 else:
-                    yield env.timeout(1)
+                    # Retrieve small wait timeout from settings if available, else 1.0
+                    wait_h = 1.0
+                    if sim and hasattr(sim, 'settings'):
+                        wait_h = float(sim.settings.get('transporter_wait_h', 1.0))
+                    yield env.timeout(wait_h)
                 continue
 
             # 3. Register Pending Delivery
@@ -154,7 +167,11 @@ def transporter(env, route: TransportRoute,
                 if sim:
                     yield sim.wait_for_step(7)
                 else:
-                    yield env.timeout(1)
+                    # Retrieve small wait timeout from settings if available, else 1.0
+                    wait_h = 1.0
+                    if sim and hasattr(sim, 'settings'):
+                        wait_h = float(sim.settings.get('transporter_wait_h', 1.0))
+                    yield env.timeout(wait_h)
                 continue
 
             dest_key = route.dest_stores[0]
@@ -168,7 +185,11 @@ def transporter(env, route: TransportRoute,
                 if sim:
                     yield sim.wait_for_step(7)
                 else:
-                    yield env.timeout(1)
+                    # Retrieve small wait timeout from settings if available, else 1.0
+                    wait_h = 1.0
+                    if sim and hasattr(sim, 'settings'):
+                        wait_h = float(sim.settings.get('transporter_wait_h', 1.0))
+                    yield env.timeout(wait_h)
                 continue
 
         # 3. LOAD (Secure & Log)
@@ -186,7 +207,11 @@ def transporter(env, route: TransportRoute,
                 if sim:
                     yield sim.wait_for_step(7)
                 else:
-                    yield env.timeout(1)
+                    # Retrieve small wait timeout from settings if available, else 1.0
+                    wait_h = 1.0
+                    if sim and hasattr(sim, 'settings'):
+                        wait_h = float(sim.settings.get('transporter_wait_h', 1.0))
+                    yield env.timeout(wait_h)
         
         load_h = take / max(route.load_rate_tph, 1e-6)
         
@@ -211,6 +236,7 @@ def transporter(env, route: TransportRoute,
             to_store=None,  # On Train
             to_level=None,
             route_id=route_id_str,
+            vessel_id=vessel_id,
             override_time_h=start_load_t
         )
 
@@ -230,6 +256,7 @@ def transporter(env, route: TransportRoute,
                 from_store=None,
                 to_store=None,
                 route_id=route_id_str,
+                vessel_id=vessel_id,
                 override_time_h=env.now
             )
             yield env.timeout(travel_h)
@@ -252,7 +279,11 @@ def transporter(env, route: TransportRoute,
                 if sim:
                     yield sim.wait_for_step(7)
                 else:
-                    yield env.timeout(1)
+                    # Retrieve small wait timeout from settings if available, else 1.0
+                    wait_h = 1.0
+                    if sim and hasattr(sim, 'settings'):
+                        wait_h = float(sim.settings.get('transporter_wait_h', 1.0))
+                    yield env.timeout(wait_h)
 
         start_unload_t = env.now
         yield dest_cont.put(take)
@@ -275,6 +306,7 @@ def transporter(env, route: TransportRoute,
             to_level=float(dest_cont.level),
             to_fill_pct=float(dest_cont.level) / dest_cont.capacity if dest_cont.capacity > 0 else 0.0,
             route_id=route_id_str,
+            vessel_id=vessel_id,
             override_time_h=start_unload_t
         )
 
@@ -301,6 +333,7 @@ def transporter(env, route: TransportRoute,
                 from_store=None,
                 to_store=None,
                 route_id=route_id_str,
+                vessel_id=vessel_id,
                 override_time_h=env.now
             )
             yield env.timeout(return_h)

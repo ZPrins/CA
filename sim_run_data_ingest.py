@@ -21,15 +21,17 @@ def get_config_map(df: pd.DataFrame) -> Dict[str, Any]:
 
     settings = {}
     for k, v in settings_raw.items():
-        if pd.isna(k): continue
+        if pd.isna(k) or pd.isna(v): continue
         key = str(k).strip()
         val_str = str(v).strip()
         val_lower = val_str.lower()
         
-        if val_lower == 'true':
+        if val_lower in ('true', 'yes', 'y', '1'):
             settings[key] = True
-        elif val_lower == 'false':
+        elif val_lower in ('false', 'no', 'n', '0'):
             settings[key] = False
+        elif val_lower in ('none', 'nan', ''):
+            continue # Skip empty/null settings to allow defaults to persist
         else:
             try:
                 if '.' in val_str:

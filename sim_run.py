@@ -262,7 +262,13 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
         return {'success': False, 'error': 'No stores loaded', 'kpis': {}}
 
     # 3. Configure
-    settings.update(run_settings)
+    # Priority:
+    # 1. Defaults from sim_run_config.py
+    # 2. Settings from Excel sheet "Settings" (overrides defaults)
+    # 3. Settings from UI overrides (overrides both)
+    
+    final_settings = run_settings.copy()
+    final_settings.update(settings) # Settings from Excel "Settings" sheet
     
     # Extract store rates from clean_data['Store'] and add to settings
     store_rates = {}
@@ -273,31 +279,31 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
             ur = row.get('Unload_Rate_TPH', 0.0)
             if sk:
                 store_rates[sk] = (float(lr), float(ur))
-    settings['store_rates'] = store_rates
+    final_settings['store_rates'] = store_rates
 
-    # Apply environment variable overrides
+    # Apply environment variable overrides (usually for CI/CD or specialized runs)
     if 'SIM_HORIZON_DAYS' in os.environ:
         try:
-            settings['horizon_days'] = int(os.environ['SIM_HORIZON_DAYS'])
+            final_settings['horizon_days'] = int(os.environ['SIM_HORIZON_DAYS'])
         except:
             pass
     if 'SIM_RANDOM_OPENING' in os.environ:
         val = os.environ['SIM_RANDOM_OPENING'].lower()
-        settings['random_opening'] = (val == 'true')
+        final_settings['random_opening'] = (val == 'true')
     if 'SIM_RANDOM_SEED' in os.environ:
         try:
-            settings['random_seed'] = int(os.environ['SIM_RANDOM_SEED'].strip())
+            final_settings['random_seed'] = int(os.environ['SIM_RANDOM_SEED'].strip())
         except:
             pass
     
-    # Apply explicit settings override
+    # Apply explicit settings override (e.g. from app.py using temp_model_overrides.json)
     if settings_override:
-        settings.update(settings_override)
+        final_settings.update(settings_override)
 
-    if 'out_dir' not in settings:
-        settings['out_dir'] = config.out_dir
+    if 'out_dir' not in final_settings:
+        final_settings['out_dir'] = config.out_dir
 
-    sim = SupplyChainSimulation(settings)
+    sim = SupplyChainSimulation(final_settings)
     sim.run(stores_cfg, makes, moves, demands)
     
     sim_elapsed = int(time.time() - step_start)
@@ -309,7 +315,7 @@ def run_simulation(input_file="generated_model_inputs.xlsx", artifacts='full', s
 
     # 4. Generate reports only if artifacts='full'
     if artifacts == 'full':
-        out_dir = settings.get('out_dir', config.out_dir)
+        out_dir = Path(final_settings.get('out_dir', config.out_dir))
         
         # Build report dataframes once (major speedup)
         data_start = time.time()

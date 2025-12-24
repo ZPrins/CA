@@ -90,8 +90,7 @@ def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contai
                            sole_supplier_stores: Optional[set] = None,
                            production_rates: Optional[Dict[str, float]] = None,
                            store_capacities: Optional[Dict[str, float]] = None,
-                           pending_deliveries: Optional[Dict[Tuple[int, str], float]] = None,
-                           current_vessel_id: int = -1,
+                           other_pending: Optional[Dict[str, float]] = None,
                            current_cargo: Optional[Dict[str, float]] = None) -> Tuple[
     float, float, float, float, float]:
     """
@@ -109,13 +108,7 @@ def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contai
 
     prod_rates = production_rates or {}
     capacities = store_capacities or {}
-
-    # Aggregate pending deliveries from OTHER vessels
-    other_pending = defaultdict(float)
-    if pending_deliveries:
-        for (vid, sk), qty in pending_deliveries.items():
-            if vid != current_vessel_id:
-                other_pending[sk] += qty
+    pending_map = other_pending or {}
 
     # Pre-calculate itinerary travel time to estimate arrival at each stop
     # Add a conservative estimate for berth waiting and loading time
@@ -164,7 +157,7 @@ def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contai
             prod_rate = prod_rates.get(sk, 0.0)  # Factory production into this store
 
             # Project level at arrival: current + (prod - consumption) * travel_time + pending deliveries from others
-            projected_level = level + (prod_rate - rate) * current_time_offset + other_pending.get(sk, 0.0)
+            projected_level = level + (prod_rate - rate) * current_time_offset + pending_map.get(sk, 0.0)
             projected_level = max(0.0, projected_level)
 
             # Use a safety buffer: only target 100% of capacity to account for variance
@@ -185,6 +178,8 @@ def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contai
                 if sole_supplier_stores and sk in sole_supplier_stores:
                     if days_of_stock < 60:
                         bonus = 100 * (1 - days_of_stock / 60)
+                        if bonus > sole_supplier_bonus:
+                            bonus = 100 * (1 - days_of_stock / 60)
                         if bonus > sole_supplier_bonus:
                             sole_supplier_bonus = bonus
 
@@ -222,8 +217,16 @@ def _calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contai
     utilization = min(1.0, suggested_load / max(total_capacity, 1.0))
     urgency = max(-2000.0, urgency)  # Allow negative urgency to discourage bad routes
 
-    # Increase utilization weight from 50 to 100 to favor full ships
-    score = (utilization * 100) + (urgency * 30) + sole_supplier_bonus + overflow_bonus - (travel_time * 0.1)
+    # Retrieve scoring weights from settings if available
+    util_weight = 100.0
+    urgency_weight = 30.0
+    travel_time_penalty = 0.1
+    
+    # Try to get from sim settings if passed (not always available in this helper)
+    # The helper currently doesn't receive the full settings dict, so we'll stick to 
+    # the existing logic but document that these should ideally be in Settings.
+    
+    score = (utilization * util_weight) + (urgency * urgency_weight) + sole_supplier_bonus + overflow_bonus - (travel_time * travel_time_penalty)
 
     # Apply headspace factor: if we can't even fill one hold because of destination headspace, 
     # the route is essentially worthless for moving product.
@@ -263,7 +266,11 @@ def transporter(env: simpy.Environment, route: TransportRoute,
     """
     if not getattr(route, 'itineraries', None):
         while True:
-            yield env.timeout(24)
+            # Retrieve small wait timeout from settings if available, else 24.0
+            wait_h = 24.0
+            if sim and hasattr(sim, 'settings'):
+                wait_h = float(sim.settings.get('ship_idle_wait_h', 24.0))
+            yield env.timeout(wait_h)
 
     speed_knots = float(getattr(route, 'speed_knots', 10.0) or 10.0)
     n_holds = int(getattr(route, 'holds_per_vessel', 0) or 0)
@@ -366,7 +373,11 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                         )
                         yield env.timeout(total_time)
                 current_location = origin_location
-                yield env.timeout(1)
+                # Retrieve small wait timeout from settings if available, else 1.0
+                wait_h = 1.0
+                if sim and hasattr(sim, 'settings'):
+                    wait_h = float(sim.settings.get('ship_idle_wait_h', 1.0))
+                yield env.timeout(wait_h)
                 continue
 
             best_it = None
@@ -376,19 +387,22 @@ def transporter(env: simpy.Environment, route: TransportRoute,
             prod_rates = production_rates or {}
             capacities = store_capacity_map or {}
 
+            # Pre-aggregate pending deliveries from OTHER vessels once per IDLE step
+            other_pending_map = defaultdict(float)
+            if sim and hasattr(sim, 'pending_deliveries'):
+                for (vid, sk), qty in sim.pending_deliveries.items():
+                    if vid != vessel_id:
+                        other_pending_map[sk] += qty
+
             for it in candidate_its:
                 # [Issue Fix]: Don't select a route if another vessel is already delivering to its target store
                 is_already_served = False
-                if sim and hasattr(sim, 'pending_deliveries'):
-                    for step in it:
-                        if step.get('kind') == 'unload':
-                            sk = step.get('store_key')
-                            if sk:
-                                # Check if ANY other vessel has a pending delivery to this store
-                                if any(qty > 1e-6 for (vid, s_key), qty in sim.pending_deliveries.items() 
-                                       if s_key == sk and vid != vessel_id):
-                                    is_already_served = True
-                                    break
+                for step in it:
+                    if step.get('kind') == 'unload':
+                        sk = step.get('store_key')
+                        if sk and other_pending_map[sk] > 1e-6:
+                            is_already_served = True
+                            break
                 
                 if is_already_served:
                     continue
@@ -397,8 +411,7 @@ def transporter(env: simpy.Environment, route: TransportRoute,
                     it, stores, payload_per_hold, n_holds,
                     demand_rates_map, nm_distances, speed_knots, berth_info,
                     sole_supplier_stores, prod_rates, capacities,
-                    getattr(sim, 'pending_deliveries', None),
-                    vessel_id,
+                    other_pending_map,
                     cargo
                 )
 

@@ -1455,13 +1455,36 @@ def _log_action(action: str, details: str = "") -> None:
 
 
 def ensure_settings_sheet(xlsx_path: Path) -> dict:
-    """Create or update the 'Settings' sheet with required settings.
+    """Create or update the 'Settings' sheet with required simulation settings.
     Returns a summary dict with counts of added/updated keys.
     """
+    # Full list of simulation settings with their default values
     required = {
-        "Number of Simulation Runs": 500,
-        "Modeling Horizon (#Days)": 365,
-        "Time Buckets (Days, Half Days, Hours)": "Hours",
+        # General Simulation Settings
+        "horizon_days": 365,
+        "random_opening": True,
+        "random_seed": "",
+        "progress_step_pct": 5,
+
+        # Demand & Delivery
+        "demand_truck_load_tons": 25.0,
+        "demand_step_hours": 1.0,
+
+        # Shipping Policy & Logic
+        "require_full_payload": True,
+        "ship_idle_wait_h": 1.0,
+        "ship_max_wait_product_h": 24.0,
+        "transporter_wait_h": 1.0,
+
+        # Manufacturing & Downtime
+        "mean_breakdown_duration": 3.0,
+        "make_output_choice": "min_fill_pct",
+        "step_hours": 1.0,
+
+        # Output Controls
+        "write_plots": True,
+        "write_csvs": True,
+        "out_dir": "sim_outputs",
     }
     # Try to read existing settings
     current = _read_sheet_df(xlsx_path, "Settings")

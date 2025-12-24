@@ -334,9 +334,11 @@ class SupplyChainSimulation:
         cp_idx = 0
 
         for day in range(1, horizon_days + 1):
-            target_time = day * 24
-            self.env.run(until=target_time)
-            self.snapshot()  # Snapshot at end of day
+            for hour in range(1, 25):
+                target_time = (day - 1) * 24 + hour
+                self.env.run(until=target_time)
+                # Hourly snapshots as requested
+                self.snapshot()
 
             # FIX: Compare day with checkpoints[cp_idx][1]
             while cp_idx < len(checkpoints) and day >= checkpoints[cp_idx][1]:
@@ -374,7 +376,8 @@ class SupplyChainSimulation:
                 to_store=key,
                 to_level=cont.level,
                 to_fill_pct=cont.level / cont.capacity if cont.capacity > 0 else 0.0,
-                route_id=None
+                route_id=None,
+                vessel_id=None
             )
 
         # Log ClosingInTransit for each transporter

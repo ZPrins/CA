@@ -41,5 +41,6 @@ def build_stores(env: simpy.Environment, stores_dict: dict, store_configs: List[
                 to_store=cfg.key,
                 to_level=opening,
                 to_fill_pct=opening / cfg.capacity if cfg.capacity > 0 else 0.0,
-                route_id=None
+                route_id=None,
+                vessel_id=None
             )
