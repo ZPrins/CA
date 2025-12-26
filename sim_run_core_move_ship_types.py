@@ -78,7 +78,7 @@ class ShipContext:
     def log_state_change(self, new_state: ShipState, location: str = None):
         """Log a state change event."""
         self.log_func(
-            process="ShipState",
+            process="Move",
             event="StateChange",
             location=location or self.current_location,
             equipment="Ship",

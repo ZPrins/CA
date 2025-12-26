@@ -134,8 +134,8 @@ def calculate_route_score(itinerary: List[Dict], stores: Dict[str, simpy.Contain
         suggested_load = min(suggested_load, optimistic_headspace)
 
     suggested_load = min(suggested_load, total_capacity)
-    # Quantize to hold sizes
-    suggested_load = math.floor(suggested_load / payload_per_hold) * payload_per_hold
+    # Quantize to hold sizes with a small tolerance for floating point issues
+    suggested_load = math.floor((suggested_load + 1e-3) / payload_per_hold) * payload_per_hold
 
     # What we actually NEED to load is the difference
     suggested_to_load = max(0.0, suggested_load - total_cargo_already_onboard)

@@ -69,7 +69,7 @@ def collect_variability_data(sim, store_configs: list, makes: list, settings: di
         return variability
     
     # Parse breakdown events - group by equipment for per-equipment PDFs
-    all_breakdown_rows = df_log[(df_log['process'] == 'Downtime') & (df_log['event'].isin(['BreakdownStart', 'Breakdown']))]
+    all_breakdown_rows = df_log[(df_log['process'] == 'Make') & (df_log['event'].isin(['BreakdownStart', 'Breakdown']))]
     
     if not all_breakdown_rows.empty:
         for equip in all_breakdown_rows['equipment'].unique():
@@ -114,7 +114,7 @@ def collect_variability_data(sim, store_configs: list, makes: list, settings: di
             })
     
     elif 'ship_state' in df_log.columns and 'vessel_id' in df_log.columns:
-        ship_rows = df_log[df_log['process'] == 'ShipState'].sort_values(by=['vessel_id', 'time_h'])
+        ship_rows = df_log[df_log['process'] == 'Move'].sort_values(by=['vessel_id', 'time_h'])
 
         if not ship_rows.empty:
             for vessel_id in ship_rows['vessel_id'].dropna().unique():
