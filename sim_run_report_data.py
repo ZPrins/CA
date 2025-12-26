@@ -176,7 +176,7 @@ def build_report_frames(sim, makes=None):
                 SUM(CASE WHEN event = 'Idle' THEN COALESCE(time_t, 0.0) ELSE 0 END) as Idle,
                 SUM(CASE WHEN event = 'Wait for Berth' THEN COALESCE(time_t, 0.0) ELSE 0 END) as WaitBerth
             FROM df_log
-            WHERE process IN ('Downtime', 'Make', 'Move')
+            WHERE process IN ('Make', 'Move')
             GROUP BY 1, 2, 3
         """).df()
         

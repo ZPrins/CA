@@ -17,6 +17,54 @@ from sim_run_core_move_ship_utils import (
 from sim_run_core_move_ship_scoring import calculate_route_score
 
 
+def _yield_wait(ctx: ShipContext, duration: float, event: str, location: str = None, product: str = None, store: str = None):
+    """Yield a timeout and log the duration."""
+    ctx.log_func(
+        process="Move",
+        event=event,
+        location=location or ctx.current_location,
+        equipment="Ship",
+        product=product,
+        time=duration,
+        from_store=store if event == "Load" else None,
+        to_store=store if event == "Unload" else None,
+        route_id=ctx.current_route_id or ctx.route_group,
+        vessel_id=ctx.vessel_id,
+        ship_state=ctx.state.value,
+        override_time_h=ctx.env.now
+    )
+    if duration > 0:
+        yield ctx.env.timeout(duration)
+    else:
+        if False: yield # Make it a generator
+
+
+def _yield_step(ctx: ShipContext, step_num: int, event: str, location: str = None, product: str = None, store: str = None):
+    """Yield a wait_for_step and log the actual duration."""
+    if not ctx.sim:
+        yield from _yield_wait(ctx, 1.0, event, location, product, store)
+        return
+
+    start_t = ctx.env.now
+    yield ctx.sim.wait_for_step(step_num)
+    duration = ctx.env.now - start_t
+    
+    ctx.log_func(
+        process="Move",
+        event=event,
+        location=location or ctx.current_location,
+        equipment="Ship",
+        product=product,
+        time=duration,
+        from_store=store if event == "Load" else None,
+        to_store=store if event == "Unload" else None,
+        route_id=ctx.current_route_id or ctx.route_group,
+        vessel_id=ctx.vessel_id,
+        ship_state=ctx.state.value,
+        override_time_h=start_t
+    )
+
+
 def handle_idle_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str]]:
     """
     Handle IDLE state: select best route and transition to LOADING.
@@ -39,27 +87,16 @@ def handle_idle_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str]]:
                 pilot_in = get_pilot_hours(ctx.berth_info, ctx.origin_location, 'in')
                 total_time = travel_hours + pilot_out + pilot_in
 
-                ctx.log_func(
-                    process="Move",
-                    event="Transit",
-                    location=ctx.current_location,
-                    equipment="Ship",
-                    product=None,
-                    time=round(total_time, 2),
-                    from_store=None,
-                    to_store=None,
-                    route_id=ctx.current_route_id or ctx.route_group,
-                    vessel_id=ctx.vessel_id,
-                    ship_state=ctx.state.value,
-                    override_time_h=ctx.env.now
+                yield from _yield_wait(
+                    ctx, total_time, "Transit",
+                    product=", ".join(ctx.cargo.keys()) if ctx.cargo else None
                 )
-                yield ctx.env.timeout(total_time)
         ctx.current_location = ctx.origin_location
         # Retrieve small wait timeout from settings if available, else 1.0
         wait_h = 1.0
         if ctx.sim and hasattr(ctx.sim, 'settings'):
             wait_h = float(ctx.sim.settings.get('ship_idle_wait_h', 1.0))
-        yield ctx.env.timeout(wait_h)
+        yield from _yield_wait(ctx, wait_h, "Idle")
         return 'continue'
 
     best_it = None
@@ -121,56 +158,11 @@ def handle_idle_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str]]:
             best_suggested_load = suggested_to_load
 
     if best_it is None:
-        reason = "No suitable itinerary"
-        ctx.log_func(
-            process="Move",
-            event=reason,
-            location=ctx.current_location,
-            equipment="Ship",
-            product=str(list(ctx.cargo.keys())) if ctx.cargo else None,
-            time=1.0,
-            unmet_demand=0.0,
-            qty=0,
-            from_store=None,
-            to_store=None,
-            route_id=ctx.current_route_id or ctx.route_group,
-            vessel_id=ctx.vessel_id,
-            ship_state=ctx.state.value,
-            override_time_h=ctx.env.now
-        )
-        if ctx.sim:
-            yield ctx.sim.wait_for_step(7)
-        else:
-            yield ctx.env.timeout(1)
+        yield from _yield_step(ctx, 7, "No suitable itinerary", product=str(list(ctx.cargo.keys())) if ctx.cargo else None)
         return 'continue'
 
     ctx.chosen_itinerary = best_it
     ctx.current_route_id = get_route_id_from_itinerary(ctx.chosen_itinerary)
-
-    # Clear existing cargo if it doesn't match the new itinerary's products
-    if ctx.cargo:
-        new_products = {step.get('product') for step in ctx.chosen_itinerary if step.get('kind') in ('load', 'unload')}
-        mismatch = any(p not in new_products for p in ctx.cargo.keys())
-        if mismatch:
-            ctx.log_func(
-                process="Move",
-                event="Clear Cargo",
-                location=ctx.current_location,
-                equipment="Ship",
-                product=str(list(ctx.cargo.keys())),
-                qty=sum(ctx.cargo.values()),
-                time=0.0,
-                unmet_demand=0.0,
-                from_store=None,
-                to_store=None,
-                route_id=ctx.current_route_id or ctx.route_group,
-                vessel_id=ctx.vessel_id,
-                ship_state=ctx.state.value,
-                override_time_h=ctx.env.now
-            )
-            ctx.cargo = {}
-            if ctx.t_state is not None:
-                ctx.t_state['cargo'] = ctx.cargo
 
     if ctx.t_state is not None:
         ctx.t_state['route_id'] = ctx.current_route_id or ctx.route_group
@@ -189,13 +181,24 @@ def handle_idle_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str]]:
         if primary_load_product:
             projected_cargo[primary_load_product] = projected_cargo.get(primary_load_product, 0.0) + best_suggested_load
 
+        # Aggregate total planned unload per store for this itinerary
+        planned_per_store = defaultdict(float)
+        remaining_projected = projected_cargo.copy()
         for step in ctx.chosen_itinerary:
             if step.get('kind') == 'unload':
                 sk = step.get('store_key')
                 prod = step.get('product')
-                if sk and prod in projected_cargo:
-                    qty_to_drop = projected_cargo[prod]
-                    ctx.sim.pending_deliveries[(ctx.vessel_id, sk)] += qty_to_drop
+                if sk and prod in remaining_projected:
+                    # Allocate cargo to this store based on what's available on board
+                    # We assume we try to unload all available of this product at the first stop that takes it
+                    # This prevents over-promising if multiple stores take the same product in one trip
+                    to_unload = remaining_projected[prod]
+                    planned_per_store[(sk, prod)] += to_unload
+                    remaining_projected[prod] = 0.0
+
+        for (sk, prod), qty in planned_per_store.items():
+            if qty > 1e-6:
+                ctx.sim.pending_deliveries[(ctx.vessel_id, sk)] += qty
 
     # Track planned load to respect it during loading phase
     ctx.planned_load_remaining = best_suggested_load
@@ -221,26 +224,8 @@ def _acquire_berth(ctx: ShipContext, location: str, product: Optional[str] = Non
         p_occ = loc_info.get('p_occupied', 0.0)
 
         while random.random() < p_occ:
-            ctx.log_func(
-                process="Move",
-                event="Wait for Berth",
-                location=location,
-                equipment="Ship",
-                product=product,
-                time=1.0,
-                unmet_demand=0.0,
-                from_store=None,
-                to_store=None,
-                route_id=ctx.current_route_id or ctx.route_group,
-                vessel_id=ctx.vessel_id,
-                ship_state=ShipState.WAITING_FOR_BERTH.value,
-                override_time_h=ctx.env.now
-            )
-            if ctx.sim:
-                yield ctx.sim.wait_for_step(7)
-            else:
-                yield ctx.env.timeout(1.0)
-
+            yield from _yield_step(ctx, 7, "Wait for Berth", location=location, product=product)
+        
         ctx.last_prob_wait_location = location
 
     # 2. Physical Berth Request (FIFO Resource)
@@ -249,42 +234,12 @@ def _acquire_berth(ctx: ShipContext, location: str, product: Optional[str] = Non
 
     if not req.triggered:
         while not req.triggered:
-            ctx.log_func(
-                process="Move",
-                event="Wait for Berth",
-                location=location,
-                equipment="Ship",
-                product=product,
-                time=1.0,
-                unmet_demand=0.0,
-                from_store=None,
-                to_store=None,
-                route_id=ctx.current_route_id or ctx.route_group,
-                vessel_id=ctx.vessel_id,
-                ship_state=ShipState.WAITING_FOR_BERTH.value,
-                override_time_h=ctx.env.now
-            )
-            if ctx.sim:
-                yield ctx.sim.env.any_of([req, ctx.sim.wait_for_step(7)])
-            else:
-                yield ctx.env.any_of([req, ctx.env.timeout(1)])
+            yield from _yield_step(ctx, 7, "Wait for Berth", location=location, product=product)
+            if req.triggered:
+                break
     else:
         # Immediate berth acquisition - log it for transparency
-        ctx.log_func(
-            process="Move",
-            event="Wait for Berth",
-            location=location,
-            equipment="Ship",
-            product=product,
-            time=0.0,
-            unmet_demand=0.0,
-            from_store=None,
-            to_store=None,
-            route_id=ctx.current_route_id or ctx.route_group,
-            vessel_id=ctx.vessel_id,
-            ship_state=ShipState.WAITING_FOR_BERTH.value,
-            override_time_h=ctx.env.now
-        )
+        yield from _yield_wait(ctx, 0.0, "Wait for Berth", location=location, product=product)
 
     ctx.active_berth = berth
     ctx.active_berth_req = req
@@ -330,13 +285,14 @@ def handle_loading_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str]]
             time_per_hold = ctx.payload_per_hold / max(load_rate, 1.0)
 
             for hold_num in range(holds_remaining):
-                if ctx.sim:
-                    yield ctx.sim.wait_for_step(3)
+                yield from _yield_step(ctx, 3, "Sequencing", product=product)
 
                 if cont.level >= ctx.payload_per_hold:
-                    start_hold_t = ctx.env.now
+                    # Update cargo immediately BEFORE yielding the physical action
+                    # to ensure state consistency if interrupted (though ships are single-process)
+                    ctx.cargo[product] = round(ctx.cargo.get(product, 0.0) + ctx.payload_per_hold, 2)
+                    
                     yield cont.get(ctx.payload_per_hold)
-                    yield ctx.env.timeout(time_per_hold)
 
                     ctx.log_func(
                         process="Move",
@@ -345,7 +301,7 @@ def handle_loading_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str]]
                         equipment="Ship",
                         product=product,
                         qty=ctx.payload_per_hold,
-                        time=round(time_per_hold, 2),
+                        time=time_per_hold,
                         unmet_demand=0.0,
                         qty_out=ctx.payload_per_hold,
                         from_store=store_key,
@@ -356,45 +312,28 @@ def handle_loading_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str]]
                         route_id=ctx.current_route_id or ctx.route_group,
                         vessel_id=ctx.vessel_id,
                         ship_state=ctx.state.value,
-                        override_time_h=start_hold_t
+                        override_time_h=ctx.env.now
                     )
+                    yield ctx.env.timeout(time_per_hold)
 
                     total_loaded_this_stop += ctx.payload_per_hold
                     ctx.planned_load_remaining -= ctx.payload_per_hold
                 else:
                     waited_this_step = 0.0
                     while cont.level < ctx.payload_per_hold and ctx.total_waited_at_location < ctx.max_wait_product_h:
-                        ctx.log_func(
-                            process="Move",
-                            event="Waiting for Product",
-                            location=location,
-                            equipment="Ship",
-                            product=product,
-                            time=1.0,
-                            unmet_demand=0.0,
-                            from_store=store_key,
-                            from_level=float(cont.level),
-                            from_fill_pct=float(cont.level) / cont.capacity if cont.capacity > 0 else 0.0,
-                            to_store=None,
-                            route_id=ctx.current_route_id or ctx.route_group,
-                            vessel_id=ctx.vessel_id,
-                            ship_state=ShipState.WAITING_FOR_PRODUCT.value,
-                            override_time_h=ctx.env.now
-                        )
-                        if ctx.sim:
-                            yield ctx.sim.wait_for_step(7)
-                        else:
-                            yield ctx.env.timeout(1.0)
-                        waited_this_step += 1.0
-                        ctx.total_waited_at_location += 1.0
+                        start_wait = ctx.env.now
+                        yield from _yield_step(ctx, 7, "Waiting for Product", product=product, store=store_key)
+                        dur = ctx.env.now - start_wait
+                        waited_this_step += dur
+                        ctx.total_waited_at_location += dur
 
                     if cont.level >= ctx.payload_per_hold:
-                        if ctx.sim:
-                            yield ctx.sim.wait_for_step(3)
+                        yield from _yield_step(ctx, 3, "Sequencing", product=product)
 
-                        start_hold_t = ctx.env.now
+                        # Update cargo immediately BEFORE yielding the physical action
+                        ctx.cargo[product] = round(ctx.cargo.get(product, 0.0) + ctx.payload_per_hold, 2)
+                        
                         yield cont.get(ctx.payload_per_hold)
-                        yield ctx.env.timeout(time_per_hold)
 
                         ctx.log_func(
                             process="Move",
@@ -403,7 +342,7 @@ def handle_loading_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str]]
                             equipment="Ship",
                             product=product,
                             qty=ctx.payload_per_hold,
-                            time=round(time_per_hold, 2),
+                            time=time_per_hold,
                             unmet_demand=0.0,
                             qty_out=ctx.payload_per_hold,
                             from_store=store_key,
@@ -414,16 +353,17 @@ def handle_loading_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str]]
                             route_id=ctx.current_route_id or ctx.route_group,
                             vessel_id=ctx.vessel_id,
                             ship_state=ctx.state.value,
-                            override_time_h=start_hold_t
+                            override_time_h=ctx.env.now
                         )
+                        yield ctx.env.timeout(time_per_hold)
 
                         total_loaded_this_stop += ctx.payload_per_hold
                         ctx.planned_load_remaining -= ctx.payload_per_hold
                     else:
                         break
 
-            if total_loaded_this_stop > 0:
-                ctx.cargo[product] = ctx.cargo.get(product, 0.0) + total_loaded_this_stop
+            # if total_loaded_this_stop > 0:
+            #     ctx.cargo[product] = ctx.cargo.get(product, 0.0) + total_loaded_this_stop
 
         ctx.itinerary_idx += 1
 
@@ -466,50 +406,11 @@ def handle_loading_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str]]
                 elif s.get('kind') in ('sail', 'start'):
                     break
 
-            ctx.log_func(
-                process="Move",
-                event="Utilization Low - Retrying Load",
-                location=ctx.current_location,
-                equipment="Ship",
-                product=None,
-                qty=0,
-                time=1.0,
-                unmet_demand=0.0,
-                from_store=None,
-                to_store=None,
-                route_id=ctx.current_route_id or ctx.route_group,
-                vessel_id=ctx.vessel_id,
-                ship_state=ctx.state.value,
-                override_time_h=ctx.env.now
-            )
-
-            total_loaded = sum(ctx.cargo.values())
-            ctx.planned_load_remaining = max(0.0, (ctx.n_holds * ctx.payload_per_hold) - total_loaded)
-
-            if ctx.sim:
-                yield ctx.sim.wait_for_step(7)
-            else:
-                yield ctx.env.timeout(1)
-            ctx.total_waited_at_location += 1.0
+            start_wait = ctx.env.now
+            yield from _yield_step(ctx, 7, "Utilization Low - Retrying Load")
+            ctx.total_waited_at_location += (ctx.env.now - start_wait)
         else:
             if total_loaded > 1e-6:
-                ctx.log_func(
-                    process="Move",
-                    event="Wait Limit Reached - Proceeding with Partial Load",
-                    location=ctx.current_location,
-                    equipment="Ship",
-                    product=None,
-                    qty=0,
-                    time=0.0,
-                    unmet_demand=0.0,
-                    from_store=None,
-                    to_store=None,
-                    route_id=ctx.current_route_id or ctx.route_group,
-                    vessel_id=ctx.vessel_id,
-                    ship_state=ctx.state.value,
-                    override_time_h=ctx.env.now
-                )
-
                 if ctx.planned_load_remaining > 1e-6 and ctx.sim and hasattr(ctx.sim, 'pending_deliveries'):
                     primary_load_product = None
                     for step in ctx.chosen_itinerary:
@@ -529,6 +430,8 @@ def handle_loading_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str]]
                     ctx.active_berth = None
                     ctx.active_berth_req = None
 
+                yield from _yield_wait(ctx, 0.0, "Wait Limit Reached - Proceeding with Partial Load")
+
                 ctx.state = ShipState.IN_TRANSIT
                 ctx.log_state_change(ctx.state)
             else:
@@ -538,34 +441,11 @@ def handle_loading_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str]]
                     ctx.active_berth = None
                     ctx.active_berth_req = None
 
-                total_cargo = sum(ctx.cargo.values())
-                if total_cargo > 1e-6:
-                    ctx.log_func(
-                        process="Move",
-                        event="Cargo Lost at Sea",
-                        location=ctx.current_location,
-                        equipment="Ship",
-                        product=str(list(ctx.cargo.keys())),
-                        qty=total_cargo,
-                        time=0.0,
-                        unmet_demand=0.0,
-                        from_store=None,
-                        to_store=None,
-                        route_id=ctx.current_route_id or ctx.route_group,
-                        vessel_id=ctx.vessel_id,
-                        ship_state=ctx.state.value,
-                        override_time_h=ctx.env.now
-                    )
+                # Persistent cargo: We no longer clear cargo or log "Cargo Lost at Sea".
+                # Cargo remains on the ship when it returns to IDLE.
 
-                # Clear pending deliveries
-                if ctx.sim and hasattr(ctx.sim, 'pending_deliveries'):
-                    keys_to_del = [k for k in ctx.sim.pending_deliveries.keys() if k[0] == ctx.vessel_id]
-                    for k in keys_to_del:
-                        del ctx.sim.pending_deliveries[k]
-
-                ctx.cargo = {}
                 if ctx.t_state is not None:
-                    ctx.t_state['cargo'] = ctx.cargo
+                    # Note: cargo is already in t_state['cargo'] as they share the same dict/ref
                     ctx.t_state['route_id'] = ctx.route_group
                 ctx.chosen_itinerary = None
                 ctx.current_route_id = None
@@ -573,14 +453,11 @@ def handle_loading_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str]]
                 ctx.log_state_change(ctx.state)
 
                 if ctx.sim:
+                    yield from _yield_wait(ctx, 1.0, "Idle", product=", ".join(ctx.cargo.keys()) if ctx.cargo else None)
                     yield ctx.sim.wait_for_step(7)
                 else:
-                    yield ctx.env.timeout(1)
+                    yield from _yield_wait(ctx, 1.0, "Idle", product=", ".join(ctx.cargo.keys()) if ctx.cargo else None)
                 return 'continue'
-    else:
-        ctx.itinerary_idx += 1
-
-    return None
 
 
 def handle_in_transit_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str]]:
@@ -604,21 +481,10 @@ def handle_in_transit_state(ctx: ShipContext) -> Generator[Any, Any, Optional[st
                 pilot_in = get_pilot_hours(ctx.berth_info, ctx.origin_location, 'in')
                 total_time = travel_hours + pilot_out + pilot_in
 
-                ctx.log_func(
-                    process="Move",
-                    event="Transit",
-                    location=ctx.current_location,
-                    equipment="Ship",
-                    product=None,
-                    time=round(total_time, 2),
-                    from_store=None,
-                    to_store=None,
-                    route_id=ctx.current_route_id or ctx.route_group,
-                    vessel_id=ctx.vessel_id,
-                    ship_state=ctx.state.value,
-                    override_time_h=ctx.env.now
+                yield from _yield_wait(
+                    ctx, total_time, "Transit",
+                    product=", ".join(ctx.cargo.keys()) if ctx.cargo else None
                 )
-                yield ctx.env.timeout(total_time)
 
         ctx.current_location = ctx.origin_location
         ctx.state = ShipState.IDLE
@@ -627,16 +493,17 @@ def handle_in_transit_state(ctx: ShipContext) -> Generator[Any, Any, Optional[st
             ctx.t_state['route_id'] = ctx.route_group
         ctx.log_state_change(ctx.state)
 
-        # Clear pending deliveries
-        if ctx.sim and hasattr(ctx.sim, 'pending_deliveries'):
-            keys_to_del = [k for k in ctx.sim.pending_deliveries.keys() if k[0] == ctx.vessel_id]
-            for k in keys_to_del:
-                del ctx.sim.pending_deliveries[k]
+        # Persistent cargo: We no longer clear pending deliveries when returning to IDLE,
+        # because the cargo is still on board and might be delivered in the next itinerary.
+        # if ctx.sim and hasattr(ctx.sim, 'pending_deliveries'):
+        #     keys_to_del = [k for k in ctx.sim.pending_deliveries.keys() if k[0] == ctx.vessel_id]
+        #     for k in keys_to_del:
+        #         del ctx.sim.pending_deliveries[k]
 
         if ctx.sim:
-            yield ctx.sim.wait_for_step(7)
+            yield from _yield_step(ctx, 7, "Idle", product=", ".join(ctx.cargo.keys()) if ctx.cargo else None)
         else:
-            yield ctx.env.timeout(1)
+            yield from _yield_wait(ctx, 1.0, "Idle", product=", ".join(ctx.cargo.keys()) if ctx.cargo else None)
         return 'continue'
 
     step = ctx.chosen_itinerary[ctx.itinerary_idx]
@@ -691,21 +558,10 @@ def handle_in_transit_state(ctx: ShipContext) -> Generator[Any, Any, Optional[st
             total_time = travel_hours + pilot_out + pilot_in
 
             if total_time > 0:
-                ctx.log_func(
-                    process="Move",
-                    event="Transit",
-                    location=from_loc,
-                    equipment="Ship",
-                    product=None,
-                    time=round(total_time, 2),
-                    from_store=None,
-                    to_store=None,
-                    route_id=ctx.current_route_id or ctx.route_group,
-                    vessel_id=ctx.vessel_id,
-                    ship_state=ctx.state.value,
-                    override_time_h=ctx.env.now
+                yield from _yield_wait(
+                    ctx, total_time, "Transit",
+                    product=", ".join(ctx.cargo.keys()) if ctx.cargo else None
                 )
-                yield ctx.env.timeout(total_time)
 
             ctx.current_location = to_loc
 
@@ -724,21 +580,10 @@ def handle_in_transit_state(ctx: ShipContext) -> Generator[Any, Any, Optional[st
                     pilot_in = get_pilot_hours(ctx.berth_info, unload_loc, 'in')
                     total_time = travel_hours + pilot_out + pilot_in
 
-                    ctx.log_func(
-                        process="Move",
-                        event="Transit",
-                        location=ctx.current_location,
-                        equipment="Ship",
-                        product=None,
-                        time=round(total_time, 2),
-                        from_store=None,
-                        to_store=None,
-                        route_id=ctx.current_route_id or ctx.route_group,
-                        vessel_id=ctx.vessel_id,
-                        ship_state=ctx.state.value,
-                        override_time_h=ctx.env.now
+                    yield from _yield_wait(
+                        ctx, total_time, "Transit",
+                        product=", ".join(ctx.cargo.keys()) if ctx.cargo else None
                     )
-                    yield ctx.env.timeout(total_time)
                     ctx.current_location = unload_loc
 
             ctx.state = ShipState.WAITING_FOR_BERTH
@@ -758,21 +603,10 @@ def handle_in_transit_state(ctx: ShipContext) -> Generator[Any, Any, Optional[st
                     pilot_in = get_pilot_hours(ctx.berth_info, load_loc, 'in')
                     total_time = travel_hours + pilot_out + pilot_in
 
-                    ctx.log_func(
-                        process="Move",
-                        event="Transit",
-                        location=ctx.current_location,
-                        equipment="Ship",
-                        product=None,
-                        time=round(total_time, 2),
-                        from_store=None,
-                        to_store=None,
-                        route_id=ctx.current_route_id or ctx.route_group,
-                        vessel_id=ctx.vessel_id,
-                        ship_state=ctx.state.value,
-                        override_time_h=ctx.env.now
+                    yield from _yield_wait(
+                        ctx, total_time, "Transit",
+                        product=", ".join(ctx.cargo.keys()) if ctx.cargo else None
                     )
-                    yield ctx.env.timeout(total_time)
                     ctx.current_location = load_loc
 
             ctx.state = ShipState.LOADING
@@ -817,21 +651,10 @@ def handle_unloading_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str
                 pilot_in = get_pilot_hours(ctx.berth_info, ctx.origin_location, 'in')
                 total_time = travel_hours + pilot_out + pilot_in
 
-                ctx.log_func(
-                    process="Move",
-                    event="Transit",
-                    location=ctx.current_location,
-                    equipment="Ship",
-                    product=None,
-                    time=round(total_time, 2),
-                    from_store=None,
-                    to_store=None,
-                    route_id=ctx.current_route_id or ctx.route_group,
-                    vessel_id=ctx.vessel_id,
-                    ship_state=ctx.state.value,
-                    override_time_h=ctx.env.now
+                yield from _yield_wait(
+                    ctx, total_time, "Transit",
+                    product=", ".join(ctx.cargo.keys()) if ctx.cargo else None
                 )
-                yield ctx.env.timeout(total_time)
 
         ctx.current_location = ctx.origin_location
         ctx.state = ShipState.IDLE
@@ -844,9 +667,9 @@ def handle_unloading_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str
                 del ctx.sim.pending_deliveries[k]
 
         if ctx.sim:
-            yield ctx.sim.wait_for_step(7)
+            yield from _yield_step(ctx, 7, "Idle", product=", ".join(ctx.cargo.keys()) if ctx.cargo else None)
         else:
-            yield ctx.env.timeout(1)
+            yield from _yield_wait(ctx, 1.0, "Idle", product=", ".join(ctx.cargo.keys()) if ctx.cargo else None)
         return 'continue'
 
     step = ctx.chosen_itinerary[ctx.itinerary_idx]
@@ -892,36 +715,19 @@ def handle_unloading_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str
                     ctx.state = ShipState.WAITING_FOR_SPACE
                     ctx.log_state_change(ctx.state, unload_location)
 
-                ctx.log_func(
-                    process="Move",
-                    event="Waiting for Space",
-                    location=unload_location,
-                    equipment="Ship",
-                    product=product,
-                    time=1.0,
-                    unmet_demand=0.0,
-                    from_store=None,
-                    to_store=store_key,
-                    to_level=float(cont.level),
-                    to_fill_pct=float(cont.level) / cont.capacity if cont.capacity > 0 else 0.0,
-                    route_id=ctx.current_route_id or ctx.route_group,
-                    vessel_id=ctx.vessel_id,
-                    ship_state=ctx.state.value,
-                    override_time_h=ctx.env.now
-                )
-                if ctx.sim:
-                    yield ctx.sim.wait_for_step(7)
-                else:
-                    yield ctx.env.timeout(1.0)
+                yield from _yield_step(ctx, 7, "Waiting for Space", product=product, store=store_key)
                 wait_hours += 1
 
             if ctx.state != original_state:
                 ctx.state = original_state
                 ctx.log_state_change(ctx.state, unload_location)
 
-            # Calculate unload quantity
-            room = float(cont.capacity - cont.level)
-            num_holds_to_unload = int(min(carried, room + 1e-6) // ctx.payload_per_hold)
+            # num_holds_to_unload = int(min(carried, room + 1e-6) // ctx.payload_per_hold)
+            # We'll unload one hold at a time to be more robust and provide better logs
+            num_holds_to_unload = 0
+            if carried >= ctx.payload_per_hold and room >= ctx.payload_per_hold - 1e-6:
+                num_holds_to_unload = 1
+            
             qty_to_unload = float(num_holds_to_unload * ctx.payload_per_hold)
 
             # Handle remainder
@@ -942,12 +748,15 @@ def handle_unloading_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str
             if qty_to_unload > 1e-6:
                 unload_time = qty_to_unload / max(unload_rate, 1.0)
 
-                if ctx.sim:
-                    yield ctx.sim.wait_for_step(7)
+                yield from _yield_step(ctx, 7, "Sequencing", product=product)
 
-                start_hold_t = ctx.env.now
+                # Update cargo immediately BEFORE yielding the physical action
+                # to ensure state consistency if interrupted (though ships are single-process)
+                ctx.cargo[product] = round(max(0.0, carried - qty_to_unload), 2)
+                if ctx.cargo[product] < 1e-6:
+                    del ctx.cargo[product]
+
                 yield cont.put(qty_to_unload)
-                yield ctx.env.timeout(unload_time)
 
                 ctx.log_func(
                     process="Move",
@@ -956,7 +765,7 @@ def handle_unloading_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str
                     equipment="Ship",
                     product=product,
                     qty=qty_to_unload,
-                    time=round(unload_time, 2),
+                    time=unload_time,
                     unmet_demand=0.0,
                     qty_in=qty_to_unload,
                     from_store=None,
@@ -967,41 +776,32 @@ def handle_unloading_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str
                     route_id=ctx.current_route_id or ctx.route_group,
                     vessel_id=ctx.vessel_id,
                     ship_state=ctx.state.value,
-                    override_time_h=start_hold_t
+                    override_time_h=ctx.env.now
                 )
-
-                ctx.cargo[product] = carried - qty_to_unload
+                yield ctx.env.timeout(unload_time)
 
                 # Update pending deliveries
                 if ctx.sim and hasattr(ctx.sim, 'pending_deliveries'):
                     if (ctx.vessel_id, store_key) in ctx.sim.pending_deliveries:
-                        ctx.sim.pending_deliveries[(ctx.vessel_id, store_key)] = max(0.0, ctx.sim.pending_deliveries[
-                            (ctx.vessel_id, store_key)] - qty_to_unload)
+                        ctx.sim.pending_deliveries[(ctx.vessel_id, store_key)] = round(max(0.0, ctx.sim.pending_deliveries[
+                            (ctx.vessel_id, store_key)] - qty_to_unload), 2)
+                        if ctx.sim.pending_deliveries[(ctx.vessel_id, store_key)] < 1e-6:
+                            del ctx.sim.pending_deliveries[(ctx.vessel_id, store_key)]
 
-                ctx.itinerary_idx += 1
+                # If we still have more of this product to unload, and we haven't hit the wait limit,
+                # don't increment itinerary_idx so we can unload the next hold in the next step.
+                room_now = float(cont.capacity - cont.level)
+                still_has_product = product in ctx.cargo
+                if still_has_product and room_now >= min(ctx.cargo[product], ctx.payload_per_hold) - 1e-6:
+                    # Stay at this step
+                    pass
+                else:
+                    ctx.itinerary_idx += 1
             elif wait_hours >= max_wait:
-                ctx.log_func(
-                    process="Move",
-                    event="Skip Unload - Wait Limit Reached",
-                    location=unload_location,
-                    equipment="Ship",
-                    product=product,
-                    qty=0,
-                    time=0.0,
-                    unmet_demand=0.0,
-                    from_store=None,
-                    to_store=None,
-                    route_id=ctx.current_route_id or ctx.route_group,
-                    vessel_id=ctx.vessel_id,
-                    ship_state=ctx.state.value,
-                    override_time_h=ctx.env.now
-                )
+                yield from _yield_wait(ctx, 0.0, "Skip Unload - Wait Limit Reached", product=product)
                 ctx.itinerary_idx += 1
             else:
-                if ctx.sim:
-                    yield ctx.sim.wait_for_step(7)
-                else:
-                    yield ctx.env.timeout(1.0)
+                yield from _yield_step(ctx, 7, "Waiting for Space", product=product, store=store_key)
         else:
             ctx.itinerary_idx += 1
     elif kind == 'unload':
@@ -1025,31 +825,12 @@ def handle_error_state(ctx: ShipContext) -> Generator[Any, Any, Optional[str]]:
     """
     Handle ERROR state: log error and reset to IDLE.
     """
-    ctx.log_func(
-        process="Move",
-        event="Error",
-        location=ctx.current_location,
-        equipment="Ship",
-        product=None,
-        qty=0,
-        unmet_demand=0.0,
-        from_store=None,
-        from_level=None,
-        to_store=None,
-        to_level=None,
-        route_id=ctx.current_route_id or ctx.route_group,
-        vessel_id=ctx.vessel_id,
-        ship_state=ctx.state.value,
-        override_time_h=ctx.env.now
-    )
     ctx.state = ShipState.IDLE
-    ctx.cargo = {}
-    if ctx.t_state is not None:
-        ctx.t_state['cargo'] = ctx.cargo
+    # Persistent cargo: We no longer clear cargo on error.
     if ctx.sim:
         for _ in range(24):
-            yield ctx.sim.wait_for_step(7)
+            yield from _yield_step(ctx, 7, "Error")
     else:
-        yield ctx.env.timeout(24)
+        yield from _yield_wait(ctx, 24.0, "Error")
     return None
 

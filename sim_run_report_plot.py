@@ -851,7 +851,7 @@ def _generate_manufacturing_charts(df_log: pd.DataFrame) -> dict:
             SUM(CASE WHEN event = 'ProduceBlocked' THEN COALESCE(time_t, 0.0) ELSE 0 END) as Blocked,
             SUM(CASE WHEN event NOT IN ('Produce', 'ProducePartial', 'Load', 'Unload', 'ShipLoad', 'ShipUnload') THEN COALESCE(time_t, 0.0) ELSE 0 END) as TotalDowntime
         FROM df_log
-        WHERE process IN ('Downtime', 'Make', 'Move') 
+        WHERE process IN ('Make', 'Move')
         GROUP BY 1, 2, 3
     """).df()
 
@@ -962,7 +962,7 @@ def _generate_fleet_utilisation_chart(df_log: pd.DataFrame) -> go.Figure:
     """Generate daily fleet utilization chart - IDLE = not utilized, else utilized."""
     if df_log.empty: return None
 
-    state_changes = df_log[df_log['process'] == 'ShipState'].copy()
+    state_changes = df_log[df_log['process'] == 'Move'].copy()
     if state_changes.empty: return None
 
     state_changes['time_h'] = pd.to_numeric(state_changes['time_h'], errors='coerce')
@@ -1030,7 +1030,7 @@ def _generate_vessel_state_chart(df_log: pd.DataFrame) -> go.Figure:
     """Generate stacked area chart showing vessel count by state over time."""
     if df_log.empty: return None
 
-    state_changes = df_log[df_log['process'] == 'ShipState'].copy()
+    state_changes = df_log[df_log['process'] == 'Move'].copy()
     if state_changes.empty: return None
 
     state_changes['day'] = pd.to_numeric(state_changes['time_h'], errors='coerce') / 24.0
@@ -1147,7 +1147,7 @@ def _generate_route_summary_chart(df_log: pd.DataFrame) -> go.Figure:
     if df_log.empty:
         return None
 
-    state_changes = df_log[df_log['process'] == 'ShipState'].copy()
+    state_changes = df_log[df_log['process'] == 'Move'].copy()
     if state_changes.empty:
         return None
 

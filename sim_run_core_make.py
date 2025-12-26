@@ -111,7 +111,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
 
         if current_day in maintenance_days:
             log_func(
-                process="Downtime",
+                process="Make",
                 event="Maintenance",
                 location=unit.location,
                 equipment=unit.equipment,
@@ -138,7 +138,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
         
         if breakdown_remaining > 0:
             log_func(
-                process="Downtime",
+                process="Make",
                 event="Breakdown",
                 location=unit.location,
                 equipment=unit.equipment,
@@ -177,7 +177,7 @@ def producer(env, resource: simpy.Resource, unit: MakeUnit,
                     planned = min(duration, max_allowed)
 
                     log_func(
-                        process="Downtime",
+                        process="Make",
                         event="BreakdownStart",
                         location=unit.location,
                         equipment=unit.equipment,

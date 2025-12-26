@@ -24,7 +24,7 @@ def transporter(env, route: TransportRoute,
     idle_store = None
     idle_reason = None
 
-    def log_idle(location, store=None, reason=None):
+    def log_idle(location, store=None, reason=None, duration=1.0):
         nonlocal idle_start_time, idle_start_day, idle_location, idle_store, idle_reason
         
         # Log immediately instead of accumulating to keep time field sensible and hourly
@@ -54,7 +54,7 @@ def transporter(env, route: TransportRoute,
             equipment=route.mode.capitalize() if route.mode else "Train",
             product=route.product,
             qty=0,
-            time=1.0,
+            time=duration,
             unmet_demand=0.0,
             from_store=store if location == route.origin_location else None,
             from_level=from_lvl,
@@ -68,6 +68,18 @@ def transporter(env, route: TransportRoute,
             override_time_h=env.now
         )
 
+    def yield_step(step_num, location, store=None, reason=None):
+        if not sim:
+            log_idle(location, store=store, reason=reason, duration=1.0)
+            yield env.timeout(1.0)
+            return
+
+        start_t = env.now
+        yield sim.wait_for_step(step_num)
+        dur = env.now - start_t
+        if dur > 1e-6:
+            log_idle(location, store=store, reason=reason, duration=dur)
+
     while True:
         # Before starting a new trip, sync to hour boundary if we finished a trip mid-hour
         # or if we are just starting. Actually, Step 2 will sync us.
@@ -78,6 +90,8 @@ def transporter(env, route: TransportRoute,
             wait_h = 1.0
             if sim and hasattr(sim, 'settings'):
                 wait_h = float(sim.settings.get('transporter_wait_h', 1.0))
+            
+            log_idle(route.origin_location, reason="Configuration Error", duration=wait_h)
             yield env.timeout(wait_h)
             continue
 
@@ -131,29 +145,13 @@ def transporter(env, route: TransportRoute,
                 elif dest_cont is None and route.dest_stores:
                     log_store = route.dest_stores[0]
                 
-                log_idle(route.origin_location, store=log_store, reason=reason)
-                if sim:
-                    yield sim.wait_for_step(7)
-                else:
-                    # Retrieve small wait timeout from settings if available, else 1.0
-                    wait_h = 1.0
-                    if sim and hasattr(sim, 'settings'):
-                        wait_h = float(sim.settings.get('transporter_wait_h', 1.0))
-                    yield env.timeout(wait_h)
+                yield from yield_step(7, route.origin_location, store=log_store, reason=reason)
                 continue
 
             # Final re-check immediately before securing inventory to reduce race-condition issues
             if origin_cont.level + 1e-6 < route.payload_t or ((dest_cont.capacity - dest_cont.level) + 1e-6 < route.payload_t):
                 reason = "Waiting for Product" if origin_cont.level + 1e-6 < route.payload_t else "Waiting for Space"
-                log_idle(route.origin_location, store=origin_key if reason == "Waiting for Product" else dest_key, reason=reason)
-                if sim:
-                    yield sim.wait_for_step(7)
-                else:
-                    # Retrieve small wait timeout from settings if available, else 1.0
-                    wait_h = 1.0
-                    if sim and hasattr(sim, 'settings'):
-                        wait_h = float(sim.settings.get('transporter_wait_h', 1.0))
-                    yield env.timeout(wait_h)
+                yield from yield_step(7, route.origin_location, store=origin_key if reason == "Waiting for Product" else dest_key, reason=reason)
                 continue
 
             # 3. Register Pending Delivery
@@ -172,15 +170,7 @@ def transporter(env, route: TransportRoute,
             candidates_origin.sort(key=lambda x: x[1].level, reverse=True)
 
             if not candidates_origin:
-                log_idle(route.origin_location, store=route.origin_stores[0] if route.origin_stores else None, reason="Waiting for Product")
-                if sim:
-                    yield sim.wait_for_step(7)
-                else:
-                    # Retrieve small wait timeout from settings if available, else 1.0
-                    wait_h = 1.0
-                    if sim and hasattr(sim, 'settings'):
-                        wait_h = float(sim.settings.get('transporter_wait_h', 1.0))
-                    yield env.timeout(wait_h)
+                yield from yield_step(7, route.origin_location, store=route.origin_stores[0] if route.origin_stores else None, reason="Waiting for Product")
                 continue
             
             origin_key, origin_cont = candidates_origin[0]
@@ -205,21 +195,12 @@ def transporter(env, route: TransportRoute,
             take = min(max(0.0, route.payload_t), origin_stock)
 
             if take <= 1e-6:
-                log_idle(route.origin_location, store=origin_key, reason="Waiting for Product")
-                if sim:
-                    yield sim.wait_for_step(7)
-                else:
-                    # Retrieve small wait timeout from settings if available, else 1.0
-                    wait_h = 1.0
-                    if sim and hasattr(sim, 'settings'):
-                        wait_h = float(sim.settings.get('transporter_wait_h', 1.0))
-                    yield env.timeout(wait_h)
+                yield from yield_step(7, route.origin_location, store=origin_key, reason="Waiting for Product")
                 continue
 
         # 3. LOAD (Secure & Log)
         # Wait for Step 2: Reduce the Inventory by the "Train Load" Qty
-        if sim:
-            yield sim.wait_for_step(2)
+        yield from yield_step(2, route.origin_location, store=origin_key, reason="Sequencing")
 
         # Non-blocking get with logging
         while True:
@@ -227,23 +208,13 @@ def transporter(env, route: TransportRoute,
             if cont.level >= take - 1e-6:
                 break
             else:
-                log_idle(route.origin_location, origin_key, reason="Waiting for Product")
-                if sim:
-                    yield sim.wait_for_step(7)
-                else:
-                    # Retrieve small wait timeout from settings if available, else 1.0
-                    wait_h = 1.0
-                    if sim and hasattr(sim, 'settings'):
-                        wait_h = float(sim.settings.get('transporter_wait_h', 1.0))
-                    yield env.timeout(wait_h)
+                yield from yield_step(7, route.origin_location, store=origin_key, reason="Waiting for Product")
         
         load_h = take / max(route.load_rate_tph, 1e-6)
         
         start_load_t = env.now
         yield origin_cont.get(take)
-        if load_h > 0:
-            yield env.timeout(load_h)
-
+        
         log_func(
             process="Move",
             event="Load",
@@ -251,7 +222,7 @@ def transporter(env, route: TransportRoute,
             equipment=route.mode.capitalize() if route.mode else "Train",
             product=route.product,
             qty=take,
-            time=round(load_h, 2),
+            time=load_h,
             unmet_demand=0.0,
             qty_out=take,
             from_store=origin_key,
@@ -263,6 +234,8 @@ def transporter(env, route: TransportRoute,
             vessel_id=vessel_id,
             override_time_h=start_load_t
         )
+        if load_h > 0:
+            yield env.timeout(load_h)
 
         if t_state is not None:
             t_state['cargo'][route.product] = t_state['cargo'].get(route.product, 0) + take
@@ -276,7 +249,7 @@ def transporter(env, route: TransportRoute,
                 location=route.origin_location,
                 equipment="Train",
                 product=route.product,
-                time=round(travel_h, 2),
+                time=travel_h,
                 from_store=None,
                 to_store=None,
                 route_id=route_id_str,
@@ -286,8 +259,7 @@ def transporter(env, route: TransportRoute,
             yield env.timeout(travel_h)
 
         # Wait for Step 6: Increase inventory by the "Train Offload" Qty
-        if sim:
-            yield sim.wait_for_step(6)
+        yield from yield_step(6, route.dest_location, store=dest_key, reason="Sequencing")
 
         # 5. UNLOAD (Put & Log)
         # Unload time is also busy time - let's log it hourly if it's > 1h
@@ -299,21 +271,11 @@ def transporter(env, route: TransportRoute,
             if cont.capacity - cont.level >= take - 1e-6:
                 break
             else:
-                log_idle(route.dest_location, dest_key, reason="Waiting for Space")
-                if sim:
-                    yield sim.wait_for_step(7)
-                else:
-                    # Retrieve small wait timeout from settings if available, else 1.0
-                    wait_h = 1.0
-                    if sim and hasattr(sim, 'settings'):
-                        wait_h = float(sim.settings.get('transporter_wait_h', 1.0))
-                    yield env.timeout(wait_h)
+                yield from yield_step(7, route.dest_location, store=dest_key, reason="Waiting for Space")
 
         start_unload_t = env.now
         yield dest_cont.put(take)
-        if unload_h > 0:
-            yield env.timeout(unload_h)
-
+        
         log_func(
             process="Move",
             event="Unload",
@@ -321,7 +283,7 @@ def transporter(env, route: TransportRoute,
             equipment=route.mode.capitalize() if route.mode else "Train",
             product=route.product,
             qty=take,
-            time=round(unload_h, 2),
+            time=unload_h,
             unmet_demand=0.0,
             qty_in=take,
             from_store=None,  # Off Train
@@ -333,6 +295,8 @@ def transporter(env, route: TransportRoute,
             vessel_id=vessel_id,
             override_time_h=start_unload_t
         )
+        if unload_h > 0:
+            yield env.timeout(unload_h)
 
         if t_state is not None:
             t_state['cargo'][route.product] = max(0.0, t_state['cargo'].get(route.product, 0) - take)
@@ -353,7 +317,7 @@ def transporter(env, route: TransportRoute,
                 location=route.dest_location,
                 equipment="Train",
                 product=route.product,
-                time=round(return_h, 2),
+                time=return_h,
                 from_store=None,
                 to_store=None,
                 route_id=route_id_str,

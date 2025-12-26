@@ -44,6 +44,7 @@ class SupplyChainSimulation:
 
         # Track transporter cargo for final closing balance
         self.transporter_states: List[dict] = []
+        self.vessel_last_time: Dict[int, float] = {}
 
     def wait_for_step(self, step_num: int):
         """Wait for a specific step in the current hour's sequence."""
@@ -74,10 +75,30 @@ class SupplyChainSimulation:
         # If override_day is provided, use it only for the day bucket; keep true hourly time_h
         override_day = details.get('override_day', None)
         override_time_h = details.get('override_time_h', None)
-        time_h = round(float(override_time_h), 2) if override_time_h is not None else round(float(self.env.now), 2)
+        time_h = float(override_time_h) if override_time_h is not None else float(self.env.now)
         time_d = (override_day - 1) if override_day is not None else int(time_h // 24)
         day = time_d + 1
         
+        v_id = details.get('vessel_id')
+        if v_id is not None:
+            # If this is a duration event, it starts at time_h and ends at time_h + duration
+            # We track the 'coverage' of logged time for this vessel
+            duration = details.get('time', 0.0)
+            if duration > 0:
+                # If we log a duration event that starts before our last known coverage,
+                # we only count the 'new' time to avoid double counting overlaps
+                last_coverage = self.vessel_last_time.get(v_id, 0.0)
+                if time_h < last_coverage - 1e-7:
+                    # Overlap detected - we'll still log the full duration for the event,
+                    # but for our tracking of 'missing time' we only advance from the end of last coverage
+                    self.vessel_last_time[v_id] = max(last_coverage, time_h + duration)
+                else:
+                    self.vessel_last_time[v_id] = time_h + duration
+            else:
+                # Zero-duration event, just ensure vessel is in the map
+                if v_id not in self.vessel_last_time:
+                    self.vessel_last_time[v_id] = time_h
+
         # Log as a tuple with fixed structure for performance
         # order: day, time_h, time_d, process, event, location, equipment, product, qty, time, 
         #        unmet_demand, qty_out, from_store, from_level, from_fill_pct, 
@@ -153,7 +174,7 @@ class SupplyChainSimulation:
         t_state = {
             'type': mode,
             'route_id': route.route_id or (f"{route.origin_location}->{route.dest_location}" if mode == 'TRAIN' else getattr(route, 'route_group', 'Ship')),
-            'vessel_id': vessel_id,
+            'vessel_id': 1000 + vessel_id if mode == 'TRAIN' else vessel_id,
             'cargo': {} # {product: quantity} or {hold: {product, quantity}}
         }
         self.transporter_states.append(t_state)
@@ -187,7 +208,7 @@ class SupplyChainSimulation:
             )
         else:  # TRAIN
             # Use a unique vessel_id for trains to avoid collision in pending_deliveries
-            train_vessel_id = 1000 + vessel_id
+            train_vessel_id = t_state['vessel_id']
             yield from _transporter_train(
                 self.env,
                 route,
@@ -393,32 +414,55 @@ class SupplyChainSimulation:
 
         # Log ClosingInTransit for each transporter
         for ts in self.transporter_states:
-            cargo = ts.get('cargo', {})
-            if not cargo:
-                continue
+            v_id = ts.get('vessel_id')
+            last_t = self.vessel_last_time.get(v_id, 0.0)
+            remaining_t = max(0.0, float(horizon_days * 24) - last_t)
             
+            cargo = ts.get('cargo', {})
             # Aggregate cargo by product
             product_totals = defaultdict(float)
-            # Cargo for both ships and trains is {product: qty}
             for prod, qty in cargo.items():
-                if qty > 0:
+                if qty > 1e-6:
                     product_totals[prod] += qty
             
-            for prod, qty in product_totals.items():
-                if qty > 1e-6:
+            if not product_totals:
+                # No cargo, but might still have time to account for
+                if remaining_t > 0:
                     self.log(
                         process="Move",
-                        event="ClosingInTransit",
+                        event="IdleUntilEnd",
                         location=None,
                         equipment=ts['type'],
-                        product=prod,
-                        qty=qty,
-                        time=0.0,
+                        product=None,
+                        qty=0.0,
+                        time=remaining_t,
                         unmet_demand=0.0,
                         from_store=None,
                         from_level=None,
                         to_store=None,
                         to_level=None,
                         route_id=ts['route_id'],
-                        vessel_id=ts.get('vessel_id')
+                        vessel_id=v_id
                     )
+                continue
+
+            # If there is cargo, log ClosingInTransit for each product
+            # We divide the remaining_t among the products, or just assign it to the first one
+            # to avoid double counting time.
+            for i, (prod, qty) in enumerate(product_totals.items()):
+                self.log(
+                    process="Move",
+                    event="ClosingInTransit",
+                    location=None,
+                    equipment=ts['type'],
+                    product=prod,
+                    qty=qty,
+                    time=remaining_t if i == 0 else 0.0,
+                    unmet_demand=0.0,
+                    from_store=None,
+                    from_level=None,
+                    to_store=None,
+                    to_level=None,
+                    route_id=ts['route_id'],
+                    vessel_id=v_id
+                )
